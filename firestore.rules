@@ -1,0 +1,67 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Helper functions ─────────────────────────────────────────────────────
+
+    // Returns true if the request is from an authenticated user
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Returns true if the authenticated user owns this data path
+    function isOwner(uid) {
+      return isAuthenticated() && request.auth.uid == uid;
+    }
+
+    // ── users/{uid} — top-level user document ────────────────────────────────
+    match /users/{uid} {
+      allow read, write: if isOwner(uid);
+
+      // ── profile subcollection ──────────────────────────────────────────────
+      match /profile/{document=**} {
+        allow read, write: if isOwner(uid);
+      }
+
+      // ── transactions subcollection ────────────────────────────────────────
+      match /transactions/{transactionId} {
+        allow read, write: if isOwner(uid);
+      }
+
+      // ── categories subcollection ──────────────────────────────────────────
+      match /categories/{categoryId} {
+        allow read, write: if isOwner(uid);
+      }
+
+      // ── paymentAccounts subcollection ─────────────────────────────────────
+      match /paymentAccounts/{accountId} {
+        allow read, write: if isOwner(uid);
+      }
+
+      // ── budgets subcollection ─────────────────────────────────────────────
+      match /budgets/{budgetId} {
+        allow read, write: if isOwner(uid);
+      }
+
+      // ── trips subcollection ───────────────────────────────────────────────
+      match /trips/{tripId} {
+        allow read, write: if isOwner(uid);
+      }
+
+      // ── recurring subcollection ───────────────────────────────────────────
+      match /recurring/{recurringId} {
+        allow read, write: if isOwner(uid);
+      }
+
+      // ── people subcollection ──────────────────────────────────────────────
+      match /people/{personId} {
+        allow read, write: if isOwner(uid);
+      }
+    }
+
+    // Deny everything else
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

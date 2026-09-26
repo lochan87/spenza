@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react'
-import { AlertCircle, RefreshCw } from 'lucide-react'
+import { AlertCircle, RefreshCw, Receipt } from 'lucide-react'
 import { useDashboardData } from './useDashboardData'
 import { DashboardSkeleton } from './components/SkeletonCard'
 import { SummaryHeader } from './components/SummaryHeader'
@@ -64,10 +64,26 @@ export function DashboardPage() {
 
   if (!data) return <DashboardSkeleton />
 
+  // New account: no transactions at all in the last 6 months
+  const isEmpty = data.txnCount === 0 && data.thisMonthTotal === 0
+
   return (
-    <div className="flex flex-col gap-5 pb-20 md:pb-6">
+    <div className="flex flex-col gap-5">
       {/* Section 1 — Summary Header */}
       <SummaryHeader data={data} />
+
+      {/* Empty state banner — shown when no transactions exist yet */}
+      {isEmpty && (
+        <div className="flex flex-col items-center gap-3 rounded-2xl border border-dashed border-[var(--border)] bg-[var(--surface)] p-8 text-center">
+          <Receipt className="h-10 w-10 text-[var(--text-subtle)]" />
+          <div>
+            <p className="font-semibold text-[var(--text-primary)]">No expenses yet this month</p>
+            <p className="mt-1 text-sm text-[var(--text-muted)]">
+              Head to Transactions → Add Expense to log your first one, or use Import to bring in historical data.
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Section 2 — Quick Stats Row */}
       <QuickStatsRow data={data} />

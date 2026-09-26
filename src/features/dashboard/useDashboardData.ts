@@ -57,11 +57,8 @@ export function useDashboardData(): UseDashboardReturn {
 
   // Memoize derivation — only recomputes when raw data changes
   const data = useMemo<DashboardData | null>(() => {
-    if (!rawTxns.length && !loading) {
-      // Return empty state if no data yet
-      return deriveDashboardData([], categories, accounts)
-    }
-    if (rawTxns.length === 0) return null
+    if (loading) return null  // Show skeleton while loading
+    // Empty array is fine — deriveDashboardData handles it with zeroes
     return deriveDashboardData(rawTxns, categories, accounts)
   }, [rawTxns, categories, accounts, loading])
 

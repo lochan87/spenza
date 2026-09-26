@@ -90,7 +90,7 @@ export interface Category {
 /** Stored in users/{uid}/budgets/{YYYY-MM} */
 export interface Budget {
   id: string              // format: "YYYY-MM"
-  totalBudgetPaise: number
+  totalBudgetPaise: number | null
   categoryBudgets: Record<string, number>  // categoryId → paise
   createdAt: Timestamp
   updatedAt: Timestamp
@@ -104,6 +104,10 @@ export interface Trip {
   name: string
   startDate: Timestamp
   endDate: Timestamp | null
+  coverEmoji: string          // e.g. "✈️"
+  coverColor: string          // hex accent for this trip card
+  budgetPaise: number | null  // optional trip budget
+  isArchived: boolean
   notes: string
   createdAt: Timestamp
   updatedAt: Timestamp
@@ -111,7 +115,7 @@ export interface Trip {
 
 // ─── Recurring ────────────────────────────────────────────────────────────────
 
-export type RecurringFrequency = 'daily' | 'weekly' | 'monthly' | 'yearly'
+export type RecurringFrequency = 'weekly' | 'monthly' | 'yearly'
 
 /** Stored in users/{uid}/recurring/{id} */
 export interface RecurringItem {
@@ -120,12 +124,38 @@ export interface RecurringItem {
   amountPaise: number
   categoryId: string
   frequency: RecurringFrequency
+  /** 1–28 for monthly */
+  dayOfMonth: number | null
+  /** 0=Sun…6=Sat for weekly */
+  dayOfWeek: number | null
+  /** "MM-DD" for yearly */
+  monthDay: string | null
   nextDueDate: Timestamp
+  lastGeneratedDate: Timestamp | null
   paymentMode: PaymentMode
   paymentAccountId: string | null
   isActive: boolean
   createdAt: Timestamp
   updatedAt: Timestamp
+}
+
+// ─── Insights ─────────────────────────────────────────────────────────────────
+
+/** Cached at users/{uid}/insights/summary — recomputed on-demand */
+export interface InsightsSummary {
+  computedAt: Timestamp
+  highestSpendingMonth: { monthKey: string; totalPaise: number } | null
+  mostFrequentCategory: { categoryId: string; name: string; count: number } | null
+  mostFrequentSmallDesc: { description: string; count: number } | null
+  largestSingleExpense: {
+    id: string; description: string; amountPaise: number; date: Timestamp
+  } | null
+  /** Sorted ascending by year */
+  yearlyTotals: Array<{ year: number; totalPaise: number }>
+  giftEventTotalPaise: number
+  tripTotalPaise: number
+  /** Auto-generated explanatory sentence for the highest-spend year */
+  highestYearInsight: string
 }
 
 // ─── Person ──────────────────────────────────────────────────────────────────
@@ -150,3 +180,4 @@ export interface UserProfile {
   createdAt: Timestamp
   updatedAt: Timestamp
 }
+

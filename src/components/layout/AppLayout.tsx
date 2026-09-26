@@ -119,8 +119,8 @@ export function AppLayout({ children }: AppLayoutProps) {
         {/* Mobile bottom nav (below header content) */}
       </header>
 
-      {/* Main content */}
-      <main className="flex-1 mx-auto w-full max-w-5xl px-4 py-6 sm:px-6">
+      {/* Main content — pb-24 clears the fixed mobile bottom nav on small screens */}
+      <main className="flex-1 mx-auto w-full max-w-5xl px-4 py-6 pb-24 sm:px-6 md:pb-8">
         {children}
       </main>
 

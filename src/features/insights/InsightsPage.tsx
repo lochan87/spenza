@@ -81,12 +81,16 @@ export function InsightsPage() {
   const loadInsights = async (forceRefresh = false) => {
     if (!user) return
     setError(null)
+    setLoading(true)
     try {
       if (!forceRefresh) {
         const cached = await getCachedInsights(user.uid)
         if (cached && isCacheFresh(cached)) {
           setInsights(cached)
-          const computed = cached.computedAt.toDate()
+          // computedAt is a real Timestamp when read back from Firestore
+          const computed = (cached.computedAt as any).toDate
+            ? (cached.computedAt as any).toDate()
+            : new Date()
           setCacheAge(`Updated ${format(computed, 'd MMM, h:mm a')}`)
           setLoading(false)
           return
@@ -95,11 +99,22 @@ export function InsightsPage() {
       // Need to compute
       setComputing(true)
       const fresh = await computeAndCacheInsights(user.uid)
-      setInsights(fresh)
-      setCacheAge(`Updated just now`)
-    } catch (err) {
+      // null return = not enough data (< 3 transactions)
+      if (fresh === null) {
+        setInsights(null)
+        setError('not-enough-data')
+      } else {
+        setInsights(fresh)
+        setCacheAge('Updated just now')
+      }
+    } catch (err: any) {
       console.error('[Spenza] Insights error:', err)
-      setError('Failed to load insights.')
+      // Distinguish Firestore permission errors from other failures
+      if (err?.code === 'permission-denied') {
+        setError('Permission denied — check Firestore rules for the insights collection.')
+      } else {
+        setError('Failed to load insights. Please try again.')
+      }
     } finally {
       setLoading(false)
       setComputing(false)
@@ -136,12 +151,39 @@ export function InsightsPage() {
     )
   }
 
+  if (error === 'not-enough-data') {
+    return (
+      <div className="flex h-64 flex-col items-center justify-center gap-4 rounded-2xl border border-dashed border-[var(--border)] bg-[var(--surface)] p-8 text-center">
+        <Lightbulb className="h-10 w-10 text-[var(--text-subtle)]" />
+        <div>
+          <p className="font-medium text-[var(--text-primary)]">Not enough data yet</p>
+          <p className="mt-1 text-sm text-[var(--text-muted)]">
+            Add a few more expenses first — insights become meaningful once you have
+            at least a few weeks of history.
+          </p>
+        </div>
+        <button
+          onClick={() => loadInsights(true)}
+          disabled={computing}
+          className="flex items-center gap-2 rounded-xl bg-[var(--primary)] px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-60"
+        >
+          {computing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+          Try again
+        </button>
+      </div>
+    )
+  }
+
   if (error) {
     return (
-      <div className="flex h-52 flex-col items-center justify-center gap-3">
-        <p className="text-sm text-[var(--danger)]">{error}</p>
-        <button onClick={() => loadInsights(true)}
-          className="rounded-xl bg-[var(--primary)] px-4 py-2 text-sm font-semibold text-white">
+      <div className="flex h-52 flex-col items-center justify-center gap-3 rounded-2xl border border-[var(--danger-muted)] bg-[var(--surface)] p-6 text-center">
+        <p className="text-sm font-medium text-[var(--danger)]">{error}</p>
+        <button
+          onClick={() => loadInsights(true)}
+          disabled={computing}
+          className="flex items-center gap-2 rounded-xl bg-[var(--primary)] px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-60"
+        >
+          {computing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
           Retry
         </button>
       </div>

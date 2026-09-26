@@ -57,6 +57,13 @@ service cloud.firestore {
       match /people/{personId} {
         allow read, write: if isOwner(uid);
       }
+
+      // ── insights subcollection ────────────────────────────────────────────
+      // Stores the cached insights summary document at insights/summary.
+      // Added Phase 4 — was missing from initial rules, causing permission errors.
+      match /insights/{docId} {
+        allow read, write: if isOwner(uid);
+      }
     }
 
     // Deny everything else

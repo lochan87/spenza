@@ -38,13 +38,18 @@ export function isCacheFresh(summary: InsightsSummary): boolean {
   return computed > sevenDaysAgo
 }
 
-/** Fetch all transactions and compute + persist the insights summary */
-export async function computeAndCacheInsights(uid: string): Promise<InsightsSummary> {
+/** Fetch all transactions and compute + persist the insights summary.
+ * Returns null if there are fewer than 3 transactions (not enough data to show). */
+export async function computeAndCacheInsights(uid: string): Promise<InsightsSummary | null> {
   // Read ALL transactions — expensive but infrequent (7-day cache)
   const snap = await getDocs(
     query(collection(db, 'users', uid, 'transactions'), orderBy('date', 'asc'))
   )
   const allTxns = snap.docs.map(d => ({ id: d.id, ...d.data() }) as Transaction)
+
+  // Not enough data to generate meaningful insights
+  if (allTxns.length < 3) return null
+
   const categories = await getCategories(uid)
 
   const catMap = new Map(categories.map(c => [c.id, c.name]))

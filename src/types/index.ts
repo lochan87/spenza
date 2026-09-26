@@ -46,6 +46,12 @@ export interface Transaction {
   notes: string
   receiptUrl: string | null // reserved for Phase 2 image upload
 
+  // ── Import provenance ───────────────────────────────────────────────────
+  /** True for rows bulk-imported from Excel. paymentMode will be 'Other' and paymentAccountId null. */
+  isImported?: boolean
+  /** 'excel' for SheetJS-imported rows. Undefined for manually entered transactions. */
+  importSource?: 'excel' | null
+
   createdAt: Timestamp
   updatedAt: Timestamp
 }

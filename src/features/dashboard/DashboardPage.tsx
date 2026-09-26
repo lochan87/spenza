@@ -10,6 +10,8 @@ import { TopCategories } from './components/TopCategories'
 import { BiggestExpenses } from './components/BiggestExpenses'
 import { MicroSpendCard } from './components/MicroSpendCard'
 import { PaymentBreakdown } from './components/PaymentBreakdown'
+import { UpcomingRecurringCard } from './components/UpcomingRecurringCard'
+import { BudgetStatusCard } from './components/BudgetStatusCard'
 import { AddExpenseForm } from '@/features/transactions/AddExpenseForm'
 import { Drawer } from '@/components/layout/Drawer'
 import type { Transaction } from '@/types'
@@ -98,6 +100,12 @@ export function DashboardPage() {
           totalThisMonth={data.thisMonthTotal}
         />
       </div>
+
+      {/* Section 9 — Upcoming Recurring */}
+      <UpcomingRecurringCard categories={categories} />
+
+      {/* Section 10 — Budget Status */}
+      <BudgetStatusCard data={data} categories={categories} />
 
       {/* Edit expense drawer (opened from BiggestExpenses) */}
       <Drawer open={formOpen} onClose={handleFormClose}>

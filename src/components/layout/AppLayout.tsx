@@ -3,7 +3,7 @@ import { Link, useLocation } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 import { useTheme } from '@/hooks/useTheme'
 import { signOut } from '@/firebase/auth'
-import { Sun, Moon, LogOut, LayoutDashboard, Receipt, Tag } from 'lucide-react'
+import { Sun, Moon, LogOut, LayoutDashboard, Receipt, Tag, Map, RepeatIcon, Target, Lightbulb } from 'lucide-react'
 
 // Import logo — theme-aware
 import logoMarkDark from '@/assets/logos/spenza-logo-mark-dark.svg'
@@ -16,9 +16,13 @@ interface AppLayoutProps {
 }
 
 const NAV_ITEMS = [
-  { href: '/app', icon: LayoutDashboard, label: 'Overview' },
-  { href: '/app/transactions', icon: Receipt, label: 'Transactions' },
-  { href: '/app/categories', icon: Tag, label: 'Categories' },
+  { href: '/app', icon: LayoutDashboard, label: 'Overview', exact: true },
+  { href: '/app/transactions', icon: Receipt, label: 'Transactions', exact: false },
+  { href: '/app/trips', icon: Map, label: 'Trips', exact: false },
+  { href: '/app/recurring', icon: RepeatIcon, label: 'Recurring', exact: false },
+  { href: '/app/budgets', icon: Target, label: 'Budgets', exact: false },
+  { href: '/app/insights', icon: Lightbulb, label: 'Insights', exact: false },
+  { href: '/app/categories', icon: Tag, label: 'Categories', exact: false },
 ]
 
 export function AppLayout({ children }: AppLayoutProps) {
@@ -54,8 +58,10 @@ export function AppLayout({ children }: AppLayoutProps) {
 
           {/* Desktop Nav */}
           <nav className="hidden md:flex items-center gap-1">
-            {NAV_ITEMS.map(({ href, icon: Icon, label }) => {
-              const active = location.pathname === href || (href !== '/app' && location.pathname.startsWith(href))
+            {NAV_ITEMS.map(({ href, icon: Icon, label, exact }) => {
+              const active = exact
+                ? location.pathname === href
+                : location.pathname.startsWith(href)
               return (
                 <Link
                   key={href}
@@ -116,17 +122,17 @@ export function AppLayout({ children }: AppLayoutProps) {
       </main>
 
       {/* Mobile bottom nav */}
-      <nav className="fixed bottom-0 left-0 right-0 z-40 flex md:hidden items-center justify-around border-t border-[var(--border)] bg-[var(--surface)] px-2 pb-safe">
-        {NAV_ITEMS.map(({ href, icon: Icon, label }) => {
-          const active = location.pathname === href || (href !== '/app' && location.pathname.startsWith(href))
+      <nav className="fixed bottom-0 left-0 right-0 z-40 flex md:hidden items-center justify-around border-t border-[var(--border)] bg-[var(--surface)] px-1 pb-safe overflow-x-auto">
+        {NAV_ITEMS.map(({ href, icon: Icon, label, exact }) => {
+          const active = exact
+            ? location.pathname === href
+            : location.pathname.startsWith(href)
           return (
             <Link
               key={href}
               to={href}
-              className={`flex flex-col items-center gap-1 px-4 py-3 text-xs font-medium transition-all ${
-                active
-                  ? 'text-[var(--primary)]'
-                  : 'text-[var(--text-muted)]'
+              className={`flex flex-col items-center gap-0.5 px-3 py-2.5 text-[10px] font-medium shrink-0 transition-all ${
+                active ? 'text-[var(--primary)]' : 'text-[var(--text-muted)]'
               }`}
             >
               <Icon className={`h-5 w-5 ${active ? 'stroke-[2.5]' : 'stroke-2'}`} />

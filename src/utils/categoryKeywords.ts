@@ -101,7 +101,6 @@ export const CATEGORY_KEYWORDS: Record<string, string> = {
   // Travel
   'hotel':      'Travel',
   'flight':     'Travel',
-  'airtel':     'Travel',
   'makemytrip': 'Travel',
   'goibibo':    'Travel',
   'trip':       'Travel',

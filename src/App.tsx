@@ -1,21 +1,22 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider, useAuth } from '@/hooks/useAuth'
 import { ProtectedRoute } from '@/components/layout/ProtectedRoute'
+import { AppLayout } from '@/components/layout/AppLayout'
 import { LoginPage } from '@/pages/LoginPage'
-import { AppPage } from '@/pages/AppPage'
+import { OverviewPage } from '@/pages/OverviewPage'
+import { TransactionsPage } from '@/features/transactions/TransactionsPage'
+import { CategoriesPage } from '@/features/transactions/CategoriesPage'
 import { useEffect } from 'react'
 import { runOnboardingSeeds } from '@/services/seed'
 
 /**
- * Inner component so it can use useAuth (which needs AuthProvider ancestor).
- * Triggers onboarding seed on first login.
+ * Inner component: runs seeds on login, mounts routes.
  */
 function AppRoutes() {
   const { user } = useAuth()
 
   useEffect(() => {
     if (user) {
-      // Run idempotent seeds — safe to call on every login
       runOnboardingSeeds(user.uid, user.displayName, user.email, user.photoURL).catch(
         err => console.error('[Spenza] Seed error:', err)
       )
@@ -25,15 +26,40 @@ function AppRoutes() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
+
+      {/* Protected app routes */}
       <Route
         path="/app"
         element={
           <ProtectedRoute>
-            <AppPage />
+            <AppLayout>
+              <OverviewPage />
+            </AppLayout>
           </ProtectedRoute>
         }
       />
-      {/* Catch-all → redirect to /app (ProtectedRoute handles unauthenticated) */}
+      <Route
+        path="/app/transactions"
+        element={
+          <ProtectedRoute>
+            <AppLayout>
+              <TransactionsPage />
+            </AppLayout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/app/categories"
+        element={
+          <ProtectedRoute>
+            <AppLayout>
+              <CategoriesPage />
+            </AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      {/* Catch-all */}
       <Route path="*" element={<Navigate to="/app" replace />} />
     </Routes>
   )

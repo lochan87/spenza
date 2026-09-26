@@ -1,6 +1,6 @@
 import { initializeApp } from 'firebase/app'
 import { getAuth } from 'firebase/auth'
-import { getFirestore, enableIndexedDbPersistence } from 'firebase/firestore'
+import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager } from 'firebase/firestore'
 import { getStorage } from 'firebase/storage'
 
 const firebaseConfig = {
@@ -33,18 +33,17 @@ for (const varName of requiredVars) {
 
 export const app = initializeApp(firebaseConfig)
 export const auth = getAuth(app)
-export const db = getFirestore(app)
-export const storage = getStorage(app)
 
-// Enable Firestore offline persistence — allows logging expenses without signal.
-// Writes are queued in IndexedDB and synced when connectivity returns.
-// FAILED_PRECONDITION = already enabled (multi-tab); UNIMPLEMENTED = browser doesn't support it.
-enableIndexedDbPersistence(db).catch(err => {
-  if (err.code === 'failed-precondition') {
-    console.info('[Spenza] Firestore offline: multiple tabs open — persistence enabled in first tab only.')
-  } else if (err.code === 'unimplemented') {
-    console.warn('[Spenza] Firestore offline: browser does not support IndexedDB persistence.')
-  } else {
-    console.error('[Spenza] Firestore offline persistence error:', err)
-  }
+/**
+ * Firestore with persistent offline cache.
+ * Uses the modern persistentLocalCache API (replaces deprecated enableIndexedDbPersistence).
+ * - Allows logging expenses offline; writes queue in IndexedDB and sync on reconnect.
+ * - persistentMultipleTabManager: safe to have multiple tabs open (vs single-tab-only).
+ */
+export const db = initializeFirestore(app, {
+  localCache: persistentLocalCache({
+    tabManager: persistentMultipleTabManager(),
+  }),
 })
+
+export const storage = getStorage(app)

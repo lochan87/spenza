@@ -3,7 +3,7 @@ import { AuthProvider, useAuth } from '@/hooks/useAuth'
 import { ProtectedRoute } from '@/components/layout/ProtectedRoute'
 import { AppLayout } from '@/components/layout/AppLayout'
 import { LoginPage } from '@/pages/LoginPage'
-import { OverviewPage } from '@/pages/OverviewPage'
+import { DashboardPage } from '@/features/dashboard/DashboardPage'
 import { TransactionsPage } from '@/features/transactions/TransactionsPage'
 import { CategoriesPage } from '@/features/transactions/CategoriesPage'
 import { useEffect } from 'react'
@@ -33,7 +33,7 @@ function AppRoutes() {
         element={
           <ProtectedRoute>
             <AppLayout>
-              <OverviewPage />
+              <DashboardPage />
             </AppLayout>
           </ProtectedRoute>
         }

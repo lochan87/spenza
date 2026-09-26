@@ -9,6 +9,7 @@ import {
 } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
 import { addTransaction, updateTransaction, getPaymentAccounts, addPaymentAccount, getPastDescriptions } from '@/services/transactions'
+import { getTrips } from '@/services/trips'
 import { getCategoryMeta, DEFAULT_CATEGORY_ORDER } from '@/utils/categoryColors'
 import { getPaymentMeta, getAccountTypeMeta } from '@/utils/paymentColors'
 import { suggestCategory } from '@/utils/categoryKeywords'
@@ -68,6 +69,7 @@ export function AddExpenseForm({
   const [newAccountName, setNewAccountName] = useState('')
   const [newAccountType, setNewAccountType] = useState<'Bank' | 'UPI' | 'Card' | 'Wallet'>('Bank')
   const [toast, setToast] = useState<string | null>(null)
+  const [trips, setTrips] = useState<Array<{ id: string; name: string; coverEmoji: string }>>([])
 
   const isEditing = !!editTransaction
 
@@ -125,6 +127,7 @@ export function AddExpenseForm({
   useEffect(() => {
     if (!user) return
     getPaymentAccounts(user.uid).then(setPaymentAccounts)
+    getTrips(user.uid).then(t => setTrips(t.filter(trip => !trip.isArchived)))
   }, [user])
 
   // Load past descriptions
@@ -626,6 +629,50 @@ export function AddExpenseForm({
             })}
           </div>
         </div>
+
+        {/* Trip selector — appears when type = 'trip' */}
+        {watchedType === 'trip' && (
+          <div className="animate-in slide-in-from-top-2 duration-200">
+            <label className="mb-1.5 block text-xs font-medium text-[var(--text-muted)]">
+              Link to Trip
+            </label>
+            {trips.length === 0 ? (
+              <p className="text-xs text-[var(--text-subtle)]">
+                No trips yet — create one from the Trips tab first.
+              </p>
+            ) : (
+              <div className="flex flex-wrap gap-2">
+                {/* None option */}
+                <button
+                  type="button"
+                  onClick={() => setValue('tripId', null)}
+                  className={`rounded-full border px-3 py-1.5 text-xs font-medium transition-all ${
+                    !watch('tripId')
+                      ? 'border-[var(--primary)] bg-[var(--primary-muted)] text-[var(--primary)]'
+                      : 'border-[var(--border)] text-[var(--text-muted)]'
+                  }`}
+                >
+                  No trip
+                </button>
+                {trips.map(trip => (
+                  <button
+                    key={trip.id}
+                    type="button"
+                    onClick={() => setValue('tripId', trip.id)}
+                    className={`flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition-all ${
+                      watch('tripId') === trip.id
+                        ? 'border-[var(--primary)] bg-[var(--primary-muted)] text-[var(--primary)]'
+                        : 'border-[var(--border)] text-[var(--text-muted)]'
+                    }`}
+                  >
+                    <span>{trip.coverEmoji}</span>
+                    {trip.name}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Optional: Notes */}
         <div>

@@ -94,25 +94,25 @@ export function AppLayout({ children }: AppLayoutProps) {
               {isDark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
             </button>
 
-            {/* Avatar + sign out */}
-            <div className="flex items-center gap-2">
-              {user?.photoURL && (
-                <img
-                  src={user.photoURL}
-                  alt={user.displayName ?? 'User'}
-                  className="h-7 w-7 rounded-full ring-2 ring-[var(--primary-muted)]"
-                />
-              )}
-              <button
-                id="sign-out-btn"
-                onClick={signOut}
-                aria-label="Sign out"
-                className="hidden sm:flex h-8 items-center gap-1 rounded-lg px-2 text-xs text-[var(--text-muted)] transition-all hover:bg-[var(--surface-2)] hover:text-[var(--text-primary)]"
-              >
-                <LogOut className="h-3.5 w-3.5" />
-                <span className="sr-only sm:not-sr-only">Sign out</span>
-              </button>
-            </div>
+            {/* Avatar */}
+            {user?.photoURL && (
+              <img
+                src={user.photoURL}
+                alt={user.displayName ?? 'User'}
+                className="h-7 w-7 rounded-full ring-2 ring-[var(--primary-muted)]"
+              />
+            )}
+
+            {/* Sign out — icon-only, matches theme toggle sizing */}
+            <button
+              id="sign-out-btn"
+              onClick={signOut}
+              title="Sign out"
+              aria-label="Sign out"
+              className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--text-muted)] transition-all hover:bg-[var(--surface-2)] hover:text-[var(--danger)]"
+            >
+              <LogOut className="h-4 w-4" />
+            </button>
           </div>
         </div>
 

@@ -5,12 +5,14 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
   Cell, ResponsiveContainer, ReferenceLine,
 } from 'recharts'
-import { RefreshCw, Loader2, Lightbulb, TrendingUp, Hash, Repeat, ZapIcon, Star } from 'lucide-react'
+import { RefreshCw, Loader2, Lightbulb, TrendingUp, Hash, Repeat, ZapIcon, Star, Download } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
 import { getCachedInsights, computeAndCacheInsights, isCacheFresh } from '@/services/insights'
+import { getCategories, getPaymentAccounts } from '@/services/transactions'
+import { exportTransactionsCSV } from '@/services/exportCsv'
 import { formatINR, formatINRCompact } from '@/utils/format'
 import { useTheme } from '@/hooks/useTheme'
-import type { InsightsSummary } from '@/types'
+import type { InsightsSummary, Category, PaymentAccount } from '@/types'
 
 const currentYear = new Date().getFullYear()
 
@@ -66,8 +68,11 @@ export function InsightsPage() {
   const [insights, setInsights] = useState<InsightsSummary | null>(null)
   const [loading, setLoading] = useState(true)
   const [computing, setComputing] = useState(false)
+  const [exporting, setExporting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [cacheAge, setCacheAge] = useState<string>('')
+  const [categories, setCategories] = useState<Category[]>([])
+  const [accounts, setAccounts] = useState<PaymentAccount[]>([])
 
   const primaryColor = isDark ? '#14B8A6' : '#0F766E'
   const gridColor    = isDark ? '#334155' : '#E2E8F0'
@@ -102,6 +107,25 @@ export function InsightsPage() {
   }
 
   useEffect(() => { loadInsights() }, [user])
+
+  useEffect(() => {
+    if (!user) return
+    Promise.all([getCategories(user.uid), getPaymentAccounts(user.uid)])
+      .then(([cats, accs]) => { setCategories(cats); setAccounts(accs) })
+      .catch(console.error)
+  }, [user])
+
+  const handleExport = async () => {
+    if (!user) return
+    setExporting(true)
+    try {
+      await exportTransactionsCSV(user.uid, categories, accounts)
+    } catch (err) {
+      console.error('[Spenza] Export error:', err)
+    } finally {
+      setExporting(false)
+    }
+  }
 
   if (loading) {
     return (
@@ -146,14 +170,24 @@ export function InsightsPage() {
           <h1 className="text-xl font-bold text-[var(--text-primary)]">Insights</h1>
           <p className="text-xs text-[var(--text-subtle)]">{cacheAge}</p>
         </div>
-        <button
-          onClick={() => loadInsights(true)}
-          disabled={computing}
-          className="flex items-center gap-1.5 rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs font-medium text-[var(--text-muted)] hover:bg-[var(--surface-2)] disabled:opacity-50"
-        >
-          {computing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-          Refresh
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={handleExport}
+            disabled={exporting}
+            className="flex items-center gap-1.5 rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs font-medium text-[var(--text-muted)] hover:bg-[var(--surface-2)] disabled:opacity-50"
+          >
+            {exporting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+            Export CSV
+          </button>
+          <button
+            onClick={() => loadInsights(true)}
+            disabled={computing}
+            className="flex items-center gap-1.5 rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs font-medium text-[var(--text-muted)] hover:bg-[var(--surface-2)] disabled:opacity-50"
+          >
+            {computing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+            Refresh
+          </button>
+        </div>
       </div>
 
       {/* Year-over-year bar chart */}

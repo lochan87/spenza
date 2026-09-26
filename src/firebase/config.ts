@@ -1,6 +1,6 @@
 import { initializeApp } from 'firebase/app'
 import { getAuth } from 'firebase/auth'
-import { getFirestore } from 'firebase/firestore'
+import { getFirestore, enableIndexedDbPersistence } from 'firebase/firestore'
 import { getStorage } from 'firebase/storage'
 
 const firebaseConfig = {
@@ -35,3 +35,16 @@ export const app = initializeApp(firebaseConfig)
 export const auth = getAuth(app)
 export const db = getFirestore(app)
 export const storage = getStorage(app)
+
+// Enable Firestore offline persistence — allows logging expenses without signal.
+// Writes are queued in IndexedDB and synced when connectivity returns.
+// FAILED_PRECONDITION = already enabled (multi-tab); UNIMPLEMENTED = browser doesn't support it.
+enableIndexedDbPersistence(db).catch(err => {
+  if (err.code === 'failed-precondition') {
+    console.info('[Spenza] Firestore offline: multiple tabs open — persistence enabled in first tab only.')
+  } else if (err.code === 'unimplemented') {
+    console.warn('[Spenza] Firestore offline: browser does not support IndexedDB persistence.')
+  } else {
+    console.error('[Spenza] Firestore offline persistence error:', err)
+  }
+})

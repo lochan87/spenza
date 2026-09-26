@@ -11,8 +11,10 @@ import { TripDetailPage } from '@/features/trips/TripDetailPage'
 import { RecurringPage } from '@/features/recurring/RecurringPage'
 import { BudgetPage } from '@/features/budgets/BudgetPage'
 import { InsightsPage } from '@/features/insights/InsightsPage'
+import { ImportPage } from '@/features/import/ImportPage'
 import { RecurringDuePrompt } from '@/features/recurring/RecurringDuePrompt'
 import { useRecurringCheck } from '@/features/recurring/useRecurringCheck'
+import { OfflineBanner } from '@/components/layout/OfflineBanner'
 import { useEffect, useState } from 'react'
 import { runOnboardingSeeds } from '@/services/seed'
 import { getCategories } from '@/services/transactions'
@@ -58,6 +60,7 @@ function AppRoutes() {
         <Route path="/app/recurring"       element={wrap(<RecurringPage />)} />
         <Route path="/app/budgets"         element={wrap(<BudgetPage />)} />
         <Route path="/app/insights"        element={wrap(<InsightsPage />)} />
+        <Route path="/app/import"          element={wrap(<ImportPage />)} />
 
         {/* Catch-all */}
         <Route path="*" element={<Navigate to="/app" replace />} />
@@ -73,6 +76,9 @@ function AppRoutes() {
           onDismissAll={dismissAll}
         />
       )}
+
+      {/* Offline connectivity banner */}
+      <OfflineBanner />
     </>
   )
 }

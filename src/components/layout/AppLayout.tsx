@@ -3,7 +3,7 @@ import { Link, useLocation } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 import { useTheme } from '@/hooks/useTheme'
 import { signOut } from '@/firebase/auth'
-import { Sun, Moon, LogOut, LayoutDashboard, Receipt, Tag, Map, RepeatIcon, Target, Lightbulb } from 'lucide-react'
+import { Sun, Moon, LogOut, LayoutDashboard, Receipt, Tag, Map, RepeatIcon, Target, Lightbulb, Upload } from 'lucide-react'
 
 // Import logo — theme-aware
 import logoMarkDark from '@/assets/logos/spenza-logo-mark-dark.svg'
@@ -22,6 +22,7 @@ const NAV_ITEMS = [
   { href: '/app/recurring', icon: RepeatIcon, label: 'Recurring', exact: false },
   { href: '/app/budgets', icon: Target, label: 'Budgets', exact: false },
   { href: '/app/insights', icon: Lightbulb, label: 'Insights', exact: false },
+  { href: '/app/import', icon: Upload, label: 'Import', exact: false },
   { href: '/app/categories', icon: Tag, label: 'Categories', exact: false },
 ]
 
@@ -41,18 +42,20 @@ export function AppLayout({ children }: AppLayoutProps) {
         style={{ backdropFilter: 'blur(12px)' }}
       >
         <div className="mx-auto flex h-14 max-w-5xl items-center justify-between px-4 sm:px-6">
-          {/* Logo */}
-          <Link to="/app" className="flex items-center gap-2.5 shrink-0">
+          {/* Logo — mark-only on mobile, full wordmark on sm+ */}
+          <Link to="/app" className="flex items-center shrink-0">
+            {/* Mobile: icon mark only */}
             <img
               src={logoMark}
-              alt="Spenza icon"
-              className="h-8 w-8 rounded-lg object-contain"
+              alt="Spenza"
+              className="h-8 w-8 rounded-lg object-contain sm:hidden"
             />
+            {/* Desktop: full logo (already contains icon + wordmark) */}
             <img
               src={logoFull}
               alt="Spenza"
-              className="hidden h-7 sm:block object-contain"
-              style={{ maxWidth: '110px' }}
+              className="hidden sm:block object-contain"
+              style={{ height: '36px', maxWidth: '130px' }}
             />
           </Link>
 

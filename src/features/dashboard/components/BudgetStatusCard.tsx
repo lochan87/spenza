@@ -1,12 +1,11 @@
 import { useState, useEffect } from 'react'
-import { format } from 'date-fns'
 import { ChevronRight, Target } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 import { getCurrentBudget } from '@/services/budgets'
 import { formatINR, formatINRCompact } from '@/utils/format'
 import { getCategoryMeta } from '@/utils/categoryColors'
-import { getBudgetColor, getBudgetBg } from '@/utils/tripBuckets'
+import { getBudgetColor } from '@/utils/tripBuckets'
 import type { DashboardData } from '@/features/dashboard/dashboardData'
 import type { Budget, Category } from '@/types'
 

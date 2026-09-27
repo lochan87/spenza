@@ -1,10 +1,10 @@
 import {
-  collection, doc, setDoc, getDoc, getDocs, deleteDoc,
-  query, orderBy, where, serverTimestamp, Timestamp, updateDoc,
+  collection, doc, setDoc, getDocs, deleteDoc,
+  query, orderBy, where, serverTimestamp, Timestamp,
 } from 'firebase/firestore'
-import { addDays, addMonths, addWeeks, addYears, format } from 'date-fns'
+import { addDays, addMonths, addWeeks, addYears } from 'date-fns'
 import { db } from '@/firebase/config'
-import type { RecurringItem, RecurringFrequency, PaymentMode } from '@/types'
+import type { RecurringItem, RecurringFrequency } from '@/types'
 
 const recColl = (uid: string) => collection(db, 'users', uid, 'recurring')
 const recRef  = (uid: string, id: string) => doc(db, 'users', uid, 'recurring', id)
@@ -71,7 +71,7 @@ export function computeNextDueDate(
   current: Date,
   frequency: RecurringFrequency,
   dayOfMonth: number | null,
-  dayOfWeek: number | null
+  _dayOfWeek: number | null
 ): Date {
   switch (frequency) {
     case 'weekly': {

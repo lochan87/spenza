@@ -2,7 +2,6 @@ import { useState } from 'react'
 import { format } from 'date-fns'
 import { Timestamp } from 'firebase/firestore'
 import { Bell, Check, X, ChevronDown, ChevronUp, Loader2 } from 'lucide-react'
-import { formatINR } from '@/utils/format'
 import { getCategoryMeta } from '@/utils/categoryColors'
 import type { RecurringItem, Category } from '@/types'
 

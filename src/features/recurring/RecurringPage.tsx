@@ -8,12 +8,11 @@ import { z } from 'zod'
 import { useAuth } from '@/hooks/useAuth'
 import {
   getRecurringItems, addRecurringItem, updateRecurringItem,
-  deleteRecurringItem, formatFrequency, computeNextDueDate,
+  deleteRecurringItem, formatFrequency,
 } from '@/services/recurring'
 import { getCategories, getPaymentAccounts } from '@/services/transactions'
 import { formatINR } from '@/utils/format'
 import { getCategoryMeta } from '@/utils/categoryColors'
-import { getPaymentMeta } from '@/utils/paymentColors'
 import { Drawer } from '@/components/layout/Drawer'
 import { SkeletonCard } from '@/features/dashboard/components/SkeletonCard'
 import type { RecurringItem, Category, PaymentAccount, PaymentMode, RecurringFrequency } from '@/types'

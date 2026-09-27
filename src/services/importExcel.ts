@@ -9,7 +9,7 @@ import * as XLSX from 'xlsx'
 import { writeBatch, doc, collection, serverTimestamp, Timestamp } from 'firebase/firestore'
 import { db } from '@/firebase/config'
 import { suggestCategory } from '@/utils/categoryKeywords'
-import type { Transaction, Category } from '@/types'
+
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 

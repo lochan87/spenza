@@ -1,6 +1,6 @@
 import {
   collection, doc, setDoc, getDoc, getDocs,
-  query, orderBy, serverTimestamp, Timestamp,
+  query, orderBy, Timestamp,
 } from 'firebase/firestore'
 import { getYear, format } from 'date-fns'
 import { db } from '@/firebase/config'

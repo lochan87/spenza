@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { format } from 'date-fns'
-import { Plus, Map, Archive, Pencil } from 'lucide-react'
+import { Plus, Map as MapIcon, Archive, Pencil } from 'lucide-react'
 import { Timestamp } from 'firebase/firestore'
 import { useAuth } from '@/hooks/useAuth'
 import { getTrips, getAllTripTransactions } from '@/services/trips'
@@ -96,7 +96,7 @@ export function TripsPage() {
         </div>
       ) : visible.length === 0 ? (
         <div className="flex h-52 flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-[var(--border)] bg-[var(--surface)]">
-          <Map className="h-10 w-10 text-[var(--text-subtle)]" />
+          <MapIcon className="h-10 w-10 text-[var(--text-subtle)]" />
           <p className="text-sm text-[var(--text-muted)]">No trips yet — plan your first adventure!</p>
           <button
             onClick={() => { setEditTrip(null); setDrawerOpen(true) }}

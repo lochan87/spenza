@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { format, addDays } from 'date-fns'
+import { format } from 'date-fns'
 import { Timestamp } from 'firebase/firestore'
 import { RepeatIcon, ChevronRight } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'

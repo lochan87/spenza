@@ -1,9 +1,8 @@
 import { useState, useEffect } from 'react'
 import { format } from 'date-fns'
-import { Timestamp } from 'firebase/firestore'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
-  Cell, ResponsiveContainer, ReferenceLine,
+  Cell, ResponsiveContainer,
 } from 'recharts'
 import { RefreshCw, Loader2, Lightbulb, TrendingUp, Hash, Repeat, ZapIcon, Star, Download } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'

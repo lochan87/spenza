@@ -1,23 +1,15 @@
 import { useState, useEffect, useCallback } from 'react'
 import { format } from 'date-fns'
-import { Timestamp } from 'firebase/firestore'
-import { Plus, Save, Copy, Target, Loader2 } from 'lucide-react'
+import { Save, Copy, Target, Loader2 } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
 import { getCurrentBudget, getLastMonthBudget, saveBudget } from '@/services/budgets'
 import { getCategories } from '@/services/transactions'
 import { formatINR, formatINRCompact } from '@/utils/format'
 import { getCategoryMeta } from '@/utils/categoryColors'
-import { getBudgetColor, getBudgetBg } from '@/utils/tripBuckets'
+
 import { SkeletonCard } from '@/features/dashboard/components/SkeletonCard'
 import type { Budget, Category } from '@/types'
 
-// ── Budget color label helper ─────────────────────────────────────────────────
-function budgetStatus(pct: number): string {
-  if (pct >= 100) return 'Over budget'
-  if (pct >= 90) return 'Almost at limit'
-  if (pct >= 70) return 'Watch out'
-  return 'On track'
-}
 
 export function BudgetPage() {
   const { user } = useAuth()

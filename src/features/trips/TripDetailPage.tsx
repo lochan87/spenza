@@ -5,7 +5,7 @@ import { Timestamp } from 'firebase/firestore'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer
 } from 'recharts'
-import { ArrowLeft, Pencil, MapPin, Calendar, TrendingDown } from 'lucide-react'
+import { ArrowLeft, Pencil, Calendar } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
 import { getTrip, getTripTransactions } from '@/services/trips'
 import { getCategories, getPaymentAccounts } from '@/services/transactions'
@@ -13,7 +13,7 @@ import { formatINR, formatINRCompact } from '@/utils/format'
 import { getCategoryMeta } from '@/utils/categoryColors'
 import { getPaymentMeta, getAccountTypeMeta } from '@/utils/paymentColors'
 import {
-  TRIP_BUCKET_META, mapCategoryToTripBucket, getBudgetColor, getBudgetBg, TRIP_ACCENT_COLOR,
+  TRIP_BUCKET_META, mapCategoryToTripBucket, getBudgetColor,
   type TripBucket,
 } from '@/utils/tripBuckets'
 import { Drawer } from '@/components/layout/Drawer'
@@ -252,7 +252,7 @@ export function TripDetailPage() {
                 tick={{ fontSize: 10, fill: 'var(--text-muted)' }}
                 axisLine={false} tickLine={false} width={48} />
               <Tooltip
-                formatter={(v: number) => [formatINR(v), 'Spent']}
+                formatter={(v) => [formatINR(Number(v ?? 0)), 'Spent']}
                 contentStyle={{
                   backgroundColor: 'var(--surface)',
                   border: '1px solid var(--border)',

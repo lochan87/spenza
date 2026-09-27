@@ -1,6 +1,6 @@
 import {
   collection, doc, setDoc, getDoc, getDocs, deleteDoc,
-  query, orderBy, where, serverTimestamp, Timestamp,
+  query, orderBy, where, serverTimestamp,
 } from 'firebase/firestore'
 import { db } from '@/firebase/config'
 import type { Trip } from '@/types'
@@ -46,7 +46,6 @@ export async function deleteTrip(uid: string, id: string): Promise<void> {
 
 /** Get all transactions that belong to this trip */
 export async function getTripTransactions(uid: string, tripId: string) {
-  const { getDocs: gd, query: q, collection: c, where: w } = await import('firebase/firestore')
   const snap = await getDocs(
     query(
       collection(db, 'users', uid, 'transactions'),

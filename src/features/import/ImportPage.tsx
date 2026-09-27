@@ -1,20 +1,19 @@
 import { useState, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
-  Upload, FileSpreadsheet, CheckCircle2, AlertTriangle, ChevronRight,
-  ChevronDown, ChevronUp, Loader2, ArrowRight, Home, SkipForward, Check, X,
+  FileSpreadsheet, CheckCircle2, AlertTriangle, ChevronRight,
+  ChevronDown, ChevronUp, Loader2, ArrowRight, Home, Check,
   Info,
 } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
 import { getCategories } from '@/services/transactions'
-import { getTrips, addTrip } from '@/services/trips'
+import { getTrips } from '@/services/trips'
 import {
   parseWorkbook, parseSheet, detectDuplicates, batchImportTransactions,
   type DetectedSheet, type SheetParseResult, type ParsedRow,
   type DuplicateCandidate, type SheetKind, type ImportProgress,
 } from '@/services/importExcel'
 import { formatINR } from '@/utils/format'
-import { Timestamp } from 'firebase/firestore'
 import type { Category, Trip } from '@/types'
 
 // ─── Step enum ────────────────────────────────────────────────────────────────
@@ -324,7 +323,6 @@ export function ImportPage() {
                   {/* Column remapping */}
                   <div className="my-3 grid grid-cols-3 gap-2">
                     {(['description', 'amount', 'date'] as const).map(field => {
-                      const headers = result.previewRows[0] ? Object.keys(result.previewRows[0]) : []
                       return (
                         <div key={field}>
                           <label className="mb-1 block text-[10px] font-medium text-[var(--text-muted)] uppercase tracking-wide">{field}</label>
@@ -615,7 +613,7 @@ function CategoryReviewStep({ parseResults, categories, catOverrides, onOverride
         </p>
       </div>
 
-      {[...grouped.entries()].sort((a, b) => a[0] === '⚠ No match — review needed' ? 1 : -1).map(([catName, rows]) => (
+      {[...grouped.entries()].sort((a, _b) => a[0] === '⚠ No match — review needed' ? 1 : -1).map(([catName, rows]) => (
         <div key={catName} className="rounded-2xl border border-[var(--border)] bg-[var(--surface)]">
           <div className={`flex items-center justify-between rounded-t-2xl px-4 py-3 ${
             catName.startsWith('⚠') ? 'bg-[var(--warning-muted)]' : 'bg-[var(--surface-2)]'

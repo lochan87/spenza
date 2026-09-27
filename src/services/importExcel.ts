@@ -6,7 +6,7 @@
  */
 
 import * as XLSX from 'xlsx'
-import { writeBatch, doc, collection, serverTimestamp, Timestamp } from 'firebase/firestore'
+import { writeBatch, doc, collection, getDocs, query, where, serverTimestamp, Timestamp } from 'firebase/firestore'
 import { db } from '@/firebase/config'
 import { suggestCategory } from '@/utils/categoryKeywords'
 
@@ -389,4 +389,30 @@ export async function batchImportTransactions(
   }
 
   return { imported, skipped }
+}
+
+// ─── Clear imports ────────────────────────────────────────────────────────────
+
+/**
+ * Delete all transactions that were created via Excel import (isImported === true).
+ * Runs in batches of 500 to stay within Firestore write limits.
+ * Returns the number of transactions deleted.
+ */
+export async function clearImportedTransactions(uid: string): Promise<number> {
+  const txnColl = collection(db, 'users', uid, 'transactions')
+  const snap = await getDocs(query(txnColl, where('isImported', '==', true)))
+  if (snap.empty) return 0
+
+  let deleted = 0
+  const chunks: typeof snap.docs[] = []
+  for (let i = 0; i < snap.docs.length; i += 500) {
+    chunks.push(snap.docs.slice(i, i + 500))
+  }
+  for (const chunk of chunks) {
+    const batch = writeBatch(db)
+    chunk.forEach(d => batch.delete(d.ref))
+    await batch.commit()
+    deleted += chunk.length
+  }
+  return deleted
 }

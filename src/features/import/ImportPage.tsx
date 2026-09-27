@@ -9,7 +9,7 @@ import { useAuth } from '@/hooks/useAuth'
 import { getCategories } from '@/services/transactions'
 import { getTrips } from '@/services/trips'
 import {
-  parseWorkbook, parseSheet, detectDuplicates, batchImportTransactions,
+  parseWorkbook, parseSheet, detectDuplicates, batchImportTransactions, clearImportedTransactions,
   type DetectedSheet, type SheetParseResult, type ParsedRow,
   type DuplicateCandidate, type SheetKind, type ImportProgress,
 } from '@/services/importExcel'
@@ -45,6 +45,7 @@ export function ImportPage() {
   const [error, setError] = useState<string | null>(null)
   const [expandedSheet, setExpandedSheet] = useState<string | null>(null)
   const [parsing, setParsing] = useState(false)
+  const [clearing, setClearing] = useState(false)
 
   // ── Step 1: File upload ──────────────────────────────────────────────────────
 
@@ -219,22 +220,55 @@ export function ImportPage() {
 
       {/* ── STEP: UPLOAD ── */}
       {step === 'upload' && (
-        <div
-          onDrop={onDrop}
-          onDragOver={e => e.preventDefault()}
-          className="flex flex-col items-center justify-center gap-4 rounded-2xl border-2 border-dashed border-[var(--border)] bg-[var(--surface)] p-12 text-center cursor-pointer hover:border-[var(--primary)] transition-colors"
-          onClick={() => fileInputRef.current?.click()}
-        >
-          <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-[var(--primary-muted)]">
-            <FileSpreadsheet className="h-8 w-8 text-[var(--primary)]" />
+        <div className="flex flex-col gap-4">
+          <div
+            onDrop={onDrop}
+            onDragOver={e => e.preventDefault()}
+            className="flex flex-col items-center justify-center gap-4 rounded-2xl border-2 border-dashed border-[var(--border)] bg-[var(--surface)] p-12 text-center cursor-pointer hover:border-[var(--primary)] transition-colors"
+            onClick={() => fileInputRef.current?.click()}
+          >
+            <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-[var(--primary-muted)]">
+              <FileSpreadsheet className="h-8 w-8 text-[var(--primary)]" />
+            </div>
+            <div>
+              <p className="text-base font-semibold text-[var(--text-primary)]">Drop your .xlsx file here</p>
+              <p className="text-sm text-[var(--text-muted)]">or click to browse</p>
+            </div>
+            <input ref={fileInputRef} type="file" accept=".xlsx" className="hidden"
+              onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f) }} />
+            {error && <p className="text-sm text-[var(--danger)]">{error}</p>}
           </div>
-          <div>
-            <p className="text-base font-semibold text-[var(--text-primary)]">Drop your .xlsx file here</p>
-            <p className="text-sm text-[var(--text-muted)]">or click to browse</p>
+
+          {/* Clear imported transactions */}
+          <div className="rounded-2xl border border-[var(--danger)] border-opacity-30 bg-[var(--surface)] p-4">
+            <p className="mb-1 text-sm font-semibold text-[var(--text-primary)]">Clear previous imports</p>
+            <p className="mb-3 text-xs text-[var(--text-muted)]">Deletes all transactions that were created via Excel import. Your manually-added transactions are not affected.</p>
+            <button
+              id="clear-imports-btn"
+              disabled={clearing}
+              onClick={async () => {
+                if (!user) return
+                if (!window.confirm('Delete ALL imported transactions? This cannot be undone.')) return
+                setClearing(true)
+                setError(null)
+                try {
+                  const n = await clearImportedTransactions(user.uid)
+                  alert(`Deleted ${n} imported transaction${n !== 1 ? 's' : ''}.`)
+                } catch (err) {
+                  setError('Failed to clear imports. Check console for details.')
+                  console.error('[Spenza Import] clear error:', err)
+                } finally {
+                  setClearing(false)
+                }
+              }}
+              className="flex items-center gap-2 rounded-xl border border-[var(--danger)] px-4 py-2 text-sm font-medium text-[var(--danger)] transition-colors hover:bg-[var(--danger)] hover:text-white disabled:opacity-50"
+            >
+              {clearing
+                ? <Loader2 className="h-4 w-4 animate-spin" />
+                : <span>🗑</span>}
+              {clearing ? 'Deleting…' : 'Clear all imported transactions'}
+            </button>
           </div>
-          <input ref={fileInputRef} type="file" accept=".xlsx" className="hidden"
-            onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f) }} />
-          {error && <p className="text-sm text-[var(--danger)]">{error}</p>}
         </div>
       )}
 

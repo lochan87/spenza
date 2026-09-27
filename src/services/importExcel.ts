@@ -73,9 +73,10 @@ export interface DuplicateCandidate {
 export function parseExcelDate(val: unknown): string | null {
   if (val === null || val === undefined || val === '') return null
 
-  // Excel numeric serial date
-  if (typeof val === 'number') {
-    const date = XLSX.SSF.parse_date_code(val)
+  // Excel numeric serial date (number OR stringified number like "43831")
+  const numVal = typeof val === 'number' ? val : (typeof val === 'string' && /^\d{4,6}$/.test(val.trim()) ? Number(val.trim()) : NaN)
+  if (!isNaN(numVal) && numVal > 0) {
+    const date = XLSX.SSF.parse_date_code(numVal)
     if (!date) return null
     const y = date.y
     const m = String(date.m).padStart(2, '0')
@@ -351,7 +352,15 @@ export async function batchImportTransactions(
         ?? otherCategoryId
 
       const ref = doc(txnColl)
-      const date = Timestamp.fromDate(new Date(row.dateStr + 'T12:00:00'))
+      const parsedDate = new Date(row.dateStr + 'T12:00:00')
+      if (isNaN(parsedDate.getTime())) {
+        // Should not happen if parseExcelDate is correct, but guard against
+        // any edge-case date strings that JS Date refuses to parse
+        console.warn('[Spenza Import] Skipping row with unparseable date:', row.dateStr, row.description)
+        skipped++
+        continue
+      }
+      const date = Timestamp.fromDate(parsedDate)
 
       batch.set(ref, {
         id: ref.id,

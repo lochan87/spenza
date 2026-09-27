@@ -54,7 +54,7 @@ export function ImportPage() {
     setFileName(file.name)
     try {
       const buffer = await file.arrayBuffer()
-      const { sheets, workbook } = parseWorkbook(buffer)
+      const { sheets, workbook } = parseWorkbook(buffer, file.name)
       setWorkbook(workbook)
       setDetectedSheets(sheets)
       setStep('detect')
@@ -66,7 +66,7 @@ export function ImportPage() {
         setExistingTrips(trips.filter(t => !t.isArchived))
       }
     } catch (err) {
-      setError('Failed to parse file. Make sure it is a valid .xlsx file.')
+      setError('Failed to parse file. Make sure it is a valid .xlsx or .csv file.')
       console.error('[Spenza Import]', err)
     }
   }, [user])
@@ -74,8 +74,8 @@ export function ImportPage() {
   const onDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault()
     const file = e.dataTransfer.files[0]
-    if (file && file.name.endsWith('.xlsx')) handleFile(file)
-    else setError('Please upload a .xlsx file.')
+    if (file && (file.name.endsWith('.xlsx') || file.name.endsWith('.csv'))) handleFile(file)
+    else setError('Please upload a .xlsx or .csv file.')
   }, [handleFile])
 
   // ── Step 2: Parse selected sheets ────────────────────────────────────────────
@@ -231,10 +231,10 @@ export function ImportPage() {
               <FileSpreadsheet className="h-8 w-8 text-[var(--primary)]" />
             </div>
             <div>
-              <p className="text-base font-semibold text-[var(--text-primary)]">Drop your .xlsx file here</p>
+              <p className="text-base font-semibold text-[var(--text-primary)]">Drop your .xlsx or .csv file here</p>
               <p className="text-sm text-[var(--text-muted)]">or click to browse</p>
             </div>
-            <input ref={fileInputRef} type="file" accept=".xlsx" className="hidden"
+            <input ref={fileInputRef} type="file" accept=".xlsx,.csv" className="hidden"
               onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f) }} />
             {error && <p className="text-sm text-[var(--danger)]">{error}</p>}
           </div>

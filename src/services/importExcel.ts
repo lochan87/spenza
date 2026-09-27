@@ -73,15 +73,17 @@ export interface DuplicateCandidate {
 export function parseExcelDate(val: unknown): string | null {
   if (val === null || val === undefined || val === '') return null
 
-  // Excel numeric serial date (number OR stringified number like "43831")
-  const numVal = typeof val === 'number' ? val : (typeof val === 'string' && /^\d{4,6}$/.test(val.trim()) ? Number(val.trim()) : NaN)
-  if (!isNaN(numVal) && numVal > 0) {
-    const date = XLSX.SSF.parse_date_code(numVal)
+  // ── Diagnostic: remove after confirming correct dates ──────────────────────
+  if (typeof val === 'string' || typeof val === 'number') {
+    console.debug('[Spenza Date Debug] raw date cell →', typeof val, JSON.stringify(val))
+  }
+  // ──────────────────────────────────────────────────────────────────────────
+
+  // Excel numeric serial date (e.g. from an unformatted number cell)
+  if (typeof val === 'number' && val > 0) {
+    const date = XLSX.SSF.parse_date_code(val)
     if (!date) return null
-    const y = date.y
-    const m = String(date.m).padStart(2, '0')
-    const d = String(date.d).padStart(2, '0')
-    return `${y}-${m}-${d}`
+    return `${date.y}-${String(date.m).padStart(2, '0')}-${String(date.d).padStart(2, '0')}`
   }
 
   if (typeof val === 'string') {
@@ -178,11 +180,28 @@ function detectColumns(
 
 // ─── Main parse function ──────────────────────────────────────────────────────
 
-export function parseWorkbook(buffer: ArrayBuffer): {
+export function parseWorkbook(buffer: ArrayBuffer, fileName?: string): {
   sheets: DetectedSheet[]
   workbook: XLSX.WorkBook
 } {
-  const workbook = XLSX.read(buffer, { type: 'array', cellDates: false })
+  const isCsv = fileName?.toLowerCase().endsWith('.csv') ?? false
+  const workbook = XLSX.read(buffer, {
+    type: 'array',
+    cellDates: false,
+    // For CSV: treat as raw text so dates arrive as display strings (DD/MM/YY, etc.)
+    raw: isCsv ? false : true,
+  })
+
+  // For CSV files, XLSX names the single sheet "Sheet1". Rename it to the
+  // file's basename so classifySheet can use the filename for month/trip detection.
+  if (isCsv && fileName && workbook.SheetNames.length === 1 && workbook.SheetNames[0] === 'Sheet1') {
+    const baseName = fileName.replace(/\.csv$/i, '')
+    const ws = workbook.Sheets['Sheet1']
+    workbook.SheetNames[0] = baseName
+    workbook.Sheets[baseName] = ws
+    delete workbook.Sheets['Sheet1']
+  }
+
   const sheets: DetectedSheet[] = workbook.SheetNames.map(name => {
     const ws = workbook.Sheets[name]
     const range = XLSX.utils.decode_range(ws['!ref'] ?? 'A1')
@@ -206,7 +225,7 @@ export function parseSheet(
   const ws = workbook.Sheets[sheetName]
   const rawRows = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, {
     defval: '',
-    raw: true,
+    raw: false,   // return formatted cell text (what the user sees), not raw serials
   })
 
   const warnings: string[] = []

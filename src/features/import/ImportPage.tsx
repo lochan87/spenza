@@ -12,7 +12,7 @@ import { getTrips, addTrip } from '@/services/trips'
 import {
   parseWorkbook, parseSheet, detectDuplicates, batchImportTransactions,
   getDateIssue, todayISO, isValidISODate, inferTripNameFromSheet, inferTripDateRange,
-  resolveTripRowDates,
+  resolveTripRowDates, deduplicateTripSummaryTransactions,
   type DetectedSheet, type SheetParseResult, type ParsedRow,
   type DuplicateCandidate, type SheetKind, type ImportProgress,
 } from '@/services/importExcel'
@@ -47,7 +47,7 @@ export function ImportPage() {
   >({})
   const [catOverrides, setCatOverrides] = useState<Record<string, string>>({}) // description → categoryId
   const [duplicates, setDuplicates] = useState<DuplicateCandidate[]>([])
-  const [dupResolutions, setDupResolutions] = useState<Record<number, 'monthly' | 'trip' | 'both'>>({})
+  const [dupResolutions, setDupResolutions] = useState<Record<number, 'monthly' | 'trip'>>({})
   const [progress, setProgress] = useState<ImportProgress | null>(null)
   const [result, setResult] = useState<{ imported: number; skipped: number; tripsCreated: number } | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -67,7 +67,6 @@ export function ImportPage() {
   // Trip sheet rows use trip-level date range + hybrid Day N mapping and never block import
   const flaggedRows = allParsedRows.filter(r => !r.isTripRow && r.dateIssue)
   const unresolvedRows = flaggedRows.filter(r => !dateDecisions[r.rowId])
-  const skippedRowCount = allParsedRows.filter(r => dateDecisions[r.rowId] === 'skip').length
 
   /**
    * Write a corrected date into the underlying parsed rows (not just the preview), so every
@@ -205,12 +204,28 @@ export function ImportPage() {
     const monthlyRows    = monthlyResults.flatMap(r => r.rows)
     const dups = detectDuplicates(monthlyRows, tripResults)
     setDuplicates(dups)
+    // Default every trip summary match to 'trip' (use detailed trip rows, skip the single-line monthly summary)
+    const defaultResolutions: Record<number, 'monthly' | 'trip'> = {}
+    dups.forEach((_, idx) => { defaultResolutions[idx] = 'trip' })
+    setDupResolutions(defaultResolutions)
     setStep('duplicates')
   }
 
   // ── Step 5: Confirm import ───────────────────────────────────────────────────
 
   const handleConfirm = () => setStep('confirm')
+
+  // Compute excluded row IDs and sheets from duplicate resolutions so counts and import match
+  const excludedMonthlyRowIds = new Set<string>()
+  const excludedTripSheets = new Set<string>()
+  for (const [i, dup] of duplicates.entries()) {
+    const res = dupResolutions[i] ?? 'trip'
+    if (res === 'trip') {
+      excludedMonthlyRowIds.add(dup.monthlyRow.rowId)
+    } else if (res === 'monthly') {
+      excludedTripSheets.add(dup.tripRows[0]?.sheetName ?? '')
+    }
+  }
 
   // ── Step 6: Run import ───────────────────────────────────────────────────────
 
@@ -231,22 +246,6 @@ export function ImportPage() {
       // Build final rows (apply resolutions, trip ids, cat overrides)
       const allRows: ParsedRow[] = []
 
-      // Track rows excluded by duplicate resolution
-      const excludedMonthlyDescs = new Set<string>()
-      const excludedTripSheets   = new Set<string>()
-
-      for (const [i, dup] of duplicates.entries()) {
-        const res = dupResolutions[i] ?? 'trip' // default: prefer detailed trip rows
-        if (res === 'trip') {
-          // Exclude the monthly summary row
-          excludedMonthlyDescs.add(`${dup.monthlyRow.sheetName}::${dup.monthlyRow.description}::${dup.monthlyRow.dateStr}`)
-        } else if (res === 'monthly') {
-          // Exclude the trip sheet rows
-          excludedTripSheets.add(dup.tripRows[0]?.sheetName ?? '')
-        }
-        // 'both': include everything
-      }
-
       const resolvedTripIds: Record<string, string | null> = { ...tripIdMap }
       let tripsCreated = 0
 
@@ -255,8 +254,7 @@ export function ImportPage() {
 
         const activeSheetRows = result.rows.filter(row => {
           if (dateDecisions[row.rowId] === 'skip') return false
-          const key = `${row.sheetName}::${row.description}::${row.dateStr}`
-          if (excludedMonthlyDescs.has(key)) return false
+          if (excludedMonthlyRowIds.has(row.rowId)) return false
           return true
         })
 
@@ -322,6 +320,9 @@ export function ImportPage() {
         user.uid, allRows, catNameToId, otherCat,
         (p) => setProgress(p)
       )
+      // Also clean up any single-line monthly trip summary row in Firestore that was
+      // imported in a separate session before its detailed Trip sheet was imported.
+      await deduplicateTripSummaryTransactions(user.uid)
       if (!res.cacheInvalidated) {
         setError('Transactions imported, but failed to refresh the Insights cache automatically.')
       }
@@ -348,7 +349,13 @@ export function ImportPage() {
   ]
   const stepIdx = STEPS.findIndex(s => s.key === step)
 
-  const totalRows = parseResults.reduce((s, r) => s + r.rows.length, 0) - skippedRowCount
+  const totalRows = parseResults.reduce((s, r) => {
+    if (excludedTripSheets.has(r.sheet.name)) return s
+    const count = r.rows.filter(
+      row => dateDecisions[row.rowId] !== 'skip' && !excludedMonthlyRowIds.has(row.rowId)
+    ).length
+    return s + count
+  }, 0)
 
   return (
     <div className="flex flex-col gap-5 pb-20 md:pb-6">
@@ -692,48 +699,58 @@ export function ImportPage() {
       {step === 'duplicates' && (
         <div className="flex flex-col gap-4">
           <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5">
-            <h3 className="text-sm font-semibold text-[var(--text-primary)]">Duplicate Check</h3>
+            <h3 className="text-sm font-semibold text-[var(--text-primary)]">Trip Split-Up Detection</h3>
             <p className="mt-1 text-xs text-[var(--text-muted)]">
               {duplicates.length === 0
-                ? '✅ No likely duplicates found between monthly and trip sheets.'
-                : `⚠ ${duplicates.length} potential duplicate(s) detected. For each, choose which version to keep.`}
+                ? '✅ No overlapping trip summary rows found between monthly and trip sheets.'
+                : `✈️ ${duplicates.length} monthly summary line(s) matched a detailed Trip sheet. A Trip sheet is the detailed breakdown of that single line — not a separate expenditure — so the single monthly line is skipped by default to prevent double-counting.`}
             </p>
           </div>
 
-          {duplicates.map((dup, i) => (
-            <div key={i} className="rounded-2xl border border-[var(--warning-muted)] bg-[var(--surface)] p-5">
-              <p className="mb-3 text-xs font-medium text-[var(--warning)]">⚠ {dup.reason}</p>
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <div className="rounded-xl bg-[var(--surface-2)] p-3">
-                  <p className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-[var(--text-subtle)]">Monthly Sheet Row</p>
-                  <p className="text-sm font-medium text-[var(--text-primary)]">{dup.monthlyRow.description}</p>
-                  <p className="text-xs text-[var(--text-muted)]">{formatINR(dup.monthlyRow.amountPaise)} · {dup.monthlyRow.dateStr}</p>
+          {duplicates.map((dup, i) => {
+            const activeChoice = dupResolutions[i] ?? 'trip'
+            return (
+              <div key={i} className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5">
+                <p className="mb-3 text-xs font-medium text-[var(--primary)]">✨ {dup.reason}</p>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <div className={`rounded-xl border p-3 transition-all ${activeChoice === 'monthly' ? 'border-[var(--primary)] bg-[var(--primary-muted)]/30' : 'border-transparent bg-[var(--surface-2)] opacity-60'}`}>
+                    <p className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-[var(--text-subtle)]">
+                      Single Summary Line ({dup.monthlyRow.sheetName}) {activeChoice === 'trip' ? '· Skipped' : '· Kept'}
+                    </p>
+                    <p className="text-sm font-medium text-[var(--text-primary)]">{dup.monthlyRow.description}</p>
+                    <p className="text-xs text-[var(--text-muted)]">{formatINR(dup.monthlyRow.amountPaise)} · {dup.monthlyRow.dateStr}</p>
+                  </div>
+                  <div className={`rounded-xl border p-3 transition-all ${activeChoice === 'trip' ? 'border-[var(--primary)] bg-[var(--primary-muted)]/30' : 'border-transparent bg-[var(--surface-2)] opacity-60'}`}>
+                    <p className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-[var(--text-subtle)]">
+                      Detailed Split-Up ({dup.tripRows.length} rows) {activeChoice === 'trip' ? '· Kept' : '· Skipped'}
+                    </p>
+                    <p className="text-sm font-medium text-[var(--text-primary)]">{dup.tripRows[0]?.sheetName}</p>
+                    <p className="text-xs text-[var(--text-muted)]">{formatINR(dup.tripRows.reduce((s, r) => s + r.amountPaise, 0))} total</p>
+                  </div>
                 </div>
-                <div className="rounded-xl bg-[var(--surface-2)] p-3">
-                  <p className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-[var(--text-subtle)]">Trip Sheet ({dup.tripRows.length} rows)</p>
-                  <p className="text-sm font-medium text-[var(--text-primary)]">{dup.tripRows[0]?.sheetName}</p>
-                  <p className="text-xs text-[var(--text-muted)]">{formatINR(dup.tripRows.reduce((s, r) => s + r.amountPaise, 0))} total</p>
+                <div className="mt-3 flex gap-2">
+                  {([
+                    ['trip', '✈️ Use detailed trip sheet (skip single summary line)', 'primary'],
+                    ['monthly', '📅 Keep single summary line only (skip trip sheet)', 'border'],
+                  ] as const).map(([val, label, variant]) => (
+                    <button
+                      key={val}
+                      onClick={() => setDupResolutions(p => ({ ...p, [i]: val }))}
+                      className={`flex-1 rounded-xl border px-3 py-2 text-xs font-medium transition-all ${
+                        activeChoice === val
+                          ? variant === 'primary'
+                            ? 'border-[var(--primary)] bg-[var(--primary-muted)] text-[var(--primary)]'
+                            : 'border-[var(--border-strong)] bg-[var(--surface-2)] text-[var(--text-primary)]'
+                          : 'border-[var(--border)] text-[var(--text-muted)]'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
                 </div>
               </div>
-              <div className="mt-3 flex gap-2">
-                {([['trip', '✈️ Keep trip detail rows', 'primary'], ['monthly', '📅 Keep monthly summary only', 'border'], ['both', '⚠ Keep both', 'warning']] as const).map(([val, label, variant]) => (
-                  <button
-                    key={val}
-                    onClick={() => setDupResolutions(p => ({ ...p, [i]: val }))}
-                    className={`flex-1 rounded-xl border py-2 text-xs font-medium transition-all ${
-                      dupResolutions[i] === val
-                        ? variant === 'primary' ? 'border-[var(--primary)] bg-[var(--primary-muted)] text-[var(--primary)]'
-                        : variant === 'warning' ? 'border-[var(--warning)] bg-[var(--warning-muted)] text-[var(--warning)]'
-                        : 'border-[var(--border-strong)] bg-[var(--surface-2)] text-[var(--text-primary)]'
-                        : 'border-[var(--border)] text-[var(--text-muted)]'
-                    }`}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-            </div>
-          ))}
+            )
+          })}
 
           <button onClick={handleConfirm}
             className="flex items-center justify-center gap-2 rounded-xl bg-[var(--primary)] py-3.5 text-sm font-semibold text-white">
@@ -763,7 +780,11 @@ export function ImportPage() {
           <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5">
             <h3 className="mb-3 text-sm font-semibold text-[var(--text-primary)]">Import Summary</h3>
             {parseResults.map(r => {
-              const activeCount = r.rows.filter(row => dateDecisions[row.rowId] !== 'skip').length
+              const isTripSheetExcluded = excludedTripSheets.has(r.sheet.name)
+              const excludedSummaryCount = r.rows.filter(row => excludedMonthlyRowIds.has(row.rowId)).length
+              const activeCount = isTripSheetExcluded
+                ? 0
+                : r.rows.filter(row => dateDecisions[row.rowId] !== 'skip' && !excludedMonthlyRowIds.has(row.rowId)).length
               const linkedTrip = r.sheet.kind === 'trip' && tripIdMap[r.sheet.name]
                 ? existingTrips.find(t => t.id === tripIdMap[r.sheet.name])
                 : null
@@ -775,7 +796,12 @@ export function ImportPage() {
                       <span>{r.sheet.kind === 'trip' ? '✈️' : '📅'}</span>
                       <span className="text-sm text-[var(--text-primary)]">{r.sheet.name}</span>
                     </div>
-                    {linkedTrip && (
+                    {excludedSummaryCount > 0 && (
+                      <p className="mt-0.5 pl-6 text-xs text-[var(--text-muted)]">
+                        Skipped {excludedSummaryCount} trip summary row{excludedSummaryCount === 1 ? '' : 's'} (replaced by detailed trip sheet)
+                      </p>
+                    )}
+                    {linkedTrip && activeCount > 0 && (
                       <p className="mt-0.5 pl-6 text-xs text-[var(--primary)]">
                         Linked to existing trip: <strong>{linkedTrip.name}</strong>
                       </p>

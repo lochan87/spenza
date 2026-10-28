@@ -507,7 +507,12 @@ export function parseSheet(
     const amtRaw  = colMap.amount ? raw[colMap.amount] : ''
     const dateRaw = colMap.date ? raw[colMap.date] : ''
 
-    if (!descRaw || descRaw.toLowerCase() === 'total' || descRaw.toLowerCase() === 'grand total') continue
+    if (
+      !descRaw ||
+      /^(grand\s+|sub\s*)?total(\s+(expenses?|amount|spend|cost))?$/i.test(descRaw)
+    ) {
+      continue
+    }
 
     const amountPaise = parseAmount(amtRaw)
     if (!amountPaise) {
@@ -555,50 +560,135 @@ export function parseSheet(
 // ─── Duplicate detection ──────────────────────────────────────────────────────
 
 /**
- * Find monthly-sheet rows that are likely summaries of trip-sheet rows.
- * Criteria: same or adjacent amount (within ±1%), dates within 3 days,
- * and description contains keywords from the trip sheet name.
+ * Find monthly-sheet summary rows that represent the single-line total of a detailed Trip sheet.
+ * A Trip sheet is the detailed split-up of that single line in the monthly sheet, never a separate
+ * expenditure — so matching monthly summary rows are excluded by default when importing the Trip sheet.
  */
 export function detectDuplicates(
   monthlyRows: ParsedRow[],
   tripSheetResults: SheetParseResult[]
 ): DuplicateCandidate[] {
   const candidates: DuplicateCandidate[] = []
+  const seenMonthlyRowIds = new Set<string>()
 
   for (const tripResult of tripSheetResults) {
-    // Extract keywords from trip sheet name (e.g. "Gokarna Trip - Feb 2026" → ["gokarna"])
+    if (tripResult.rows.length === 0) continue
+
+    const cleanTripName = inferTripNameFromSheet(tripResult.sheet.name).toLowerCase().trim()
+    // Extract location/topic keywords from trip sheet name (e.g. "Gokarna Trip - Feb 2026" → ["gokarna"])
     const tripKeywords = tripResult.sheet.name
       .toLowerCase()
       .split(/[\s\-–—,]+/)
-      .filter(w => w.length > 3 && !MONTH_NAMES.includes(w) && !['trip', 'travel', '2024', '2025', '2026', '2023'].includes(w))
+      .filter(w => w.length > 2 && !MONTH_NAMES.includes(w) && !['trip', 'travel', 'tour', '2023', '2024', '2025', '2026', '2027'].includes(w))
 
     const tripTotal = tripResult.rows.reduce((s, r) => s + r.amountPaise, 0)
 
     for (const mRow of monthlyRows) {
-      const descLower = mRow.description.toLowerCase()
+      if (seenMonthlyRowIds.has(mRow.rowId)) continue
+      const descLower = mRow.description.toLowerCase().trim()
       const keywordMatch = tripKeywords.some(kw => descLower.includes(kw))
       if (!keywordMatch) continue
 
-      // Check amount: either it matches the full trip total (summary row)
-      // or matches any individual trip row amount closely
-      const amtMatchesTotal = Math.abs(mRow.amountPaise - tripTotal) / tripTotal < 0.02
-      const amtMatchesRow = tripResult.rows.some(tr =>
-        Math.abs(tr.amountPaise - mRow.amountPaise) / mRow.amountPaise < 0.02
-      )
+      // Match when the monthly row is the single-line summary of the trip:
+      // 1. Amount matches the sum of the detailed trip sheet (within 5%), OR
+      // 2. Description explicitly names the trip (e.g. "Gokarna Trip")
+      const amtMatchesTotal =
+        tripTotal > 0 && Math.abs(mRow.amountPaise - tripTotal) / tripTotal <= 0.05
+      const descNamesTrip =
+        (cleanTripName.length > 0 && descLower === cleanTripName) ||
+        /\b(trip|travel|tour|outing|vacation)\b/i.test(descLower)
 
-      if (amtMatchesTotal || amtMatchesRow) {
+      if (amtMatchesTotal || descNamesTrip) {
+        seenMonthlyRowIds.add(mRow.rowId)
         candidates.push({
           monthlyRow: mRow,
           tripRows: tripResult.rows,
           reason: amtMatchesTotal
-            ? `Amount (₹${(mRow.amountPaise / 100).toFixed(0)}) matches total of ${tripResult.sheet.name} trip`
-            : `Amount matches individual row in ${tripResult.sheet.name}`,
+            ? `"${mRow.description}" (₹${(mRow.amountPaise / 100).toFixed(0)}) in ${mRow.sheetName} is the single-line summary of ${tripResult.sheet.name} (${tripResult.rows.length} detailed rows totaling ₹${(tripTotal / 100).toFixed(0)})`
+            : `"${mRow.description}" (₹${(mRow.amountPaise / 100).toFixed(0)}) in ${mRow.sheetName} is the monthly summary line for ${tripResult.sheet.name}`,
         })
       }
     }
   }
 
   return candidates
+}
+
+/**
+ * Remove any single-line non-trip summary transactions in Firestore that duplicate an existing
+ * Trip's detailed transactions (e.g. when a monthly sheet with "Gokarna Trip = ₹4,016" and a
+ * detailed trip sheet "Gokarna Trip - Feb 2026" totaling ₹4,016 were both imported).
+ * Returns the number of duplicate summary rows removed.
+ */
+export async function deduplicateTripSummaryTransactions(uid: string): Promise<number> {
+  const tripsSnap = await getDocs(collection(db, 'users', uid, 'trips'))
+  if (tripsSnap.empty) return 0
+
+  const txnColl = collection(db, 'users', uid, 'transactions')
+  const txnsSnap = await getDocs(txnColl)
+  if (txnsSnap.empty) return 0
+
+  const allTxns = txnsSnap.docs.map(d => ({
+    ref: d.ref,
+    data: { id: d.id, ...d.data() } as {
+      id: string
+      description: string
+      amountPaise: number
+      type: string
+      tripId: string | null
+    },
+  }))
+
+  const toDeleteRefs: (typeof allTxns)[number]['ref'][] = []
+  const deletedIds = new Set<string>()
+
+  for (const tripDoc of tripsSnap.docs) {
+    const tripId = tripDoc.id
+    const tripName = String(tripDoc.data().name ?? '').trim()
+    if (!tripName) continue
+
+    const tripTxns = allTxns.filter(t => t.data.tripId === tripId || (t.data.type === 'trip' && t.data.tripId === tripId))
+    if (tripTxns.length < 2) continue
+
+    const tripTotalPaise = tripTxns.reduce((s, t) => s + (t.data.amountPaise ?? 0), 0)
+    if (tripTotalPaise <= 0) continue
+
+    const cleanTripName = tripName.toLowerCase()
+    const tripKeywords = cleanTripName
+      .split(/[\s\-–—,]+/)
+      .filter(w => w.length > 2 && !MONTH_NAMES.includes(w) && !['trip', 'travel', 'tour'].includes(w))
+
+    for (const item of allTxns) {
+      if (deletedIds.has(item.data.id)) continue
+      // Only consider non-trip rows (the single-line summary from a monthly sheet)
+      if (item.data.tripId || item.data.type === 'trip') continue
+
+      const descLower = (item.data.description ?? '').toLowerCase().trim()
+      const hasKeyword = tripKeywords.length > 0
+        ? tripKeywords.some(kw => descLower.includes(kw))
+        : descLower === cleanTripName
+      if (!hasKeyword) continue
+
+      const amtMatchesTotal =
+        Math.abs(item.data.amountPaise - tripTotalPaise) <= Math.max(100, tripTotalPaise * 0.02)
+      const exactTripNameMatch =
+        descLower === cleanTripName &&
+        Math.abs(item.data.amountPaise - tripTotalPaise) <= Math.max(500, tripTotalPaise * 0.05)
+
+      if (amtMatchesTotal || exactTripNameMatch) {
+        deletedIds.add(item.data.id)
+        toDeleteRefs.push(item.ref)
+      }
+    }
+  }
+
+  if (toDeleteRefs.length === 0) return 0
+
+  const batch = writeBatch(db)
+  toDeleteRefs.forEach(ref => batch.delete(ref))
+  await batch.commit()
+  await invalidateInsightsCache(uid)
+  return toDeleteRefs.length
 }
 
 // ─── Batch import ─────────────────────────────────────────────────────────────

@@ -6,6 +6,7 @@ import type { QueryDocumentSnapshot } from 'firebase/firestore'
 
 import { useAuth } from '@/hooks/useAuth'
 import { getTransactions, deleteTransaction, getCategories } from '@/services/transactions'
+import { deduplicateTripSummaryTransactions } from '@/services/importExcel'
 import { getCategoryMeta } from '@/utils/categoryColors'
 import { getPaymentMeta } from '@/utils/paymentColors'
 import { AddExpenseForm } from './AddExpenseForm'
@@ -211,7 +212,11 @@ export function TransactionsPage() {
   useEffect(() => {
     if (user) {
       getCategories(user.uid).then(setCategories)
-      loadTransactions(true)
+      // Ensure any single-line monthly trip summary row (e.g. "Gokarna Trip = ₹4,016")
+      // that duplicates an imported detailed Trip sheet is cleaned up before loading.
+      deduplicateTripSummaryTransactions(user.uid)
+        .catch(() => 0)
+        .finally(() => loadTransactions(true))
     }
   }, [user, loadTransactions])
 

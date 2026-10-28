@@ -83,6 +83,24 @@ export async function getTransactions(
   }
 }
 
+/**
+ * Fetch all transactions for a user ordered newest-first with a deterministic tie-breaker
+ * (createdAt desc, then id) so same-day transactions maintain a stable order across edits
+ * and daily subtotals / filtered totals are never split across arbitrary page boundaries.
+ */
+export async function getAllTransactions(uid: string): Promise<Transaction[]> {
+  const ref = collection(db, 'users', uid, 'transactions')
+  const snap = await getDocs(query(ref, orderBy('date', 'desc')))
+  const list = snap.docs.map(d => ({ id: d.id, ...d.data() }) as Transaction)
+  return list.sort((a, b) => {
+    const dDiff = (b.date?.seconds ?? 0) - (a.date?.seconds ?? 0)
+    if (dDiff !== 0) return dDiff
+    const cDiff = (b.createdAt?.seconds ?? 0) - (a.createdAt?.seconds ?? 0)
+    if (cDiff !== 0) return cDiff
+    return a.id.localeCompare(b.id)
+  })
+}
+
 /** Get past descriptions for autocomplete (limited to recent 100) */
 export async function getPastDescriptions(uid: string): Promise<string[]> {
   const ref = collection(db, 'users', uid, 'transactions')

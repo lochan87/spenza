@@ -147,9 +147,125 @@ export interface RecurringItem {
 
 // ─── Insights ─────────────────────────────────────────────────────────────────
 
+export interface MonthlyTrendPoint {
+  monthKey: string            // "YYYY-MM"
+  label: string               // e.g. "Nov '25"
+  fullLabel: string           // e.g. "November 2025"
+  totalPaise: number
+  txCount: number
+  pctChangeVsPrev: number | null
+  topCategoryName: string | null
+  topCategoryPaise: number
+  isCurrentMonth: boolean
+  isOutlier: boolean          // >50% above 12-month non-zero average
+}
+
+export interface CategoryShiftItem {
+  categoryId: string
+  name: string
+  thisMonthPaise: number
+  lastMonthPaise: number
+  diffPaise: number           // thisMonth - lastMonth
+  pctChange: number | null    // null if lastMonth was 0
+}
+
+export interface MonthOverMonthComparison {
+  thisMonthKey: string
+  lastMonthKey: string
+  thisMonthLabel: string
+  lastMonthLabel: string
+  thisMonthPaise: number
+  lastMonthPaise: number
+  diffPaise: number
+  pctChange: number | null
+  thisMonthTxCount: number
+  lastMonthTxCount: number
+  biggestIncrease: CategoryShiftItem | null
+  biggestDecrease: CategoryShiftItem | null
+  summarySentence: string
+}
+
+export interface CategoryMonthlyTrend {
+  categoryId: string
+  name: string
+  total12mPaise: number
+  avgMonthlyPaise: number
+  peakMonthLabel: string | null
+  peakMonthPaise: number
+  months: Array<{
+    monthKey: string
+    label: string
+    totalPaise: number
+    isCurrentMonth: boolean
+  }>
+}
+
+export interface DayOfWeekItem {
+  dayIndex: number            // 0=Sun..6=Sat
+  shortName: string           // "Mon", "Tue", ...
+  fullName: string            // "Monday", ...
+  totalPaise: number
+  txCount: number
+  avgPerOccurrencePaise: number
+  topCategoryName: string | null
+  isWeekend: boolean
+}
+
+export interface DayOfWeekStats {
+  days: DayOfWeekItem[]       // Ordered Mon (1) -> Sun (0)
+  peakDayName: string
+  peakDayAvgPaise: number
+  peakDayTopCategory: string | null
+  weekendDailyAvgPaise: number
+  weekdayDailyAvgPaise: number
+  weekendVsWeekdayPct: number | null // e.g. +40 means weekends are 40% higher per day
+  topWeekendCategories: string[]
+  patternSentence: string
+}
+
+export interface HighestSpendingDay {
+  dateStr: string             // "YYYY-MM-DD"
+  totalPaise: number
+  txCount: number
+  topDescription: string
+  topCategoryName: string
+}
+
+export interface LoggingStreakInfo {
+  longestDays: number
+  longestStartDate: string | null // "YYYY-MM-DD"
+  longestEndDate: string | null   // "YYYY-MM-DD"
+  currentDays: number
+}
+
+export interface AvgTransactionSizeInfo {
+  allTimeAvgPaise: number
+  last3MonthsAvgPaise: number | null
+  pctDiff: number | null      // positive = creeping up
+}
+
+export interface MostExpensiveCategoryInfo {
+  categoryId: string
+  name: string
+  totalPaise: number
+  sharePct: number
+}
+
+export interface PaymentModeInsightInfo {
+  dominantMode: PaymentMode
+  dominantSharePct: number
+  dominantCount: number
+  recentMode: PaymentMode | null
+  earlierMode: PaymentMode | null
+  shifted: boolean
+  summaryText: string
+}
+
 /** Cached at users/{uid}/insights/summary — recomputed on-demand */
 export interface InsightsSummary {
   computedAt: Timestamp
+  /** Calendar month ("YYYY-MM") when this summary was computed */
+  computedMonthKey?: string
   /** Total number of transactions when this summary was computed */
   transactionCount?: number
   highestSpendingMonth: { monthKey: string; totalPaise: number } | null
@@ -164,6 +280,28 @@ export interface InsightsSummary {
   tripTotalPaise: number
   /** Auto-generated explanatory sentence for the highest-spend year */
   highestYearInsight: string
+
+  // ── Extended Insights (Phase 6+) ────────────────────────────────────────
+  /** Last 12 calendar months of spending */
+  monthlyTrend?: MonthlyTrendPoint[]
+  /** Detailed comparison between current month and previous month */
+  monthComparison?: MonthOverMonthComparison
+  /** 12-month spending series per category, sorted by 12m total desc */
+  categoryMonthlyTrends?: CategoryMonthlyTrend[]
+  /** Day-of-week distribution and weekday vs weekend analysis */
+  dayOfWeekStats?: DayOfWeekStats
+  /** Highest single calendar day of spending ever */
+  highestSpendingDay?: HighestSpendingDay | null
+  /** Daily expense logging streak metrics */
+  longestStreak?: LoggingStreakInfo
+  /** Average transaction size: all-time vs last 3 months */
+  avgTransactionSize?: AvgTransactionSizeInfo
+  /** Highest-spend category by all-time rupee volume */
+  mostExpensiveCategory?: MostExpensiveCategoryInfo | null
+  /** Dominant payment mode and 6-month shift detection */
+  paymentModeInsight?: PaymentModeInsightInfo | null
+  /** 2-3 synthesized insight sentences across year, month, and pattern levels */
+  insightSentences?: string[]
 }
 
 // ─── Person ──────────────────────────────────────────────────────────────────

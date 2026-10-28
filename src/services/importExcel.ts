@@ -54,7 +54,9 @@ export interface ParsedRow {
 export interface SheetParseResult {
   sheet: DetectedSheet
   rows: ParsedRow[]
-  /** Column letter → field mapping detected */
+  /** Available column headers in the sheet */
+  headers: string[]
+  /** Column header → field mapping detected (date is '' when sheet has no date column) */
   colMap: { description: string; amount: string; date: string }
   /** Preview rows (first 10) */
   previewRows: ParsedRow[]
@@ -213,27 +215,105 @@ export function inferTripDateRange(rows: ParsedRow[]): { startDate: string; endD
 
 // ─── Column auto-detection ────────────────────────────────────────────────────
 
-/** Try to auto-detect which columns are Expense/Amount/Date from headers */
-function detectColumns(
-  headers: string[]
-): { description: string; amount: string; date: string } {
-  const descCandidates = ['expense', 'description', 'item', 'particulars', 'details', 'name']
-  const amtCandidates  = ['amount', 'amt', 'cost', 'price', 'value', 'spend', 'rupees', 'rs', '₹']
-  const dateCandidates = ['date', 'dt', 'day', 'when']
+const DESC_CANDIDATES = ['expense', 'description', 'item', 'particulars', 'details', 'name', 'title', 'narration']
+const AMT_CANDIDATES  = ['amount', 'amt', 'cost', 'price', 'value', 'spend', 'rupees', 'rs', '₹', 'paid']
+const DATE_CANDIDATES = ['date', 'dt', 'day', 'when']
 
-  const find = (candidates: string[]) => {
+function isSyntheticEmptyHeader(h: string): boolean {
+  return h.startsWith('__EMPTY')
+}
+
+/**
+ * Try to auto-detect which columns are Expense/Amount/Date from headers and sample rows.
+ * Never reuses the description or amount column as a fallback for date — if a sheet has
+ * no date column (e.g. a 2-column Trip sheet with only "Expenses" and "Amount"),
+ * `date` is returned as `''`.
+ */
+function detectColumns(
+  headers: string[],
+  sampleRows: Record<string, unknown>[] = []
+): { description: string; amount: string; date: string } {
+  const realHeaders = headers.filter(h => !isSyntheticEmptyHeader(h))
+  const pool = realHeaders.length > 0 ? realHeaders : headers
+
+  const findByHeader = (candidates: string[], exclude: Set<string>): string | null => {
     for (const c of candidates) {
-      const h = headers.find(h => h.toLowerCase().includes(c))
+      const h = pool.find(col => !exclude.has(col) && col.toLowerCase().trim().includes(c))
       if (h) return h
     }
-    return headers[0] ?? 'A'
+    return null
   }
 
-  return {
-    description: find(descCandidates),
-    amount: find(amtCandidates),
-    date: find(dateCandidates),
+  const used = new Set<string>()
+
+  // 1. Description column
+  let description = findByHeader(DESC_CANDIDATES, used)
+  if (!description) {
+    // Fallback: pick first column whose sample values are mostly non-numeric, non-date strings
+    description = pool.find(col => {
+      const vals = sampleRows.slice(0, 10).map(r => String(r[col] ?? '').trim()).filter(Boolean)
+      if (vals.length === 0) return false
+      const textCount = vals.filter(v => parseAmount(v) === null && parseExcelDate(v) === null).length
+      return textCount >= Math.ceil(vals.length * 0.5)
+    }) ?? pool[0] ?? ''
   }
+  if (description) used.add(description)
+
+  // 2. Amount column (must be distinct from description)
+  let amount = findByHeader(AMT_CANDIDATES, used)
+  if (!amount) {
+    // Fallback: pick first remaining column whose sample values parse as positive numbers
+    amount = pool.find(col => {
+      if (used.has(col)) return false
+      const vals = sampleRows.slice(0, 10).map(r => r[col]).filter(v => v !== '' && v !== null && v !== undefined)
+      if (vals.length === 0) return false
+      const numCount = vals.filter(v => parseAmount(v) !== null).length
+      return numCount >= Math.ceil(vals.length * 0.5)
+    }) ?? pool.find(col => !used.has(col)) ?? ''
+  }
+  if (amount) used.add(amount)
+
+  // 3. Date column (must be distinct from description and amount; '' if sheet has no date column)
+  let date = findByHeader(DATE_CANDIDATES, used)
+  if (!date) {
+    // Content fallback: only pick a remaining column if its sample cells actually parse as dates
+    date = pool.find(col => {
+      if (used.has(col)) return false
+      const vals = sampleRows.slice(0, 10).map(r => r[col]).filter(v => v !== '' && v !== null && v !== undefined)
+      if (vals.length === 0) return false
+      const dateCount = vals.filter(v => parseExcelDate(v) !== null).length
+      return dateCount >= Math.max(1, Math.ceil(vals.length * 0.3))
+    }) ?? ''
+  }
+
+  return { description, amount, date }
+}
+
+/**
+ * Find the 0-based row index of the actual table header row within the first 10 rows.
+ * Handles sheets that have a title banner or blank row above the "Expenses | Amount | Date" headers.
+ */
+function findHeaderRowIndex(ws: XLSX.WorkSheet): number {
+  const matrix = XLSX.utils.sheet_to_json<unknown[]>(ws, {
+    header: 1,
+    defval: '',
+    raw: false,
+  })
+  const limit = Math.min(matrix.length, 10)
+  const allHeaderKeywords = [...DESC_CANDIDATES, ...AMT_CANDIDATES, ...DATE_CANDIDATES]
+
+  for (let r = 0; r < limit; r++) {
+    const row = matrix[r] ?? []
+    const cells = row.map(c => String(c ?? '').toLowerCase().trim()).filter(Boolean)
+    if (cells.length < 2) continue
+    const keywordHits = cells.filter(cell =>
+      allHeaderKeywords.some(kw => cell.includes(kw))
+    ).length
+    if (keywordHits >= 2 || (keywordHits >= 1 && parseAmount(row[1]) === null)) {
+      return r
+    }
+  }
+  return 0
 }
 
 // ─── Main parse function ──────────────────────────────────────────────────────
@@ -282,9 +362,11 @@ export function parseSheet(
   colMapOverride?: { description: string; amount: string; date: string }
 ): SheetParseResult {
   const ws = workbook.Sheets[sheetName]
+  const headerRowIndex = findHeaderRowIndex(ws)
   const rawRows = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, {
     defval: '',
     raw: false,   // return formatted cell text (what the user sees), not raw serials
+    range: headerRowIndex,
   })
 
   const warnings: string[] = []
@@ -295,21 +377,26 @@ export function parseSheet(
     return {
       sheet: { name: sheetName, rowCount: 0, kind, guessedTripName },
       rows: [],
+      headers: [],
       colMap: colMapOverride ?? { description: '', amount: '', date: '' },
       previewRows: [],
       warnings: ['Sheet appears to be empty'],
     }
   }
 
-  const headers = Object.keys(rawRows[0])
-  const colMap = colMapOverride ?? detectColumns(headers)
+  const allRawHeaders = Object.keys(rawRows[0])
+  const colMap = colMapOverride ?? detectColumns(allRawHeaders, rawRows)
+  const namedHeaders = allRawHeaders.filter(
+    h => !isSyntheticEmptyHeader(h) || h === colMap.description || h === colMap.amount || h === colMap.date
+  )
+  const headers = namedHeaders.length > 0 ? namedHeaders : allRawHeaders
 
   const rows: ParsedRow[] = []
 
   for (const [rowIndex, raw] of rawRows.entries()) {
-    const descRaw = String(raw[colMap.description] ?? '').trim()
-    const amtRaw  = raw[colMap.amount]
-    const dateRaw = raw[colMap.date]
+    const descRaw = colMap.description ? String(raw[colMap.description] ?? '').trim() : ''
+    const amtRaw  = colMap.amount ? raw[colMap.amount] : ''
+    const dateRaw = colMap.date ? raw[colMap.date] : ''
 
     if (!descRaw || descRaw.toLowerCase() === 'total' || descRaw.toLowerCase() === 'grand total') continue
 
@@ -328,8 +415,8 @@ export function parseSheet(
       description: descRaw,
       amountPaise,
       dateStr,
-      rawDate: String(dateRaw),
-      rawAmount: String(amtRaw),
+      rawDate: colMap.date ? String(dateRaw ?? '') : '',
+      rawAmount: String(amtRaw ?? ''),
       dateIssue: getDateIssue(dateStr),
       suggestedCategoryName: suggestCategory(descRaw),
       resolvedCategoryId: null,
@@ -342,6 +429,7 @@ export function parseSheet(
   return {
     sheet: { name: sheetName, rowCount: rows.length, kind, guessedTripName },
     rows,
+    headers,
     colMap,
     previewRows: rows.slice(0, 10),
     warnings,

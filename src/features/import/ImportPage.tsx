@@ -519,18 +519,29 @@ export function ImportPage() {
                   {/* Column remapping */}
                   <div className="my-3 grid grid-cols-3 gap-2">
                     {(['description', 'amount', 'date'] as const).map(field => {
+                      const currentVal = colMapOverrides[result.sheet.name]?.[field] ?? result.colMap[field]
                       return (
                         <div key={field}>
                           <label className="mb-1 block text-[10px] font-medium text-[var(--text-muted)] uppercase tracking-wide">{field}</label>
                           <select
-                            value={colMapOverrides[result.sheet.name]?.[field] ?? result.colMap[field]}
-                            onChange={e => setColMapOverrides(p => ({
-                              ...p,
-                              [result.sheet.name]: { ...(p[result.sheet.name] ?? result.colMap), [field]: e.target.value }
-                            }))}
+                            value={currentVal}
+                            onChange={e => {
+                              const nextMap = {
+                                ...(colMapOverrides[result.sheet.name] ?? result.colMap),
+                                [field]: e.target.value,
+                              }
+                              setColMapOverrides(p => ({ ...p, [result.sheet.name]: nextMap }))
+                              if (workbook) {
+                                const reparsed = parseSheet(workbook, result.sheet.name, result.sheet.kind, nextMap)
+                                setParseResults(prev =>
+                                  prev.map(r => (r.sheet.name === result.sheet.name ? reparsed : r))
+                                )
+                              }
+                            }}
                             className="w-full rounded-lg border border-[var(--border)] bg-[var(--surface-2)] px-2 py-1.5 text-xs text-[var(--text-primary)] outline-none"
                           >
-                            {Object.keys(result.previewRows[0] ?? {}).map(h => (
+                            {field === 'date' && <option value="">— No date column —</option>}
+                            {result.headers.map(h => (
                               <option key={h} value={h}>{h}</option>
                             ))}
                           </select>

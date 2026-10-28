@@ -19,6 +19,7 @@ import {
   endOfMonth,
   startOfDay,
   differenceInCalendarDays,
+  differenceInCalendarMonths,
   parseISO,
 } from 'date-fns'
 import { db } from '@/firebase/config'
@@ -44,7 +45,7 @@ import type {
 const summaryRef = (uid: string) => doc(db, 'users', uid, 'insights', 'summary')
 
 /** Current schema version for cached InsightsSummary documents */
-export const INSIGHTS_SCHEMA_VERSION = 3
+export const INSIGHTS_SCHEMA_VERSION = 4
 
 /**
  * CHOSEN APPROACH: On-demand cached summary document (`users/{uid}/insights/summary`).
@@ -192,9 +193,13 @@ export async function computeAndCacheInsights(uid: string): Promise<InsightsSumm
   // ── 2. Most frequent & most expensive category (all-time) ──────────────────
   const catCount = new Map<string, number>()
   const catTotalPaise = new Map<string, number>()
+  const catFirstDate = new Map<string, Date>()
   for (const tx of allTxns) {
     catCount.set(tx.categoryId, (catCount.get(tx.categoryId) ?? 0) + 1)
     catTotalPaise.set(tx.categoryId, (catTotalPaise.get(tx.categoryId) ?? 0) + tx.amountPaise)
+    if (!catFirstDate.has(tx.categoryId)) {
+      catFirstDate.set(tx.categoryId, toDate(tx.date))
+    }
   }
 
   let mostFrequentCategory: InsightsSummary['mostFrequentCategory'] = null
@@ -494,16 +499,23 @@ export async function computeAndCacheInsights(uid: string): Promise<InsightsSumm
         }
       })
 
+      const firstTxForCat = catFirstDate.get(categoryId)
+      const monthsSinceFirst = firstTxForCat
+        ? Math.max(1, differenceInCalendarMonths(anchorDate, firstTxForCat) + 1)
+        : 12
+      const divisorMonths = Math.min(12, monthsSinceFirst)
+
       return {
         categoryId,
         name,
         total12mPaise,
-        avgMonthlyPaise: Math.round(total12mPaise / 12),
+        avgMonthlyPaise: Math.round(total12mPaise / divisorMonths),
         peakMonthLabel,
         peakMonthPaise,
         months,
       }
     })
+    .filter(c => c.total12mPaise > 0)
     .sort((a, b) => {
       if (b.total12mPaise !== a.total12mPaise) return b.total12mPaise - a.total12mPaise
       return (catTotalPaise.get(b.categoryId) ?? 0) - (catTotalPaise.get(a.categoryId) ?? 0)

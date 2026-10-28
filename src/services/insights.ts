@@ -7,6 +7,7 @@ import {
   deleteDoc,
   getCountFromServer,
   query,
+  where,
   orderBy,
   Timestamp,
 } from 'firebase/firestore'
@@ -14,6 +15,8 @@ import {
   getYear,
   format,
   subMonths,
+  startOfMonth,
+  endOfMonth,
   differenceInCalendarDays,
   parseISO,
 } from 'date-fns'
@@ -81,6 +84,21 @@ export async function getLiveTransactionCount(uid: string): Promise<number> {
     const snap = await getDocs(coll)
     return snap.size
   }
+}
+
+/** Live query of the current calendar month's total spend in paise (for the Spending Pace card) */
+export async function getCurrentMonthSpendTotal(uid: string): Promise<number> {
+  const now = new Date()
+  const start = Timestamp.fromDate(startOfMonth(now))
+  const end = Timestamp.fromDate(endOfMonth(now))
+  const snap = await getDocs(
+    query(
+      collection(db, 'users', uid, 'transactions'),
+      where('date', '>=', start),
+      where('date', '<=', end)
+    )
+  )
+  return snap.docs.reduce((sum, d) => sum + ((d.data().amountPaise as number) ?? 0), 0)
 }
 
 /** True if the cached summary is fresh (computed within last 7 days and in the same calendar month) */

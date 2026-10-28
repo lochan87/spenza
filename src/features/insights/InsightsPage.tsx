@@ -38,6 +38,7 @@ import {
   computeAndCacheInsights,
   isCacheFresh,
   getLiveTransactionCount,
+  getCurrentMonthSpendTotal,
   isCacheStaleAgainstCount,
 } from '@/services/insights'
 import { getCurrentBudget } from '@/services/budgets'
@@ -182,6 +183,7 @@ export function InsightsPage() {
   const { isDark } = useTheme()
   const [insights, setInsights] = useState<InsightsSummary | null>(null)
   const [currentBudget, setCurrentBudget] = useState<Budget | null>(null)
+  const [liveCurrentMonthPaise, setLiveCurrentMonthPaise] = useState<number>(0)
   const [selectedCategoryId, setSelectedCategoryId] = useState<string>('')
   const [loading, setLoading] = useState(true)
   const [computing, setComputing] = useState(false)
@@ -199,14 +201,17 @@ export function InsightsPage() {
     setLoading(true)
     try {
       const budgetPromise = getCurrentBudget(user.uid).catch(() => null)
+      const currentMonthSpendPromise = getCurrentMonthSpendTotal(user.uid).catch(() => 0)
 
       if (!forceRefresh) {
-        const [cached, liveCount, budgetDoc] = await Promise.all([
+        const [cached, liveCount, budgetDoc, monthSpendPaise] = await Promise.all([
           getCachedInsights(user.uid),
           getLiveTransactionCount(user.uid),
           budgetPromise,
+          currentMonthSpendPromise,
         ])
         setCurrentBudget(budgetDoc)
+        setLiveCurrentMonthPaise(monthSpendPaise)
 
         if (
           cached &&
@@ -225,8 +230,12 @@ export function InsightsPage() {
           return
         }
       } else {
-        const budgetDoc = await budgetPromise
+        const [budgetDoc, monthSpendPaise] = await Promise.all([
+          budgetPromise,
+          currentMonthSpendPromise,
+        ])
         setCurrentBudget(budgetDoc)
+        setLiveCurrentMonthPaise(monthSpendPaise)
       }
 
       // Compute fresh summary
@@ -370,17 +379,16 @@ export function InsightsPage() {
     null
   const activeCatMeta = activeCatTrend ? getCategoryMeta(activeCatTrend.name) : null
 
-  // Section 5: Current Month Spending Velocity / Pace
+  // Section 5: Current Month Spending Velocity / Pace (uses live query of this month's transactions)
   const now = new Date()
-  const currentMonthKey = format(now, 'yyyy-MM')
   const daysElapsed = Math.max(1, now.getDate())
   const daysInMonth = getDaysInMonth(now)
-  const currentMonthPoint = monthlyTrend.find(m => m.monthKey === currentMonthKey)
-  const spentThisMonthPaise =
-    currentMonthPoint?.totalPaise ??
-    (monthComparison?.thisMonthKey === currentMonthKey ? monthComparison.thisMonthPaise : 0)
+  const hasEnoughDaysForPace = daysElapsed >= 3
+  const spentThisMonthPaise = liveCurrentMonthPaise
   const dailyPacePaise = Math.round(spentThisMonthPaise / daysElapsed)
-  const projectedMonthEndPaise = Math.round(dailyPacePaise * daysInMonth)
+  const projectedMonthEndPaise = hasEnoughDaysForPace
+    ? Math.round(dailyPacePaise * daysInMonth)
+    : null
 
   const effectiveBudgetPaise =
     currentBudget?.totalBudgetPaise ??
@@ -388,9 +396,10 @@ export function InsightsPage() {
       ? Object.values(currentBudget.categoryBudgets).reduce((s, v) => s + v, 0)
       : 0)
   const hasActiveBudget = effectiveBudgetPaise > 0
-  const projectedBudgetDiffPaise = hasActiveBudget
-    ? projectedMonthEndPaise - effectiveBudgetPaise
-    : null
+  const projectedBudgetDiffPaise =
+    hasActiveBudget && projectedMonthEndPaise !== null
+      ? projectedMonthEndPaise - effectiveBudgetPaise
+      : null
 
   return (
     <div className="flex flex-col gap-5 pb-20 md:pb-8">
@@ -561,22 +570,32 @@ export function InsightsPage() {
                 </div>
               </div>
               <span className="rounded-full bg-[var(--surface-2)] px-2.5 py-1 text-[11px] font-semibold text-[var(--text-secondary)]">
-                {formatINRCompact(dailyPacePaise)}/day
+                {hasEnoughDaysForPace ? `${formatINRCompact(dailyPacePaise)}/day` : `Day ${daysElapsed}`}
               </span>
             </div>
 
             <div className="rounded-xl bg-[var(--surface-2)] p-3.5">
-              <p className="text-xs text-[var(--text-secondary)]">
-                You've spent{' '}
-                <strong className="text-[var(--text-primary)]">
-                  {formatINR(spentThisMonthPaise)}
-                </strong>{' '}
-                so far — at this pace, you're on track for{' '}
-                <strong className="text-[var(--primary)]">
-                  ~{formatINR(projectedMonthEndPaise)}
-                </strong>{' '}
-                by month end.
-              </p>
+              {hasEnoughDaysForPace && projectedMonthEndPaise !== null ? (
+                <p className="text-xs text-[var(--text-secondary)]">
+                  You've spent{' '}
+                  <strong className="text-[var(--text-primary)]">
+                    {formatINR(spentThisMonthPaise)}
+                  </strong>{' '}
+                  so far — at this pace, you're on track for{' '}
+                  <strong className="text-[var(--primary)]">
+                    ~{formatINR(projectedMonthEndPaise)}
+                  </strong>{' '}
+                  by month end.
+                </p>
+              ) : (
+                <p className="text-xs text-[var(--text-secondary)]">
+                  You've spent{' '}
+                  <strong className="text-[var(--text-primary)]">
+                    {formatINR(spentThisMonthPaise)}
+                  </strong>{' '}
+                  so far — not enough data yet this month to project a full-month pace (available from day 3).
+                </p>
+              )}
 
               {/* Progress bar showing month elapsed */}
               <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-[var(--surface-3)]">
@@ -590,7 +609,13 @@ export function InsightsPage() {
 
           {/* Budget Projection Check */}
           <div className="mt-3">
-            {hasActiveBudget && projectedBudgetDiffPaise !== null ? (
+            {hasActiveBudget && !hasEnoughDaysForPace ? (
+              <div className="flex items-center justify-between rounded-xl border border-[var(--border)] bg-[var(--surface-2)] px-3.5 py-2.5 text-xs text-[var(--text-muted)]">
+                <span>
+                  Monthly budget: <strong className="text-[var(--text-primary)]">{formatINRCompact(effectiveBudgetPaise)}</strong> · Pace comparison unlocks on day 3
+                </span>
+              </div>
+            ) : hasActiveBudget && projectedBudgetDiffPaise !== null ? (
               <div
                 className={`flex items-center justify-between rounded-xl px-3.5 py-2.5 text-xs font-medium ${
                   projectedBudgetDiffPaise <= 0

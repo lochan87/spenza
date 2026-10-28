@@ -1,10 +1,37 @@
 import { useState, useEffect } from 'react'
-import { format } from 'date-fns'
+import { format, getDaysInMonth, parseISO } from 'date-fns'
+import { Link } from 'react-router-dom'
 import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
-  Cell, ResponsiveContainer,
+  BarChart,
+  Bar,
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  Cell,
+  ResponsiveContainer,
 } from 'recharts'
-import { RefreshCw, Loader2, Lightbulb, TrendingUp, Hash, Repeat, ZapIcon, Star } from 'lucide-react'
+import {
+  RefreshCw,
+  Loader2,
+  Lightbulb,
+  TrendingUp,
+  TrendingDown,
+  Hash,
+  Repeat,
+  ZapIcon,
+  Star,
+  Calendar,
+  Flame,
+  CreditCard,
+  Gauge,
+  ArrowUpRight,
+  ArrowDownRight,
+  Award,
+  Scale,
+} from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
 import {
   getCachedInsights,
@@ -13,88 +40,183 @@ import {
   getLiveTransactionCount,
   isCacheStaleAgainstCount,
 } from '@/services/insights'
+import { getCurrentBudget } from '@/services/budgets'
 import { formatINR, formatINRCompact } from '@/utils/format'
+import { getCategoryMeta, getCategoryColor } from '@/utils/categoryColors'
+import { getPaymentColor } from '@/utils/paymentColors'
 import { useTheme } from '@/hooks/useTheme'
-import type { InsightsSummary } from '@/types'
+import type { InsightsSummary, MonthlyTrendPoint, Budget } from '@/types'
 
 const currentYear = new Date().getFullYear()
+
+// ─── Stat Card Component ──────────────────────────────────────────────────────
 
 interface InsightCardProps {
   icon: React.ReactNode
   label: string
   value: string
   sub?: string
+  badge?: string
   accentColor?: string
 }
 
-function InsightCard({ icon, label, value, sub, accentColor }: InsightCardProps) {
+function InsightCard({ icon, label, value, sub, badge, accentColor }: InsightCardProps) {
   return (
-    <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-sm)]">
-      <div className="mb-2 flex items-center gap-2">
-        <div
-          className="flex h-8 w-8 items-center justify-center rounded-lg"
-          style={accentColor
-            ? { backgroundColor: accentColor + '20', color: accentColor }
-            : { backgroundColor: 'var(--primary-muted)', color: 'var(--primary)' }}
-        >
-          {icon}
+    <div className="flex flex-col justify-between rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 shadow-[var(--shadow-sm)]">
+      <div>
+        <div className="mb-2.5 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <div
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg"
+              style={
+                accentColor
+                  ? { backgroundColor: accentColor + '20', color: accentColor }
+                  : { backgroundColor: 'var(--primary-muted)', color: 'var(--primary)' }
+              }
+            >
+              {icon}
+            </div>
+            <span className="truncate text-xs font-medium text-[var(--text-muted)]">
+              {label}
+            </span>
+          </div>
+          {badge && (
+            <span
+              className="shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold"
+              style={
+                accentColor
+                  ? { backgroundColor: accentColor + '20', color: accentColor }
+                  : { backgroundColor: 'var(--primary-muted)', color: 'var(--primary)' }
+              }
+            >
+              {badge}
+            </span>
+          )}
         </div>
-        <span className="text-xs font-medium text-[var(--text-muted)]">{label}</span>
+        <p className="truncate text-lg font-bold text-[var(--text-primary)]">{value}</p>
       </div>
-      <p className="text-xl font-bold text-[var(--text-primary)]">{value}</p>
-      {sub && <p className="mt-0.5 text-xs text-[var(--text-subtle)]">{sub}</p>}
+      {sub && <p className="mt-1 truncate text-xs text-[var(--text-subtle)]">{sub}</p>}
     </div>
   )
 }
 
-interface ChartTooltipProps {
+// ─── Tooltips ─────────────────────────────────────────────────────────────────
+
+function YoYChartTooltip({
+  active,
+  payload,
+}: {
   active?: boolean
   payload?: Array<{ value: number; payload: { year: number; totalPaise: number } }>
-}
-
-function ChartTooltip({ active, payload }: ChartTooltipProps) {
+}) {
   if (!active || !payload?.length) return null
   const { year, totalPaise } = payload[0].payload
   return (
     <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2 shadow-[var(--shadow-md)]">
       <p className="text-xs font-medium text-[var(--text-muted)]">
-        {year}{year === currentYear ? ' (in progress)' : ''}
+        {year}
+        {year === currentYear ? ' (in progress)' : ''}
       </p>
       <p className="text-sm font-bold text-[var(--text-primary)]">{formatINR(totalPaise)}</p>
     </div>
   )
 }
 
+function MonthlyTrendTooltip({
+  active,
+  payload,
+}: {
+  active?: boolean
+  payload?: Array<{ payload: MonthlyTrendPoint }>
+}) {
+  if (!active || !payload?.length) return null
+  const pt = payload[0].payload
+  return (
+    <div className="min-w-[180px] rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3 shadow-[var(--shadow-lg)]">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-xs font-semibold text-[var(--text-primary)]">
+          {pt.fullLabel}
+          {pt.isCurrentMonth ? ' (in progress)' : ''}
+        </p>
+        {pt.isOutlier && (
+          <span className="rounded-full bg-[var(--warning-muted)] px-1.5 py-0.5 text-[9px] font-bold text-[var(--warning)]">
+            Spike
+          </span>
+        )}
+      </div>
+      <p className="mt-1 text-base font-bold text-[var(--primary)]">
+        {formatINR(pt.totalPaise)}
+      </p>
+      <div className="mt-1.5 flex flex-col gap-0.5 border-t border-[var(--border)] pt-1.5 text-[11px]">
+        {pt.pctChangeVsPrev !== null ? (
+          <p
+            className={
+              pt.pctChangeVsPrev > 0
+                ? 'text-[var(--danger)]'
+                : pt.pctChangeVsPrev < 0
+                ? 'text-[var(--success)]'
+                : 'text-[var(--text-muted)]'
+            }
+          >
+            {pt.pctChangeVsPrev > 0 ? '+' : ''}
+            {pt.pctChangeVsPrev}% vs previous month
+          </p>
+        ) : (
+          <p className="text-[var(--text-subtle)]">No prior month baseline</p>
+        )}
+        {pt.topCategoryName && pt.topCategoryPaise > 0 && (
+          <p className="text-[var(--text-muted)]">
+            Top: <strong className="text-[var(--text-primary)]">{pt.topCategoryName}</strong> (
+            {formatINRCompact(pt.topCategoryPaise)})
+          </p>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ─── Main Page ────────────────────────────────────────────────────────────────
+
 export function InsightsPage() {
   const { user } = useAuth()
   const { isDark } = useTheme()
   const [insights, setInsights] = useState<InsightsSummary | null>(null)
+  const [currentBudget, setCurrentBudget] = useState<Budget | null>(null)
+  const [selectedCategoryId, setSelectedCategoryId] = useState<string>('')
   const [loading, setLoading] = useState(true)
   const [computing, setComputing] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [cacheAge, setCacheAge] = useState<string>('')
 
   const primaryColor = isDark ? '#14B8A6' : '#0F766E'
-  const gridColor    = isDark ? '#334155' : '#E2E8F0'
-  const textColor    = isDark ? '#94A3B8' : '#64748B'
+  const warningColor = isDark ? '#FBBF24' : '#D97706'
+  const gridColor = isDark ? '#334155' : '#E2E8F0'
+  const textColor = isDark ? '#94A3B8' : '#64748B'
 
   const loadInsights = async (forceRefresh = false) => {
     if (!user) return
     setError(null)
     setLoading(true)
     try {
+      const budgetPromise = getCurrentBudget(user.uid).catch(() => null)
+
       if (!forceRefresh) {
-        const [cached, liveCount] = await Promise.all([
+        const [cached, liveCount, budgetDoc] = await Promise.all([
           getCachedInsights(user.uid),
           getLiveTransactionCount(user.uid),
+          budgetPromise,
         ])
+        setCurrentBudget(budgetDoc)
+
         if (
           cached &&
           isCacheFresh(cached) &&
           !isCacheStaleAgainstCount(cached, liveCount)
         ) {
           setInsights(cached)
-          // computedAt is a real Timestamp when read back from Firestore
+          if (cached.categoryMonthlyTrends?.length && !selectedCategoryId) {
+            setSelectedCategoryId(cached.categoryMonthlyTrends[0].categoryId)
+          }
           const computed = (cached.computedAt as any).toDate
             ? (cached.computedAt as any).toDate()
             : new Date()
@@ -102,21 +224,30 @@ export function InsightsPage() {
           setLoading(false)
           return
         }
+      } else {
+        const budgetDoc = await budgetPromise
+        setCurrentBudget(budgetDoc)
       }
-      // Need to compute (or cache was stale against current transaction count)
+
+      // Compute fresh summary
       setComputing(true)
       const fresh = await computeAndCacheInsights(user.uid)
-      // null return = not enough data (< 3 transactions)
       if (fresh === null) {
         setInsights(null)
         setError('not-enough-data')
       } else {
         setInsights(fresh)
+        if (fresh.categoryMonthlyTrends?.length) {
+          setSelectedCategoryId(prev =>
+            prev && fresh.categoryMonthlyTrends!.some(c => c.categoryId === prev)
+              ? prev
+              : fresh.categoryMonthlyTrends![0].categoryId
+          )
+        }
         setCacheAge('Updated just now')
       }
     } catch (err: any) {
       console.error('[Spenza] Insights error:', err)
-      // Distinguish Firestore permission errors from other failures
       if (err?.code === 'permission-denied') {
         setError('Permission denied — check Firestore rules for the insights collection.')
       } else {
@@ -128,13 +259,17 @@ export function InsightsPage() {
     }
   }
 
-  useEffect(() => { loadInsights() }, [user])
+  useEffect(() => {
+    loadInsights()
+  }, [user])
 
   if (loading) {
     return (
       <div className="flex h-64 flex-col items-center justify-center gap-3">
         <Loader2 className="h-8 w-8 animate-spin text-[var(--primary)]" />
-        <p className="text-sm text-[var(--text-muted)]">Loading insights…</p>
+        <p className="text-sm text-[var(--text-muted)]">
+          {computing ? 'Analyzing your spending patterns…' : 'Loading insights…'}
+        </p>
       </div>
     )
   }
@@ -146,8 +281,7 @@ export function InsightsPage() {
         <div>
           <p className="font-medium text-[var(--text-primary)]">Not enough data yet</p>
           <p className="mt-1 text-sm text-[var(--text-muted)]">
-            Add a few more expenses first — insights become meaningful once you have
-            at least a few weeks of history.
+            Add at least 3 expenses first — insights become meaningful once you have a few transactions logged.
           </p>
         </div>
         <button
@@ -187,37 +321,630 @@ export function InsightsPage() {
     )
   }
 
-  const { yearlyTotals } = insights
+  const {
+    yearlyTotals,
+    monthlyTrend = [],
+    monthComparison,
+    categoryMonthlyTrends = [],
+    dayOfWeekStats,
+    highestSpendingDay,
+    longestStreak,
+    avgTransactionSize,
+    mostExpensiveCategory,
+    paymentModeInsight,
+    insightSentences = [],
+  } = insights
+
   const highestYear = yearlyTotals.reduce<{ year: number; totalPaise: number } | null>(
-    (best, y) => (!best || y.totalPaise > best.totalPaise ? y : best), null
+    (best, y) => (!best || y.totalPaise > best.totalPaise ? y : best),
+    null
   )
 
+  // Prepare 12-month line chart data: split solid (completed) vs dashed (current month segment)
+  const lastIdx = monthlyTrend.length - 1
+  const hasCurrentMonthAtEnd = lastIdx >= 1 && monthlyTrend[lastIdx]?.isCurrentMonth
+  const monthlyChartData = monthlyTrend.map((pt, idx) => {
+    const displayLabel = pt.isCurrentMonth ? `${pt.label.split(' ')[0]}*` : pt.label
+    if (!hasCurrentMonthAtEnd) {
+      return {
+        ...pt,
+        displayLabel,
+        solidPaise: pt.totalPaise,
+        dashedPaise: null as number | null,
+      }
+    }
+    return {
+      ...pt,
+      displayLabel,
+      solidPaise: idx < lastIdx ? pt.totalPaise : null,
+      dashedPaise: idx >= lastIdx - 1 ? pt.totalPaise : null,
+    }
+  })
+
+  const outlierMonths = monthlyTrend.filter(m => m.isOutlier)
+
+  // Selected category for Section 3
+  const activeCatTrend =
+    categoryMonthlyTrends.find(c => c.categoryId === selectedCategoryId) ??
+    categoryMonthlyTrends[0] ??
+    null
+  const activeCatMeta = activeCatTrend ? getCategoryMeta(activeCatTrend.name) : null
+
+  // Section 5: Current Month Spending Velocity / Pace
+  const now = new Date()
+  const currentMonthKey = format(now, 'yyyy-MM')
+  const daysElapsed = Math.max(1, now.getDate())
+  const daysInMonth = getDaysInMonth(now)
+  const currentMonthPoint = monthlyTrend.find(m => m.monthKey === currentMonthKey)
+  const spentThisMonthPaise =
+    currentMonthPoint?.totalPaise ??
+    (monthComparison?.thisMonthKey === currentMonthKey ? monthComparison.thisMonthPaise : 0)
+  const dailyPacePaise = Math.round(spentThisMonthPaise / daysElapsed)
+  const projectedMonthEndPaise = Math.round(dailyPacePaise * daysInMonth)
+
+  const effectiveBudgetPaise =
+    currentBudget?.totalBudgetPaise ??
+    (currentBudget?.categoryBudgets
+      ? Object.values(currentBudget.categoryBudgets).reduce((s, v) => s + v, 0)
+      : 0)
+  const hasActiveBudget = effectiveBudgetPaise > 0
+  const projectedBudgetDiffPaise = hasActiveBudget
+    ? projectedMonthEndPaise - effectiveBudgetPaise
+    : null
+
   return (
-    <div className="flex flex-col gap-5 pb-20 md:pb-6">
-      {/* Header */}
+    <div className="flex flex-col gap-5 pb-20 md:pb-8">
+      {/* ── HEADER ── */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-bold text-[var(--text-primary)]">Insights</h1>
           <p className="text-xs text-[var(--text-subtle)]">{cacheAge}</p>
         </div>
-        <div className="flex gap-2">
-          <button
-            onClick={() => loadInsights(true)}
-            disabled={computing}
-            className="flex items-center gap-1.5 rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs font-medium text-[var(--text-muted)] hover:bg-[var(--surface-2)] disabled:opacity-50"
-          >
-            {computing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-            Refresh
-          </button>
+        <button
+          onClick={() => loadInsights(true)}
+          disabled={computing}
+          className="flex items-center gap-1.5 rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3.5 py-2 text-xs font-medium text-[var(--text-muted)] transition-colors hover:bg-[var(--surface-2)] hover:text-[var(--text-primary)] disabled:opacity-50 cursor-pointer"
+        >
+          {computing ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <RefreshCw className="h-3.5 w-3.5" />
+          )}
+          Refresh
+        </button>
+      </div>
+
+      {/* ── SECTION 7: SYNTHESIZED KEY TAKEAWAYS (2-3 Sentences) ── */}
+      {(insightSentences.length > 0 || insights.highestYearInsight) && (
+        <div className="rounded-2xl border border-[var(--primary-muted)] bg-[var(--primary-muted)] p-4">
+          <div className="mb-2 flex items-center gap-2">
+            <Lightbulb className="h-4 w-4 shrink-0 text-[var(--primary)]" />
+            <span className="text-xs font-semibold uppercase tracking-wider text-[var(--primary)]">
+              Key Spending Takeaways
+            </span>
+          </div>
+          <ul className="flex flex-col gap-1.5">
+            {(insightSentences.length > 0 ? insightSentences : [insights.highestYearInsight]).map(
+              (sentence, idx) => (
+                <li
+                  key={idx}
+                  className="flex items-start gap-2 text-sm text-[var(--text-primary)]"
+                >
+                  <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--primary)]" />
+                  <span>{sentence}</span>
+                </li>
+              )
+            )}
+          </ul>
+        </div>
+      )}
+
+      {/* ── ROW 1: MONTH-OVER-MONTH COMPARISON (Sec 2) + SPENDING PACE (Sec 5) ── */}
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        {/* Section 2: Month-over-Month Comparison Card */}
+        {monthComparison && (
+          <div className="flex flex-col justify-between rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-sm)]">
+            <div>
+              <div className="mb-3 flex items-center justify-between">
+                <div>
+                  <h2 className="text-sm font-semibold text-[var(--text-primary)]">
+                    Month-over-Month Comparison
+                  </h2>
+                  <p className="text-xs text-[var(--text-muted)]">
+                    {monthComparison.thisMonthLabel} vs {monthComparison.lastMonthLabel}
+                  </p>
+                </div>
+                {monthComparison.pctChange !== null && (
+                  <span
+                    className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold ${
+                      monthComparison.diffPaise > 0
+                        ? 'bg-[var(--danger-muted)] text-[var(--danger)]'
+                        : monthComparison.diffPaise < 0
+                        ? 'bg-[var(--success-muted)] text-[var(--success)]'
+                        : 'bg-[var(--surface-2)] text-[var(--text-muted)]'
+                    }`}
+                  >
+                    {monthComparison.diffPaise > 0 ? (
+                      <ArrowUpRight className="h-3.5 w-3.5" />
+                    ) : monthComparison.diffPaise < 0 ? (
+                      <ArrowDownRight className="h-3.5 w-3.5" />
+                    ) : null}
+                    {monthComparison.pctChange > 0 ? '+' : ''}
+                    {monthComparison.pctChange}%
+                  </span>
+                )}
+              </div>
+
+              {/* Totals comparison */}
+              <div className="grid grid-cols-2 gap-3 rounded-xl bg-[var(--surface-2)] p-3">
+                <div>
+                  <p className="text-[11px] text-[var(--text-muted)]">
+                    {monthComparison.thisMonthLabel.split(' ')[0]} ({monthComparison.thisMonthTxCount} txns)
+                  </p>
+                  <p className="mt-0.5 text-lg font-bold text-[var(--text-primary)]">
+                    {formatINR(monthComparison.thisMonthPaise)}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-[11px] text-[var(--text-muted)]">
+                    {monthComparison.lastMonthLabel.split(' ')[0]} ({monthComparison.lastMonthTxCount} txns)
+                  </p>
+                  <p className="mt-0.5 text-lg font-semibold text-[var(--text-secondary)]">
+                    {formatINR(monthComparison.lastMonthPaise)}
+                  </p>
+                </div>
+              </div>
+
+              {/* Biggest category shifts */}
+              <div className="mt-3 flex flex-col gap-2">
+                {monthComparison.biggestIncrease && (
+                  <div className="flex items-center justify-between rounded-xl border border-[var(--border)] px-3 py-2 text-xs">
+                    <span className="flex items-center gap-1.5 text-[var(--text-secondary)]">
+                      <TrendingUp className="h-3.5 w-3.5 text-[var(--danger)]" />
+                      <span>Biggest jump:</span>
+                      <strong className="text-[var(--text-primary)]">
+                        {monthComparison.biggestIncrease.name}
+                      </strong>
+                    </span>
+                    <span className="font-semibold text-[var(--danger)]">
+                      +{formatINR(monthComparison.biggestIncrease.diffPaise)}
+                      {monthComparison.biggestIncrease.pctChange !== null
+                        ? ` (${monthComparison.biggestIncrease.pctChange}%)`
+                        : ''}
+                    </span>
+                  </div>
+                )}
+
+                {monthComparison.biggestDecrease && (
+                  <div className="flex items-center justify-between rounded-xl border border-[var(--border)] px-3 py-2 text-xs">
+                    <span className="flex items-center gap-1.5 text-[var(--text-secondary)]">
+                      <TrendingDown className="h-3.5 w-3.5 text-[var(--success)]" />
+                      <span>Biggest drop:</span>
+                      <strong className="text-[var(--text-primary)]">
+                        {monthComparison.biggestDecrease.name}
+                      </strong>
+                    </span>
+                    <span className="font-semibold text-[var(--success)]">
+                      -{formatINR(Math.abs(monthComparison.biggestDecrease.diffPaise))}
+                      {monthComparison.biggestDecrease.pctChange !== null
+                        ? ` (${Math.abs(monthComparison.biggestDecrease.pctChange)}%)`
+                        : ''}
+                    </span>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {monthComparison.summarySentence && (
+              <p className="mt-3 border-t border-[var(--border)] pt-2.5 text-xs text-[var(--text-muted)]">
+                {monthComparison.summarySentence}
+              </p>
+            )}
+          </div>
+        )}
+
+        {/* Section 5: Spending Velocity / Pace Card */}
+        <div className="flex flex-col justify-between rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-sm)]">
+          <div>
+            <div className="mb-3 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[var(--primary-muted)] text-[var(--primary)]">
+                  <Gauge className="h-4 w-4" />
+                </div>
+                <div>
+                  <h2 className="text-sm font-semibold text-[var(--text-primary)]">
+                    {format(now, 'MMMM')} Spending Pace
+                  </h2>
+                  <p className="text-xs text-[var(--text-muted)]">
+                    Day {daysElapsed} of {daysInMonth} ({Math.round((daysElapsed / daysInMonth) * 100)}% of month elapsed)
+                  </p>
+                </div>
+              </div>
+              <span className="rounded-full bg-[var(--surface-2)] px-2.5 py-1 text-[11px] font-semibold text-[var(--text-secondary)]">
+                {formatINRCompact(dailyPacePaise)}/day
+              </span>
+            </div>
+
+            <div className="rounded-xl bg-[var(--surface-2)] p-3.5">
+              <p className="text-xs text-[var(--text-secondary)]">
+                You've spent{' '}
+                <strong className="text-[var(--text-primary)]">
+                  {formatINR(spentThisMonthPaise)}
+                </strong>{' '}
+                so far — at this pace, you're on track for{' '}
+                <strong className="text-[var(--primary)]">
+                  ~{formatINR(projectedMonthEndPaise)}
+                </strong>{' '}
+                by month end.
+              </p>
+
+              {/* Progress bar showing month elapsed */}
+              <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-[var(--surface-3)]">
+                <div
+                  className="h-full rounded-full bg-[var(--primary)] transition-all"
+                  style={{ width: `${Math.min(100, Math.round((daysElapsed / daysInMonth) * 100))}%` }}
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Budget Projection Check */}
+          <div className="mt-3">
+            {hasActiveBudget && projectedBudgetDiffPaise !== null ? (
+              <div
+                className={`flex items-center justify-between rounded-xl px-3.5 py-2.5 text-xs font-medium ${
+                  projectedBudgetDiffPaise <= 0
+                    ? 'bg-[var(--success-muted)] text-[var(--success)]'
+                    : projectedBudgetDiffPaise <= effectiveBudgetPaise * 0.08
+                    ? 'bg-[var(--warning-muted)] text-[var(--warning)]'
+                    : 'bg-[var(--danger-muted)] text-[var(--danger)]'
+                }`}
+              >
+                <span>
+                  {projectedBudgetDiffPaise <= 0
+                    ? `At this pace, you'll finish ${formatINR(Math.abs(projectedBudgetDiffPaise))} under your ${formatINRCompact(effectiveBudgetPaise)} budget.`
+                    : `At this pace, you'll be ${formatINR(projectedBudgetDiffPaise)} over your ${formatINRCompact(effectiveBudgetPaise)} budget.`}
+                </span>
+              </div>
+            ) : (
+              <div className="flex items-center justify-between rounded-xl border border-dashed border-[var(--border)] px-3.5 py-2.5 text-xs text-[var(--text-muted)]">
+                <span>No budget set for {format(now, 'MMMM')}</span>
+                <Link
+                  to="/app/budgets"
+                  className="font-semibold text-[var(--primary)] hover:underline"
+                >
+                  Set budget →
+                </Link>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
-      {/* Year-over-year bar chart */}
+      {/* ── SECTION 1: 12-MONTH MONTH-OVER-MONTH TREND CHART ── */}
+      {monthlyTrend.length > 0 && (
+        <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-sm)]">
+          <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
+            <div>
+              <h3 className="text-sm font-semibold text-[var(--text-primary)]">
+                12-Month Spending Trend
+              </h3>
+              <p className="text-xs text-[var(--text-muted)]">
+                Monthly trajectory · * = in-progress month · Hover for MoM % and top category
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              {outlierMonths.length > 0 && (
+                <span className="rounded-full bg-[var(--warning-muted)] px-2.5 py-1 text-[10px] font-semibold text-[var(--warning)]">
+                  ⚡ Spike (&gt;50% above avg): {outlierMonths.map(m => m.label).join(', ')}
+                </span>
+              )}
+            </div>
+          </div>
+
+          <ResponsiveContainer width="100%" height={230}>
+            <LineChart
+              data={monthlyChartData}
+              margin={{ top: 22, right: 14, left: 0, bottom: 0 }}
+            >
+              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={gridColor} />
+              <XAxis
+                dataKey="displayLabel"
+                tick={{ fill: textColor, fontSize: 11 }}
+                axisLine={false}
+                tickLine={false}
+              />
+              <YAxis
+                tickFormatter={v => formatINRCompact(v)}
+                tick={{ fill: textColor, fontSize: 10 }}
+                axisLine={false}
+                tickLine={false}
+                width={52}
+              />
+              <Tooltip content={<MonthlyTrendTooltip />} />
+
+              {/* Completed months solid line */}
+              <Line
+                type="monotone"
+                dataKey="solidPaise"
+                stroke={primaryColor}
+                strokeWidth={2.5}
+                connectNulls={false}
+                dot={(props: any) => {
+                  const { cx, cy, payload } = props
+                  if (cx == null || cy == null || payload.solidPaise == null) return <g key={props.key} />
+                  if (payload.isOutlier) {
+                    return (
+                      <g key={props.key}>
+                        <circle
+                          cx={cx}
+                          cy={cy}
+                          r={6}
+                          fill={warningColor}
+                          stroke="var(--surface)"
+                          strokeWidth={2}
+                        />
+                        <text
+                          x={cx}
+                          y={cy - 10}
+                          textAnchor="middle"
+                          fill={warningColor}
+                          fontSize={9}
+                          fontWeight={700}
+                        >
+                          Spike
+                        </text>
+                      </g>
+                    )
+                  }
+                  return (
+                    <circle
+                      key={props.key}
+                      cx={cx}
+                      cy={cy}
+                      r={3.5}
+                      fill={primaryColor}
+                      stroke="var(--surface)"
+                      strokeWidth={1.5}
+                    />
+                  )
+                }}
+                activeDot={{ r: 5, fill: primaryColor }}
+              />
+
+              {/* In-progress current month dashed segment */}
+              {hasCurrentMonthAtEnd && (
+                <Line
+                  type="monotone"
+                  dataKey="dashedPaise"
+                  stroke={primaryColor}
+                  strokeWidth={2.5}
+                  strokeDasharray="5 5"
+                  strokeOpacity={0.75}
+                  connectNulls={false}
+                  dot={(props: any) => {
+                    const { cx, cy, payload } = props
+                    if (cx == null || cy == null || !payload.isCurrentMonth) return <g key={props.key} />
+                    return (
+                      <circle
+                        key={props.key}
+                        cx={cx}
+                        cy={cy}
+                        r={4.5}
+                        fill="var(--surface)"
+                        stroke={primaryColor}
+                        strokeWidth={2.5}
+                      />
+                    )
+                  }}
+                />
+              )}
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {/* ── ROW 3: CATEGORY 12-MONTH TREND (Sec 3) + DAY-OF-WEEK PATTERN (Sec 4) ── */}
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        {/* Section 3: Category Trend Over Time */}
+        {categoryMonthlyTrends.length > 0 && activeCatTrend && activeCatMeta && (
+          <div className="flex flex-col justify-between rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-sm)]">
+            <div>
+              <div className="mb-3 flex items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-sm font-semibold text-[var(--text-primary)]">
+                    Category Trend (12 Months)
+                  </h3>
+                  <p className="text-xs text-[var(--text-muted)]">
+                    Track whether a category is creeping up or spiky
+                  </p>
+                </div>
+                <select
+                  aria-label="Select category for trend"
+                  value={activeCatTrend.categoryId}
+                  onChange={e => setSelectedCategoryId(e.target.value)}
+                  className="rounded-xl border border-[var(--border)] bg-[var(--surface-2)] px-3 py-1.5 text-xs font-medium text-[var(--text-primary)] outline-none focus:border-[var(--primary)]"
+                >
+                  {categoryMonthlyTrends.map(cat => (
+                    <option key={cat.categoryId} value={cat.categoryId}>
+                      {getCategoryMeta(cat.name).emoji} {cat.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Mini summary pills for selected category */}
+              <div className="mb-3 grid grid-cols-3 gap-2">
+                <div className="rounded-xl bg-[var(--surface-2)] px-3 py-2">
+                  <p className="text-[10px] text-[var(--text-muted)]">12-mo Total</p>
+                  <p className="text-xs font-bold text-[var(--text-primary)]">
+                    {formatINRCompact(activeCatTrend.total12mPaise)}
+                  </p>
+                </div>
+                <div className="rounded-xl bg-[var(--surface-2)] px-3 py-2">
+                  <p className="text-[10px] text-[var(--text-muted)]">Monthly Avg</p>
+                  <p className="text-xs font-bold text-[var(--text-primary)]">
+                    {formatINRCompact(activeCatTrend.avgMonthlyPaise)}
+                  </p>
+                </div>
+                <div className="rounded-xl bg-[var(--surface-2)] px-3 py-2">
+                  <p className="text-[10px] text-[var(--text-muted)]">Peak Month</p>
+                  <p className="truncate text-xs font-bold text-[var(--text-primary)]">
+                    {activeCatTrend.peakMonthLabel ?? '—'}
+                  </p>
+                </div>
+              </div>
+
+              <ResponsiveContainer width="100%" height={180}>
+                <BarChart
+                  data={activeCatTrend.months.map(m => ({
+                    ...m,
+                    displayLabel: m.isCurrentMonth ? `${m.label.split(' ')[0]}*` : m.label.split(' ')[0],
+                  }))}
+                  margin={{ top: 8, right: 6, left: 0, bottom: 0 }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={gridColor} />
+                  <XAxis
+                    dataKey="displayLabel"
+                    tick={{ fill: textColor, fontSize: 10 }}
+                    axisLine={false}
+                    tickLine={false}
+                  />
+                  <YAxis
+                    tickFormatter={v => formatINRCompact(v)}
+                    tick={{ fill: textColor, fontSize: 10 }}
+                    axisLine={false}
+                    tickLine={false}
+                    width={46}
+                  />
+                  <Tooltip
+                    formatter={(val: any) => [formatINR(Number(val)), activeCatTrend.name]}
+                    contentStyle={{
+                      backgroundColor: 'var(--surface)',
+                      borderColor: 'var(--border)',
+                      borderRadius: '12px',
+                      fontSize: '12px',
+                    }}
+                  />
+                  <Bar dataKey="totalPaise" radius={[5, 5, 0, 0]}>
+                    {activeCatTrend.months.map((m, idx) => (
+                      <Cell
+                        key={idx}
+                        fill={
+                          m.isCurrentMonth
+                            ? activeCatMeta.color + '80'
+                            : activeCatMeta.color
+                        }
+                      />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        )}
+
+        {/* Section 4: Day-of-Week / Spending Pattern */}
+        {dayOfWeekStats && (
+          <div className="flex flex-col justify-between rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-sm)]">
+            <div>
+              <div className="mb-3 flex items-start justify-between gap-2">
+                <div>
+                  <h3 className="text-sm font-semibold text-[var(--text-primary)]">
+                    Day-of-Week Pattern
+                  </h3>
+                  <p className="text-xs text-[var(--text-muted)]">
+                    Weekday vs weekend spending distribution
+                  </p>
+                </div>
+                <span className="rounded-full bg-[var(--primary-muted)] px-2.5 py-1 text-[10px] font-semibold text-[var(--primary)]">
+                  Peak: {dayOfWeekStats.peakDayName}
+                </span>
+              </div>
+
+              <div className="mb-3 grid grid-cols-2 gap-2">
+                <div className="rounded-xl bg-[var(--surface-2)] px-3 py-2">
+                  <p className="text-[10px] text-[var(--text-muted)]">Weekday Share / Day</p>
+                  <p className="text-xs font-bold text-[var(--text-primary)]">
+                    {formatINRCompact(dayOfWeekStats.weekdayDailyAvgPaise)}
+                  </p>
+                </div>
+                <div className="rounded-xl bg-[var(--surface-2)] px-3 py-2">
+                  <p className="text-[10px] text-[var(--text-muted)]">Weekend Share / Day</p>
+                  <p className="text-xs font-bold text-[var(--text-primary)]">
+                    {formatINRCompact(dayOfWeekStats.weekendDailyAvgPaise)}
+                  </p>
+                </div>
+              </div>
+
+              <ResponsiveContainer width="100%" height={155}>
+                <BarChart
+                  data={dayOfWeekStats.days}
+                  margin={{ top: 8, right: 6, left: 0, bottom: 0 }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={gridColor} />
+                  <XAxis
+                    dataKey="shortName"
+                    tick={{ fill: textColor, fontSize: 11 }}
+                    axisLine={false}
+                    tickLine={false}
+                  />
+                  <YAxis
+                    tickFormatter={v => formatINRCompact(v)}
+                    tick={{ fill: textColor, fontSize: 10 }}
+                    axisLine={false}
+                    tickLine={false}
+                    width={46}
+                  />
+                  <Tooltip
+                    formatter={(val: any, _name: any, item: any) => [
+                      `${formatINR(Number(val))} (${item.payload.txCount} txns${
+                        item.payload.topCategoryName ? ` · Top: ${item.payload.topCategoryName}` : ''
+                      })`,
+                      item.payload.fullName,
+                    ]}
+                    contentStyle={{
+                      backgroundColor: 'var(--surface)',
+                      borderColor: 'var(--border)',
+                      borderRadius: '12px',
+                      fontSize: '12px',
+                    }}
+                  />
+                  <Bar dataKey="totalPaise" radius={[5, 5, 0, 0]}>
+                    {dayOfWeekStats.days.map((d, idx) => (
+                      <Cell
+                        key={idx}
+                        fill={
+                          d.fullName === dayOfWeekStats.peakDayName
+                            ? primaryColor
+                            : d.isWeekend
+                            ? '#0284C7'
+                            : primaryColor + '65'
+                        }
+                      />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+
+            {dayOfWeekStats.patternSentence && (
+              <p className="mt-2 border-t border-[var(--border)] pt-2.5 text-xs text-[var(--text-muted)]">
+                {dayOfWeekStats.patternSentence}
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* ── YEAR-OVER-YEAR BAR CHART (Existing) ── */}
       {yearlyTotals.length > 0 && (
         <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-sm)]">
           <div className="mb-1 flex items-start justify-between">
             <div>
-              <h3 className="text-sm font-semibold text-[var(--text-primary)]">Year-over-Year Spending</h3>
+              <h3 className="text-sm font-semibold text-[var(--text-primary)]">
+                Year-over-Year Spending
+              </h3>
               <p className="text-xs text-[var(--text-muted)]">* = current year (partial)</p>
             </div>
             {highestYear && (
@@ -226,16 +953,29 @@ export function InsightsPage() {
               </span>
             )}
           </div>
-          <ResponsiveContainer width="100%" height={200}>
+          <ResponsiveContainer width="100%" height={190}>
             <BarChart
-              data={yearlyTotals.map(y => ({ ...y, label: y.year === currentYear ? `${y.year}*` : String(y.year) }))}
+              data={yearlyTotals.map(y => ({
+                ...y,
+                label: y.year === currentYear ? `${y.year}*` : String(y.year),
+              }))}
               margin={{ top: 12, right: 8, left: 0, bottom: 0 }}
             >
               <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={gridColor} />
-              <XAxis dataKey="label" tick={{ fill: textColor, fontSize: 11 }} axisLine={false} tickLine={false} />
-              <YAxis tickFormatter={v => formatINRCompact(v)} tick={{ fill: textColor, fontSize: 10 }}
-                axisLine={false} tickLine={false} width={52} />
-              <Tooltip content={<ChartTooltip />} />
+              <XAxis
+                dataKey="label"
+                tick={{ fill: textColor, fontSize: 11 }}
+                axisLine={false}
+                tickLine={false}
+              />
+              <YAxis
+                tickFormatter={v => formatINRCompact(v)}
+                tick={{ fill: textColor, fontSize: 10 }}
+                axisLine={false}
+                tickLine={false}
+                width={52}
+              />
+              <Tooltip content={<YoYChartTooltip />} />
               <Bar dataKey="totalPaise" radius={[6, 6, 0, 0]}>
                 {yearlyTotals.map((entry, i) => (
                   <Cell
@@ -249,61 +989,152 @@ export function InsightsPage() {
         </div>
       )}
 
-      {/* Auto-generated insight sentence */}
-      {insights.highestYearInsight && (
-        <div className="flex items-start gap-3 rounded-2xl border border-[var(--primary-muted)] bg-[var(--primary-muted)] p-4">
-          <Lightbulb className="mt-0.5 h-4 w-4 shrink-0 text-[var(--primary)]" />
-          <p className="text-sm text-[var(--text-secondary)]">{insights.highestYearInsight}</p>
-        </div>
-      )}
+      {/* ── SECTION 6: EXPANDED STAT CARDS GRID ── */}
+      <div>
+        <h3 className="mb-3 text-sm font-semibold text-[var(--text-primary)]">
+          All-Time Records & Spending Habits
+        </h3>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {/* 1. Highest month ever (existing) */}
+          {insights.highestSpendingMonth && (
+            <InsightCard
+              icon={<TrendingUp className="h-4 w-4" />}
+              label="Highest month ever"
+              value={formatINRCompact(insights.highestSpendingMonth.totalPaise)}
+              sub={format(
+                new Date(insights.highestSpendingMonth.monthKey + '-01'),
+                'MMMM yyyy'
+              )}
+            />
+          )}
 
-      {/* Stat cards grid */}
-      <div className="grid grid-cols-2 gap-3">
-        {insights.highestSpendingMonth && (
+          {/* 2. Highest single DAY ever (new) */}
+          {highestSpendingDay && (
+            <InsightCard
+              icon={<Calendar className="h-4 w-4" />}
+              label="Highest single day ever"
+              value={formatINR(highestSpendingDay.totalPaise)}
+              badge={format(parseISO(highestSpendingDay.dateStr), 'd MMM yyyy')}
+              sub={`Driven by ${highestSpendingDay.topDescription} (${highestSpendingDay.topCategoryName})`}
+              accentColor="#EF4444"
+            />
+          )}
+
+          {/* 3. Most expensive category overall (new) */}
+          {mostExpensiveCategory && (
+            <InsightCard
+              icon={<Award className="h-4 w-4" />}
+              label="Most expensive category"
+              value={mostExpensiveCategory.name}
+              badge={`${mostExpensiveCategory.sharePct}% of total`}
+              sub={`${formatINRCompact(mostExpensiveCategory.totalPaise)} all-time spend`}
+              accentColor={getCategoryColor(mostExpensiveCategory.name)}
+            />
+          )}
+
+          {/* 4. Most frequent category (existing) */}
+          {insights.mostFrequentCategory && (
+            <InsightCard
+              icon={<Hash className="h-4 w-4" />}
+              label="Most frequent category"
+              value={insights.mostFrequentCategory.name}
+              sub={`${insights.mostFrequentCategory.count} transactions logged`}
+              accentColor={getCategoryColor(insights.mostFrequentCategory.name)}
+            />
+          )}
+
+          {/* 5. Largest single expense (existing) */}
+          {insights.largestSingleExpense && (
+            <InsightCard
+              icon={<Star className="h-4 w-4" />}
+              label="Largest single expense"
+              value={formatINR(insights.largestSingleExpense.amountPaise)}
+              sub={insights.largestSingleExpense.description}
+              accentColor="#F59E0B"
+            />
+          )}
+
+          {/* 6. Average transaction size: All-time vs Last 3m (new) */}
+          {avgTransactionSize && (
+            <InsightCard
+              icon={<Scale className="h-4 w-4" />}
+              label="Avg transaction size"
+              value={formatINR(avgTransactionSize.allTimeAvgPaise)}
+              badge={
+                avgTransactionSize.pctDiff !== null
+                  ? `${avgTransactionSize.pctDiff > 0 ? '+' : ''}${avgTransactionSize.pctDiff}% recent`
+                  : undefined
+              }
+              sub={
+                avgTransactionSize.last3MonthsAvgPaise !== null
+                  ? `Last 3 mos avg: ${formatINR(avgTransactionSize.last3MonthsAvgPaise)}`
+                  : 'Across all logged transactions'
+              }
+              accentColor="#6366F1"
+            />
+          )}
+
+          {/* 7. Payment mode habit & shift (new, tied to paymentColors.ts) */}
+          {paymentModeInsight && (
+            <InsightCard
+              icon={<CreditCard className="h-4 w-4" />}
+              label="Primary payment mode"
+              value={paymentModeInsight.dominantMode}
+              badge={`${paymentModeInsight.dominantSharePct}% share`}
+              sub={paymentModeInsight.summaryText}
+              accentColor={getPaymentColor(paymentModeInsight.dominantMode)}
+            />
+          )}
+
+          {/* 8. Longest daily logging streak (new) */}
+          {longestStreak && longestStreak.longestDays > 0 && (
+            <InsightCard
+              icon={<Flame className="h-4 w-4" />}
+              label="Longest logging streak"
+              value={`${longestStreak.longestDays} day${longestStreak.longestDays === 1 ? '' : 's'}`}
+              badge={
+                longestStreak.currentDays > 0
+                  ? `${longestStreak.currentDays}d active`
+                  : undefined
+              }
+              sub={
+                longestStreak.longestStartDate && longestStreak.longestEndDate
+                  ? `${format(parseISO(longestStreak.longestStartDate), 'd MMM')} – ${format(
+                      parseISO(longestStreak.longestEndDate),
+                      'd MMM yyyy'
+                    )}`
+                  : 'Consecutive days with logged expenses'
+              }
+              accentColor="#F97316"
+            />
+          )}
+
+          {/* 9. Most repeated micro spend (existing) */}
+          {insights.mostFrequentSmallDesc && (
+            <InsightCard
+              icon={<Repeat className="h-4 w-4" />}
+              label="Most repeated micro spend"
+              value={insights.mostFrequentSmallDesc.description}
+              sub={`${insights.mostFrequentSmallDesc.count}× under ₹100`}
+            />
+          )}
+
+          {/* 10. Gifts & Events all-time (existing) */}
           <InsightCard
-            icon={<TrendingUp className="h-4 w-4" />}
-            label="Highest month ever"
-            value={formatINRCompact(insights.highestSpendingMonth.totalPaise)}
-            sub={format(new Date(insights.highestSpendingMonth.monthKey + '-01'), 'MMMM yyyy')}
+            icon={<ZapIcon className="h-4 w-4" />}
+            label="Gifts & Events all-time"
+            value={formatINR(insights.giftEventTotalPaise)}
+            accentColor="#EC4899"
           />
-        )}
-        {insights.mostFrequentCategory && (
+
+          {/* 11. Trip spending all-time (existing) */}
           <InsightCard
-            icon={<Hash className="h-4 w-4" />}
-            label="Most frequent category"
-            value={insights.mostFrequentCategory.name}
-            sub={`${insights.mostFrequentCategory.count} transactions`}
+            icon={<span className="text-base">✈️</span>}
+            label="Trip spending all-time"
+            value={formatINR(insights.tripTotalPaise)}
+            accentColor="#06B6D4"
           />
-        )}
-        {insights.largestSingleExpense && (
-          <InsightCard
-            icon={<Star className="h-4 w-4" />}
-            label="Largest single expense"
-            value={formatINR(insights.largestSingleExpense.amountPaise)}
-            sub={insights.largestSingleExpense.description}
-            accentColor="#F59E0B"
-          />
-        )}
-        {insights.mostFrequentSmallDesc && (
-          <InsightCard
-            icon={<Repeat className="h-4 w-4" />}
-            label="Most repeated micro spend"
-            value={insights.mostFrequentSmallDesc.description}
-            sub={`${insights.mostFrequentSmallDesc.count}× under ₹100`}
-          />
-        )}
-        <InsightCard
-          icon={<ZapIcon className="h-4 w-4" />}
-          label="Gifts & Events all-time"
-          value={formatINR(insights.giftEventTotalPaise)}
-          accentColor="#EC4899"
-        />
-        <InsightCard
-          icon={<span className="text-base">✈️</span>}
-          label="Trip spending all-time"
-          value={formatINR(insights.tripTotalPaise)}
-          accentColor="#06B6D4"
-        />
+        </div>
       </div>
     </div>
   )

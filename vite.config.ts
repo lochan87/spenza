@@ -42,6 +42,7 @@ export default defineConfig({
         ],
       },
       workbox: {
+        maximumFileSizeToCacheInBytes: 4 * 1024 * 1024,
         // Cache app shell + JS/CSS assets
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
         // Runtime caching for Firestore & Firebase API calls

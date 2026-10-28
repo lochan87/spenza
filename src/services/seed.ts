@@ -12,16 +12,18 @@ import type { Category, PaymentAccount } from '@/types'
 // ─── Default Categories ───────────────────────────────────────────────────────
 
 const DEFAULT_CATEGORIES: Omit<Category, 'id'>[] = [
-  { name: 'Food & Drinks',       icon: '🍽️',  color: '#ff6b6b', isArchived: false },
-  { name: 'Transport',           icon: '🚗',  color: '#4ecdc4', isArchived: false },
-  { name: 'Gifts & Events',      icon: '🎁',  color: '#ff9f43', isArchived: false },
-  { name: 'Shopping',            icon: '🛍️',  color: '#a29bfe', isArchived: false },
-  { name: 'Health',              icon: '❤️',  color: '#fd79a8', isArchived: false },
-  { name: 'Education',           icon: '📚',  color: '#0984e3', isArchived: false },
-  { name: 'Bills & Recharge',    icon: '⚡',  color: '#fdcb6e', isArchived: false },
-  { name: 'Travel',              icon: '✈️',  color: '#6c63ff', isArchived: false },
-  { name: 'Personal/Household',  icon: '🏠',  color: '#00b894', isArchived: false },
-  { name: 'Other',               icon: '📌',  color: '#636e72', isArchived: false },
+  { name: 'Food & Drinks',       icon: '🍔',  color: '#F59E0B', isArchived: false },
+  { name: 'Transport & Vehicle', icon: '🚗',  color: '#3B82F6', isArchived: false },
+  { name: 'Shopping',            icon: '🛍️',  color: '#8B5CF6', isArchived: false },
+  { name: 'Gifts & Events',      icon: '🎁',  color: '#EC4899', isArchived: false },
+  { name: 'Health & Medical',    icon: '🏥',  color: '#EF4444', isArchived: false },
+  { name: 'Education & Career',  icon: '🎓',  color: '#6366F1', isArchived: false },
+  { name: 'Travel',              icon: '✈️',  color: '#06B6D4', isArchived: false },
+  { name: 'Outings & Social',    icon: '🥂',  color: '#10B981', isArchived: false },
+  { name: 'Bills & Recharge',    icon: '📱',  color: '#14B8A6', isArchived: false },
+  { name: 'Entertainment',       icon: '🎮',  color: '#F43F5E', isArchived: false },
+  { name: 'Personal/Household',  icon: '🏠',  color: '#A855F7', isArchived: false },
+  { name: 'Other',               icon: '📌',  color: '#64748B', isArchived: false },
 ]
 
 // ─── Default Payment Accounts ─────────────────────────────────────────────────

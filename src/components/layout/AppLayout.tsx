@@ -15,6 +15,7 @@ import {
   Target,
   Lightbulb,
   Upload,
+  Settings,
   ChevronDown,
   MoreHorizontal,
    type LucideIcon,
@@ -59,6 +60,7 @@ const SECONDARY_NAV_ITEMS: NavItem[] = [
   { href: '/app/trips', icon: Map, label: 'Trips', exact: false },
   { href: '/app/categories', icon: Tag, label: 'Categories', exact: false },
   { href: '/app/import', icon: Upload, label: 'Import', exact: false, separatorBefore: true },
+  { href: '/app/settings', icon: Settings, label: 'Settings', exact: false },
 ]
 
 function isRouteActive(pathname: string, item: NavItem): boolean {

@@ -4,14 +4,18 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
   Cell, ResponsiveContainer,
 } from 'recharts'
-import { RefreshCw, Loader2, Lightbulb, TrendingUp, Hash, Repeat, ZapIcon, Star, Download } from 'lucide-react'
+import { RefreshCw, Loader2, Lightbulb, TrendingUp, Hash, Repeat, ZapIcon, Star } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
-import { getCachedInsights, computeAndCacheInsights, isCacheFresh } from '@/services/insights'
-import { getCategories, getPaymentAccounts } from '@/services/transactions'
-import { exportTransactionsCSV } from '@/services/exportCsv'
+import {
+  getCachedInsights,
+  computeAndCacheInsights,
+  isCacheFresh,
+  getLiveTransactionCount,
+  isCacheStaleAgainstCount,
+} from '@/services/insights'
 import { formatINR, formatINRCompact } from '@/utils/format'
 import { useTheme } from '@/hooks/useTheme'
-import type { InsightsSummary, Category, PaymentAccount } from '@/types'
+import type { InsightsSummary } from '@/types'
 
 const currentYear = new Date().getFullYear()
 
@@ -67,11 +71,8 @@ export function InsightsPage() {
   const [insights, setInsights] = useState<InsightsSummary | null>(null)
   const [loading, setLoading] = useState(true)
   const [computing, setComputing] = useState(false)
-  const [exporting, setExporting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [cacheAge, setCacheAge] = useState<string>('')
-  const [categories, setCategories] = useState<Category[]>([])
-  const [accounts, setAccounts] = useState<PaymentAccount[]>([])
 
   const primaryColor = isDark ? '#14B8A6' : '#0F766E'
   const gridColor    = isDark ? '#334155' : '#E2E8F0'
@@ -83,8 +84,15 @@ export function InsightsPage() {
     setLoading(true)
     try {
       if (!forceRefresh) {
-        const cached = await getCachedInsights(user.uid)
-        if (cached && isCacheFresh(cached)) {
+        const [cached, liveCount] = await Promise.all([
+          getCachedInsights(user.uid),
+          getLiveTransactionCount(user.uid),
+        ])
+        if (
+          cached &&
+          isCacheFresh(cached) &&
+          !isCacheStaleAgainstCount(cached, liveCount)
+        ) {
           setInsights(cached)
           // computedAt is a real Timestamp when read back from Firestore
           const computed = (cached.computedAt as any).toDate
@@ -95,7 +103,7 @@ export function InsightsPage() {
           return
         }
       }
-      // Need to compute
+      // Need to compute (or cache was stale against current transaction count)
       setComputing(true)
       const fresh = await computeAndCacheInsights(user.uid)
       // null return = not enough data (< 3 transactions)
@@ -121,25 +129,6 @@ export function InsightsPage() {
   }
 
   useEffect(() => { loadInsights() }, [user])
-
-  useEffect(() => {
-    if (!user) return
-    Promise.all([getCategories(user.uid), getPaymentAccounts(user.uid)])
-      .then(([cats, accs]) => { setCategories(cats); setAccounts(accs) })
-      .catch(console.error)
-  }, [user])
-
-  const handleExport = async () => {
-    if (!user) return
-    setExporting(true)
-    try {
-      await exportTransactionsCSV(user.uid, categories, accounts)
-    } catch (err) {
-      console.error('[Spenza] Export error:', err)
-    } finally {
-      setExporting(false)
-    }
-  }
 
   if (loading) {
     return (
@@ -212,14 +201,6 @@ export function InsightsPage() {
           <p className="text-xs text-[var(--text-subtle)]">{cacheAge}</p>
         </div>
         <div className="flex gap-2">
-          <button
-            onClick={handleExport}
-            disabled={exporting}
-            className="flex items-center gap-1.5 rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs font-medium text-[var(--text-muted)] hover:bg-[var(--surface-2)] disabled:opacity-50"
-          >
-            {exporting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
-            Export CSV
-          </button>
           <button
             onClick={() => loadInsights(true)}
             disabled={computing}

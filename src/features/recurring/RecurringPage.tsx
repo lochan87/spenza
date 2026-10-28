@@ -15,6 +15,8 @@ import { formatINR } from '@/utils/format'
 import { getCategoryMeta } from '@/utils/categoryColors'
 import { Drawer } from '@/components/layout/Drawer'
 import { SkeletonCard } from '@/features/dashboard/components/SkeletonCard'
+import { ThemedSelect } from '@/components/ui/ThemedSelect'
+import { DatePicker } from '@/components/ui/DatePicker'
 import type { RecurringItem, Category, PaymentAccount, PaymentMode, RecurringFrequency } from '@/types'
 
 const RecurringSchema = z.object({
@@ -314,13 +316,20 @@ function RecurringForm({
         {/* Category */}
         <div>
           <label className="mb-1.5 block text-xs font-medium text-[var(--text-muted)]">Category *</label>
-          <select {...register('categoryId')}
-            className="w-full rounded-xl border border-[var(--border)] bg-[var(--surface-2)] px-4 py-3 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--primary)]">
-            <option value="">Select category</option>
-            {categories.filter(c => !c.isArchived).map(c => (
-              <option key={c.id} value={c.id}>{c.name}</option>
-            ))}
-          </select>
+          <ThemedSelect
+            size="lg"
+            value={watch('categoryId') ?? ''}
+            onChange={val => setValue('categoryId', val, { shouldValidate: true })}
+            options={[
+              { value: '', label: 'Select category' },
+              ...categories.filter(c => !c.isArchived).map(c => ({
+                value: c.id,
+                label: `${getCategoryMeta(c.name).emoji} ${c.name}`,
+              })),
+            ]}
+            className="w-full"
+          />
+          {errors.categoryId && <p className="mt-1 text-xs text-[var(--danger)]">{errors.categoryId.message}</p>}
         </div>
 
         {/* Frequency */}
@@ -364,8 +373,13 @@ function RecurringForm({
         {/* Next due date */}
         <div>
           <label className="mb-1.5 block text-xs font-medium text-[var(--text-muted)]">Next Due Date *</label>
-          <input type="date" {...register('nextDueDateStr')}
-            className="w-full rounded-xl border border-[var(--border)] bg-[var(--surface-2)] px-4 py-3 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--primary)]" />
+          <DatePicker
+            size="md"
+            value={watch('nextDueDateStr') ?? ''}
+            onChange={val => setValue('nextDueDateStr', val, { shouldValidate: true })}
+            className="w-full"
+          />
+          {errors.nextDueDateStr && <p className="mt-1 text-xs text-[var(--danger)]">{errors.nextDueDateStr.message}</p>}
         </div>
 
         {/* Payment mode */}
@@ -386,11 +400,16 @@ function RecurringForm({
         {ACCOUNT_MODES.includes(payMode) && filteredAccounts.length > 0 && (
           <div>
             <label className="mb-1.5 block text-xs font-medium text-[var(--text-muted)]">Account</label>
-            <select {...register('paymentAccountId')}
-              className="w-full rounded-xl border border-[var(--border)] bg-[var(--surface-2)] px-4 py-3 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--primary)]">
-              <option value="">Select account</option>
-              {filteredAccounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
-            </select>
+            <ThemedSelect
+              size="lg"
+              value={watch('paymentAccountId') ?? ''}
+              onChange={val => setValue('paymentAccountId', val || null)}
+              options={[
+                { value: '', label: 'Select account' },
+                ...filteredAccounts.map(a => ({ value: a.id, label: a.name })),
+              ]}
+              className="w-full"
+            />
           </div>
         )}
 

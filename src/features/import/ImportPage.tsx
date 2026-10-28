@@ -19,6 +19,7 @@ import {
 import { TRIP_ACCENT_COLOR } from '@/utils/tripBuckets'
 import { formatINR } from '@/utils/format'
 import { DatePicker } from '@/components/ui/DatePicker'
+import { ThemedSelect } from '@/components/ui/ThemedSelect'
 import type { Category, Trip } from '@/types'
 
 // ─── Step enum ────────────────────────────────────────────────────────────────
@@ -420,15 +421,17 @@ export function ImportPage() {
                     <p className="truncate text-sm font-medium text-[var(--text-primary)]">{sheet.name}</p>
                     <p className="text-[10px] text-[var(--text-muted)]">{sheet.rowCount} rows</p>
                   </div>
-                  <select
+                  <ThemedSelect
+                    size="sm"
+                    align="end"
                     value={kind}
-                    onChange={e => setSheetKindOverrides(p => ({ ...p, [sheet.name]: e.target.value as SheetKind }))}
-                    className="rounded-lg border border-[var(--border)] bg-[var(--surface-2)] px-2 py-1.5 text-xs text-[var(--text-primary)] outline-none"
-                  >
-                    <option value="monthly">📅 Monthly</option>
-                    <option value="trip">✈️ Trip</option>
-                    <option value="unknown">⏭ Skip</option>
-                  </select>
+                    onChange={val => setSheetKindOverrides(p => ({ ...p, [sheet.name]: val as SheetKind }))}
+                    options={[
+                      { value: 'monthly', label: '📅 Monthly' },
+                      { value: 'trip', label: '✈️ Trip' },
+                      { value: 'unknown', label: '⏭ Skip' },
+                    ]}
+                  />
                 </div>
               )
             })}
@@ -487,10 +490,11 @@ export function ImportPage() {
                         <label className="mb-1 block text-xs font-medium text-[var(--text-muted)]">
                           Link to Trip
                         </label>
-                        <select
+                        <ThemedSelect
+                          size="md"
                           value={selectedTripId}
-                          onChange={e => {
-                            const nextId = e.target.value || null
+                          onChange={val => {
+                            const nextId = val || null
                             setTripIdMap(p => ({ ...p, [result.sheet.name]: nextId }))
                             if (nextId) {
                               const linked = existingTrips.find(t => t.id === nextId)
@@ -506,13 +510,12 @@ export function ImportPage() {
                               syncTripSheetDates(result.sheet.name, m.startDate, m.endDate)
                             }
                           }}
-                          className="w-full rounded-xl border border-[var(--border)] bg-[var(--surface-2)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none"
-                        >
-                          <option value="">✨ Create a new trip for this sheet</option>
-                          {existingTrips.map(t => (
-                            <option key={t.id} value={t.id}>{t.coverEmoji} {t.name}</option>
-                          ))}
-                        </select>
+                          options={[
+                            { value: '', label: '✨ Create a new trip for this sheet' },
+                            ...existingTrips.map(t => ({ value: t.id, label: `${t.coverEmoji} ${t.name}` })),
+                          ]}
+                          className="w-full"
+                        />
                       </div>
 
                       {!selectedTripId && (
@@ -590,12 +593,13 @@ export function ImportPage() {
                       return (
                         <div key={field}>
                           <label className="mb-1 block text-[10px] font-medium text-[var(--text-muted)] uppercase tracking-wide">{field}</label>
-                          <select
+                          <ThemedSelect
+                            size="sm"
                             value={currentVal}
-                            onChange={e => {
+                            onChange={val => {
                               const nextMap = {
                                 ...(colMapOverrides[result.sheet.name] ?? result.colMap),
-                                [field]: e.target.value,
+                                [field]: val,
                               }
                               setColMapOverrides(p => ({ ...p, [result.sheet.name]: nextMap }))
                               if (workbook) {
@@ -605,13 +609,12 @@ export function ImportPage() {
                                 )
                               }
                             }}
-                            className="w-full rounded-lg border border-[var(--border)] bg-[var(--surface-2)] px-2 py-1.5 text-xs text-[var(--text-primary)] outline-none"
-                          >
-                            {field === 'date' && <option value="">— No date column —</option>}
-                            {result.headers.map(h => (
-                              <option key={h} value={h}>{h}</option>
-                            ))}
-                          </select>
+                            options={[
+                              ...(field === 'date' ? [{ value: '', label: '— No date column —' }] : []),
+                              ...result.headers.map(h => ({ value: h, label: h })),
+                            ]}
+                            className="w-full"
+                          />
                         </div>
                       )
                     })}
@@ -962,27 +965,34 @@ function CategoryReviewStep({ parseResults, categories, catOverrides, onOverride
               <p className="text-[10px] text-[var(--text-muted)]">{rows.length} unique description(s)</p>
             </div>
             {/* Bulk-assign all in this group */}
-            <select
-              className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-xs text-[var(--text-primary)] outline-none"
-              onChange={e => { if (e.target.value) rows.forEach(r => onOverride(r.description, e.target.value)) }}
-              defaultValue=""
-            >
-              <option value="">Bulk assign all →</option>
-              {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </select>
+            <ThemedSelect
+              size="xs"
+              align="end"
+              value=""
+              placeholder="Bulk assign all →"
+              onChange={val => { if (val) rows.forEach(r => onOverride(r.description, val)) }}
+              options={[
+                { value: '', label: 'Bulk assign all →' },
+                ...categories.map(c => ({ value: c.id, label: c.name })),
+              ]}
+              className="bg-[var(--surface)]"
+            />
           </div>
           <div className="divide-y divide-[var(--border)]">
             {rows.slice(0, 12).map((row, i) => (
               <div key={i} className="flex items-center gap-3 px-4 py-2.5">
                 <p className="flex-1 truncate text-sm text-[var(--text-primary)]">{row.description}</p>
-                <select
+                <ThemedSelect
+                  size="xs"
+                  align="end"
                   value={catOverrides[row.description.toLowerCase()] ?? ''}
-                  onChange={e => onOverride(row.description, e.target.value)}
-                  className="shrink-0 rounded-lg border border-[var(--border)] bg-[var(--surface-2)] px-2 py-1 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--primary)]"
-                >
-                  <option value="">Auto: {row.suggestedCategoryName ?? '?'}</option>
-                  {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                </select>
+                  onChange={val => onOverride(row.description, val)}
+                  options={[
+                    { value: '', label: `Auto: ${row.suggestedCategoryName ?? '?'}` },
+                    ...categories.map(c => ({ value: c.id, label: c.name })),
+                  ]}
+                  className="shrink-0"
+                />
               </div>
             ))}
             {rows.length > 12 && (

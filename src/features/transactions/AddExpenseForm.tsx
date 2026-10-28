@@ -15,6 +15,7 @@ import { getPaymentMeta, getAccountTypeMeta } from '@/utils/paymentColors'
 import { suggestCategory } from '@/utils/categoryKeywords'
 import { TransactionSchema } from '@/utils/schemas'
 import { DatePicker } from '@/components/ui/DatePicker'
+import { ThemedSelect } from '@/components/ui/ThemedSelect'
 import type { Transaction, PaymentAccount, Category, PaymentMode, TransactionType, Trip } from '@/types'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -624,16 +625,18 @@ export function AddExpenseForm({
                     className="flex-1 bg-transparent text-sm text-[var(--text-primary)] outline-none placeholder:text-[var(--text-subtle)]"
                     onKeyDown={e => e.key === 'Enter' && handleAddAccount()}
                   />
-                  <select
+                  <ThemedSelect
+                    size="xs"
                     value={newAccountType}
-                    onChange={e => setNewAccountType(e.target.value as typeof newAccountType)}
-                    className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-xs text-[var(--text-muted)]"
-                  >
-                    <option value="Bank">Bank</option>
-                    <option value="UPI">UPI</option>
-                    <option value="Card">Card</option>
-                    <option value="Wallet">Wallet</option>
-                  </select>
+                    onChange={val => setNewAccountType(val as typeof newAccountType)}
+                    options={[
+                      { value: 'Bank', label: 'Bank' },
+                      { value: 'UPI', label: 'UPI' },
+                      { value: 'Card', label: 'Card' },
+                      { value: 'Wallet', label: 'Wallet' },
+                    ]}
+                    className="bg-[var(--surface)]"
+                  />
                   <button
                     type="button"
                     onClick={handleAddAccount}

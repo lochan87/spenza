@@ -19,6 +19,7 @@ import { deduplicateTripSummaryTransactions } from '@/services/importExcel'
 import { getCategoryMeta } from '@/utils/categoryColors'
 import { getPaymentMeta, getAccountTypeMeta } from '@/utils/paymentColors'
 import { formatINR, formatINRExact } from '@/utils/format'
+import { ThemedSelect } from '@/components/ui/ThemedSelect'
 import { AddExpenseForm } from './AddExpenseForm'
 import { Drawer } from '@/components/layout/Drawer'
 import type { Transaction, Category, PaymentAccount, Trip, PaymentMode } from '@/types'
@@ -727,66 +728,67 @@ export function TransactionsPage() {
 
           {/* Row 2: Month, Category, Type/Source, Payment Mode selectors */}
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-            <select
+            <ThemedSelect
               value={selectedMonth}
-              onChange={e => setSelectedMonth(e.target.value)}
+              onChange={setSelectedMonth}
               aria-label="Filter by month"
-              className="rounded-xl border border-[var(--border)] bg-[var(--surface-2)] px-2.5 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--primary)]"
-            >
-              <option value="all">📅 All Months ({transactions.length})</option>
-              {availableMonths.map(m => (
-                <option key={m.key} value={m.key}>
-                  {m.label} ({m.count})
-                </option>
-              ))}
-            </select>
+              className="w-full"
+              options={[
+                { value: 'all', label: `📅 All Months (${transactions.length})` },
+                ...availableMonths.map(m => ({
+                  value: m.key,
+                  label: `${m.label} (${m.count})`,
+                })),
+              ]}
+            />
 
-            <select
+            <ThemedSelect
               value={selectedCategoryId}
-              onChange={e => setSelectedCategoryId(e.target.value)}
+              onChange={setSelectedCategoryId}
               aria-label="Filter by category"
-              className="rounded-xl border border-[var(--border)] bg-[var(--surface-2)] px-2.5 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--primary)]"
-            >
-              <option value="all">🏷️ All Categories</option>
-              {categories
-                .filter(c => !c.isArchived)
-                .map(c => (
-                  <option key={c.id} value={c.id}>
-                    {getCategoryMeta(c.name).emoji} {c.name}
-                  </option>
-                ))}
-            </select>
+              className="w-full"
+              options={[
+                { value: 'all', label: '🏷️ All Categories' },
+                ...categories
+                  .filter(c => !c.isArchived)
+                  .map(c => ({
+                    value: c.id,
+                    label: `${getCategoryMeta(c.name).emoji} ${c.name}`,
+                  })),
+              ]}
+            />
 
-            <select
+            <ThemedSelect
               value={selectedTypeFilter}
-              onChange={e => setSelectedTypeFilter(e.target.value)}
+              onChange={setSelectedTypeFilter}
               aria-label="Filter by expense type or source"
-              className="rounded-xl border border-[var(--border)] bg-[var(--surface-2)] px-2.5 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--primary)]"
-            >
-              <option value="all">✨ All Types & Sources</option>
-              <option value="imported">📥 Excel Imported Only</option>
-              <option value="manual">✍️ Manually Logged Only</option>
-              <option value="everyday">Everyday</option>
-              <option value="trip">✈️ Trip</option>
-              <option value="recurring">Recurring</option>
-              <option value="one-time">One-time</option>
-              <option value="gift-event">Gift / Event</option>
-              <option value="reimbursable">Reimbursable</option>
-            </select>
+              className="w-full"
+              options={[
+                { value: 'all', label: '✨ All Types & Sources' },
+                { value: 'imported', label: '📥 Excel Imported Only' },
+                { value: 'manual', label: '✍️ Manually Logged Only' },
+                { value: 'everyday', label: 'Everyday' },
+                { value: 'trip', label: '✈️ Trip' },
+                { value: 'recurring', label: 'Recurring' },
+                { value: 'one-time', label: 'One-time' },
+                { value: 'gift-event', label: 'Gift / Event' },
+                { value: 'reimbursable', label: 'Reimbursable' },
+              ]}
+            />
 
-            <select
+            <ThemedSelect
               value={selectedModeFilter}
-              onChange={e => setSelectedModeFilter(e.target.value)}
+              onChange={setSelectedModeFilter}
               aria-label="Filter by payment mode"
-              className="rounded-xl border border-[var(--border)] bg-[var(--surface-2)] px-2.5 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--primary)]"
-            >
-              <option value="all">💳 All Payment Modes</option>
-              {(['UPI', 'Cash', 'Card', 'Bank Transfer', 'Other'] as PaymentMode[]).map(m => (
-                <option key={m} value={m}>
-                  {m}
-                </option>
-              ))}
-            </select>
+              className="w-full"
+              options={[
+                { value: 'all', label: '💳 All Payment Modes' },
+                ...(['UPI', 'Cash', 'Card', 'Bank Transfer', 'Other'] as PaymentMode[]).map(m => ({
+                  value: m,
+                  label: m,
+                })),
+              ]}
+            />
           </div>
         </div>
       )}

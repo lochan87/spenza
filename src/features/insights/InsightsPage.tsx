@@ -46,6 +46,7 @@ import { formatINR, formatINRCompact } from '@/utils/format'
 import { getCategoryMeta, getCategoryColor } from '@/utils/categoryColors'
 import { getPaymentColor } from '@/utils/paymentColors'
 import { useTheme } from '@/hooks/useTheme'
+import { ThemedSelect } from '@/components/ui/ThemedSelect'
 import type {
   InsightsSummary,
   MonthlyTrendPoint,
@@ -900,18 +901,17 @@ export function InsightsPage() {
                     Track whether a category is creeping up or spiky
                   </p>
                 </div>
-                <select
+                <ThemedSelect
+                  size="sm"
+                  align="end"
                   aria-label="Select category for trend"
                   value={activeCatTrend.categoryId}
-                  onChange={e => setSelectedCategoryId(e.target.value)}
-                  className="rounded-xl border border-[var(--border)] bg-[var(--surface-2)] px-3 py-1.5 text-xs font-medium text-[var(--text-primary)] outline-none focus:border-[var(--primary)]"
-                >
-                  {categoryMonthlyTrends.map(cat => (
-                    <option key={cat.categoryId} value={cat.categoryId}>
-                      {getCategoryMeta(cat.name).emoji} {cat.name}
-                    </option>
-                  ))}
-                </select>
+                  onChange={val => setSelectedCategoryId(val)}
+                  options={categoryMonthlyTrends.map(cat => ({
+                    value: cat.categoryId,
+                    label: `${getCategoryMeta(cat.name).emoji} ${cat.name}`,
+                  }))}
+                />
               </div>
 
               {/* Mini summary pills for selected category */}

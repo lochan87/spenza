@@ -16,6 +16,7 @@ import {
 } from 'date-fns'
 import { Calendar as CalendarIcon, ChevronLeft, ChevronRight, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { ThemedSelect } from './ThemedSelect'
 
 export interface DatePickerProps {
   /** ISO date string "YYYY-MM-DD" or "" */
@@ -193,31 +194,23 @@ export function DatePicker({
             </button>
 
             <div className="flex items-center gap-1">
-              <select
-                value={viewMonth.getMonth()}
-                onChange={e => setViewMonth(m => setMonth(m, Number(e.target.value)))}
+              <ThemedSelect
+                size="xs"
+                value={String(viewMonth.getMonth())}
+                onChange={val => setViewMonth(m => setMonth(m, Number(val)))}
+                options={MONTH_LABELS.map((label, idx) => ({ value: String(idx), label }))}
                 aria-label="Select month"
-                className="cursor-pointer rounded-lg border border-[var(--border)] bg-[var(--surface-2)] px-2 py-1 text-xs font-semibold text-[var(--text-primary)] outline-none focus:border-[var(--primary)]"
-              >
-                {MONTH_LABELS.map((label, idx) => (
-                  <option key={label} value={idx}>
-                    {label}
-                  </option>
-                ))}
-              </select>
+                className="font-semibold"
+              />
 
-              <select
-                value={viewMonth.getFullYear()}
-                onChange={e => setViewMonth(m => setYear(m, Number(e.target.value)))}
+              <ThemedSelect
+                size="xs"
+                value={String(viewMonth.getFullYear())}
+                onChange={val => setViewMonth(m => setYear(m, Number(val)))}
+                options={years.map(yr => ({ value: String(yr), label: String(yr) }))}
                 aria-label="Select year"
-                className="cursor-pointer rounded-lg border border-[var(--border)] bg-[var(--surface-2)] px-2 py-1 text-xs font-semibold text-[var(--text-primary)] outline-none focus:border-[var(--primary)]"
-              >
-                {years.map(yr => (
-                  <option key={yr} value={yr}>
-                    {yr}
-                  </option>
-                ))}
-              </select>
+                className="font-semibold"
+              />
             </div>
 
             <button
@@ -312,3 +305,4 @@ export function DatePicker({
     </PopoverPrimitive.Root>
   )
 }
+

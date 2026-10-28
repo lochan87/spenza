@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import { useForm, Controller } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -417,7 +417,8 @@ export function AddExpenseForm({
                     setValue('categoryId', cat.id)
                     setCategorySuggestion(null)
                   }}
-                  className={`flex flex-col items-center gap-1 rounded-xl border p-2 text-xs transition-all ${
+                  title={catName}
+                  className={`flex min-h-[4.25rem] flex-col items-center gap-1 rounded-xl border px-1 py-2 text-xs transition-all ${
                     selected
                       ? 'border-transparent shadow-[var(--shadow-sm)]'
                       : 'border-[var(--border)] hover:border-[var(--border-strong)]'
@@ -430,10 +431,20 @@ export function AddExpenseForm({
                 >
                   <span className="text-lg">{meta.emoji}</span>
                   <span
-                    className="text-center leading-tight"
+                    className="w-full break-words text-center leading-tight [hyphens:auto]"
                     style={{ fontSize: '10px', color: selected ? meta.color : 'var(--text-muted)' }}
                   >
-                    {catName.replace(' & ', ' &\n').split('\n')[0]}
+                    {/* Full name always shown; allow a line break after "/" (e.g. Personal/Household) */}
+                    {catName.split('/').map((part, i) => (
+                      <Fragment key={i}>
+                        {i > 0 && (
+                          <>
+                            /<wbr />
+                          </>
+                        )}
+                        {part}
+                      </Fragment>
+                    ))}
                   </span>
                 </button>
               )

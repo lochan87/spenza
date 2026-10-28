@@ -14,6 +14,7 @@ import { getCategoryMeta, resolveCategoryName, DEFAULT_CATEGORY_ORDER } from '@/
 import { getPaymentMeta, getAccountTypeMeta } from '@/utils/paymentColors'
 import { suggestCategory } from '@/utils/categoryKeywords'
 import { TransactionSchema } from '@/utils/schemas'
+import { DatePicker } from '@/components/ui/DatePicker'
 import type { Transaction, PaymentAccount, Category, PaymentMode, TransactionType } from '@/types'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -485,11 +486,13 @@ export function AddExpenseForm({
             >
               Yesterday
             </button>
-            <input
+            <DatePicker
               id="date-input"
-              type="date"
-              {...register('date')}
-              className="flex-1 rounded-lg border border-[var(--border)] bg-[var(--surface-2)] px-3 py-2 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--primary)]"
+              size="sm"
+              value={watch('date')}
+              onChange={val => setValue('date', val, { shouldValidate: true })}
+              className="flex-1 py-2"
+              aria-label="Expense date"
             />
           </div>
         </div>

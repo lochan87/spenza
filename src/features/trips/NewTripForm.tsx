@@ -8,6 +8,7 @@ import { X, Loader2, Map } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
 import { addTrip, updateTrip } from '@/services/trips'
 import { TRIP_ACCENT_COLOR } from '@/utils/tripBuckets'
+import { DatePicker } from '@/components/ui/DatePicker'
 import type { Trip } from '@/types'
 
 const TripSchema = z.object({
@@ -162,18 +163,25 @@ export function NewTripForm({ onSuccess, onClose, editTrip }: NewTripFormProps) 
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="mb-1.5 block text-xs font-medium text-[var(--text-muted)]">Start Date *</label>
-            <input
-              type="date"
-              {...register('startDate')}
-              className="w-full rounded-xl border border-[var(--border)] bg-[var(--surface-2)] px-3 py-3 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--primary)]"
+            <DatePicker
+              value={watch('startDate')}
+              onChange={val => setValue('startDate', val, { shouldValidate: true })}
+              placeholder="Start date"
+              className="w-full py-3"
+              aria-label="Trip start date"
             />
           </div>
           <div>
             <label className="mb-1.5 block text-xs font-medium text-[var(--text-muted)]">End Date</label>
-            <input
-              type="date"
-              {...register('endDate')}
-              className="w-full rounded-xl border border-[var(--border)] bg-[var(--surface-2)] px-3 py-3 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--primary)]"
+            <DatePicker
+              value={watch('endDate') ?? ''}
+              minDate={watch('startDate')}
+              defaultMonthDate={watch('startDate')}
+              allowClear
+              onChange={val => setValue('endDate', val, { shouldValidate: true })}
+              placeholder="End date (optional)"
+              className="w-full py-3"
+              aria-label="Trip end date"
             />
           </div>
         </div>

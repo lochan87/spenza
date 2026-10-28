@@ -17,6 +17,7 @@ import {
 } from '@/services/importExcel'
 import { TRIP_ACCENT_COLOR } from '@/utils/tripBuckets'
 import { formatINR } from '@/utils/format'
+import { DatePicker } from '@/components/ui/DatePicker'
 import type { Category, Trip } from '@/types'
 
 // ─── Step enum ────────────────────────────────────────────────────────────────
@@ -479,32 +480,36 @@ export function ImportPage() {
                             <label className="mb-1 block text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">
                               Start Date
                             </label>
-                            <input
-                              type="date"
+                            <DatePicker
+                              size="sm"
                               value={meta.startDate}
-                              onChange={e =>
+                              onChange={val =>
                                 setNewTripConfigs(p => ({
                                   ...p,
-                                  [result.sheet.name]: { ...p[result.sheet.name], startDate: e.target.value },
+                                  [result.sheet.name]: { ...p[result.sheet.name], startDate: val },
                                 }))
                               }
-                              className="w-full rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2.5 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--primary)]"
+                              className="w-full bg-[var(--surface)]"
+                              aria-label={`Start date for ${result.sheet.name}`}
                             />
                           </div>
                           <div>
                             <label className="mb-1 block text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">
                               End Date
                             </label>
-                            <input
-                              type="date"
+                            <DatePicker
+                              size="sm"
                               value={meta.endDate}
-                              onChange={e =>
+                              minDate={meta.startDate}
+                              defaultMonthDate={meta.startDate}
+                              onChange={val =>
                                 setNewTripConfigs(p => ({
                                   ...p,
-                                  [result.sheet.name]: { ...p[result.sheet.name], endDate: e.target.value },
+                                  [result.sheet.name]: { ...p[result.sheet.name], endDate: val },
                                 }))
                               }
-                              className="w-full rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2.5 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--primary)]"
+                              className="w-full bg-[var(--surface)]"
+                              aria-label={`End date for ${result.sheet.name}`}
                             />
                           </div>
                         </div>
@@ -1002,13 +1007,13 @@ function DateReviewPanel({
                 </p>
               </div>
               <div className="flex shrink-0 flex-wrap items-center gap-2">
-                <input
-                  type="date"
-                  max={todayISO()}
+                <DatePicker
+                  size="sm"
+                  maxDate={todayISO()}
                   value={row.dateIssue === 'future' ? '' : row.dateStr}
-                  onChange={e => onFix([row.rowId], e.target.value)}
+                  onChange={val => onFix([row.rowId], val)}
                   aria-label={`Correct date for ${row.description}`}
-                  className="rounded-lg border border-[var(--border)] bg-[var(--surface-2)] px-2 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--primary)]"
+                  className="min-w-[138px]"
                 />
                 <label className="flex cursor-pointer items-center gap-1.5 text-xs text-[var(--text-muted)]">
                   <input
@@ -1050,13 +1055,13 @@ function BulkDateFix({
         {rows.length} rows share the date “{rawDate || '(blank)'}”
       </p>
       <div className="flex items-center gap-2">
-        <input
-          type="date"
-          max={todayISO()}
+        <DatePicker
+          size="sm"
+          maxDate={todayISO()}
           value={value}
-          onChange={e => setValue(e.target.value)}
+          onChange={setValue}
           aria-label={`Date for all ${rows.length} rows with “${rawDate}”`}
-          className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--primary)]"
+          className="min-w-[138px] bg-[var(--surface)]"
         />
         <button
           type="button"

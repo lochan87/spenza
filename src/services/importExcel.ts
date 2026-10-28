@@ -24,13 +24,21 @@ export interface DetectedSheet {
   guessedTripName?: string
 }
 
+/** A row is flagged when its date can't be parsed, or lies after today */
+export type DateIssue = 'unparseable' | 'future'
+
 /** A single parsed row before category + trip assignment */
 export interface ParsedRow {
+  /** Stable id within one parse run: `${sheetName}::${rowIndex}` — used to target per-row date fixes */
+  rowId: string
   description: string
   amountPaise: number
-  dateStr: string      // ISO "YYYY-MM-DD"
+  /** ISO "YYYY-MM-DD", or '' when the original date could not be parsed */
+  dateStr: string
   rawDate: string      // original cell value for display
   rawAmount: string    // original amount string for display
+  /** Set when the date is unparseable or in the future; must be resolved before import */
+  dateIssue: DateIssue | null
   /** Auto-suggested category name from keyword matching */
   suggestedCategoryName: string | null
   /** Final resolved category id — set after user review */
@@ -63,13 +71,35 @@ export interface DuplicateCandidate {
 
 // ─── Date parsing ─────────────────────────────────────────────────────────────
 
+/** Today's local date as ISO "YYYY-MM-DD" */
+export function todayISO(): string {
+  const n = new Date()
+  return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`
+}
+
+/** True only for real calendar dates in "YYYY-MM-DD" form (rejects e.g. 2026-02-31) */
+export function isValidISODate(s: string): boolean {
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  if (!m) return false
+  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])]
+  if (y < 1900 || mo < 1 || mo > 12 || d < 1) return false
+  const dt = new Date(y, mo - 1, d)
+  return dt.getFullYear() === y && dt.getMonth() === mo - 1 && dt.getDate() === d
+}
+
+/** Classify a row's date: unparseable/invalid, later than today, or fine (null) */
+export function getDateIssue(dateStr: string): DateIssue | null {
+  if (!dateStr || !isValidISODate(dateStr)) return 'unparseable'
+  return dateStr > todayISO() ? 'future' : null
+}
+
 /**
  * Normalize dates from various Excel formats:
  *  - Excel serial number (number)
  *  - "DD/MM/YY" or "DD/MM/YYYY"
  *  - "YYYY-MM-DD"
  *  - JS Date object (already parsed by xlsx)
- *  Returns ISO "YYYY-MM-DD" or null on failure.
+ *  Returns ISO "YYYY-MM-DD" or null on failure (including impossible dates like 31/02/2026).
  */
 export function parseExcelDate(val: unknown): string | null {
   if (val === null || val === undefined || val === '') return null
@@ -80,11 +110,13 @@ export function parseExcelDate(val: unknown): string | null {
   }
   // ──────────────────────────────────────────────────────────────────────────
 
+  const valid = (iso: string): string | null => (isValidISODate(iso) ? iso : null)
+
   // Excel numeric serial date (e.g. from an unformatted number cell)
   if (typeof val === 'number' && val > 0) {
     const date = XLSX.SSF.parse_date_code(val)
     if (!date) return null
-    return `${date.y}-${String(date.m).padStart(2, '0')}-${String(date.d).padStart(2, '0')}`
+    return valid(`${date.y}-${String(date.m).padStart(2, '0')}-${String(date.d).padStart(2, '0')}`)
   }
 
   if (typeof val === 'string') {
@@ -97,25 +129,26 @@ export function parseExcelDate(val: unknown): string | null {
         const yr = parseInt(y)
         y = (yr >= 50 ? `19${y}` : `20${y}`)
       }
-      return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`
+      return valid(`${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`)
     }
     // "YYYY-MM-DD"
     const isoMatch = s.match(/^(\d{4})-(\d{2})-(\d{2})/)
-    if (isoMatch) return `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`
+    if (isoMatch) return valid(`${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`)
     // "DD-MM-YYYY"
     const dmy2Match = s.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/)
     if (dmy2Match) {
       const [, d, m, y] = dmy2Match
-      return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`
+      return valid(`${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`)
     }
   }
 
   // Already a JS Date from xlsx
   if (val instanceof Date) {
+    if (isNaN(val.getTime())) return null
     const y = val.getFullYear()
     const m = String(val.getMonth() + 1).padStart(2, '0')
     const d = String(val.getDate()).padStart(2, '0')
-    return `${y}-${m}-${d}`
+    return valid(`${y}-${m}-${d}`)
   }
 
   return null
@@ -246,7 +279,7 @@ export function parseSheet(
 
   const rows: ParsedRow[] = []
 
-  for (const raw of rawRows) {
+  for (const [rowIndex, raw] of rawRows.entries()) {
     const descRaw = String(raw[colMap.description] ?? '').trim()
     const amtRaw  = raw[colMap.amount]
     const dateRaw = raw[colMap.date]
@@ -259,18 +292,18 @@ export function parseSheet(
       continue
     }
 
-    const dateStr = parseExcelDate(dateRaw)
-    if (!dateStr) {
-      if (descRaw) warnings.push(`Skipped "${descRaw}": unrecognised date "${dateRaw}"`)
-      continue
-    }
+    // Rows with a bad or future date are KEPT and flagged (dateIssue) so the user can
+    // correct them in the preview step, rather than being silently dropped.
+    const dateStr = parseExcelDate(dateRaw) ?? ''
 
     rows.push({
+      rowId: `${sheetName}::${rowIndex}`,
       description: descRaw,
       amountPaise,
       dateStr,
       rawDate: String(dateRaw),
       rawAmount: String(amtRaw),
+      dateIssue: getDateIssue(dateStr),
       suggestedCategoryName: suggestCategory(descRaw),
       resolvedCategoryId: null,
       sheetName,

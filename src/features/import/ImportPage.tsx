@@ -10,6 +10,7 @@ import { getCategories } from '@/services/transactions'
 import { getTrips } from '@/services/trips'
 import {
   parseWorkbook, parseSheet, detectDuplicates, batchImportTransactions,
+  getDateIssue, todayISO,
   type DetectedSheet, type SheetParseResult, type ParsedRow,
   type DuplicateCandidate, type SheetKind, type ImportProgress,
 } from '@/services/importExcel'
@@ -45,6 +46,55 @@ export function ImportPage() {
   const [error, setError] = useState<string | null>(null)
   const [expandedSheet, setExpandedSheet] = useState<string | null>(null)
   const [parsing, setParsing] = useState(false)
+  /**
+   * Deliberate per-row choices for rows with a date issue (keyed by ParsedRow.rowId):
+   *  - 'import-anyway': keep a future date as-is
+   *  - 'skip': leave the row out of the import (the only as-is option for unparseable dates)
+   */
+  const [dateDecisions, setDateDecisions] = useState<Record<string, 'import-anyway' | 'skip'>>({})
+  const [showAllFlagged, setShowAllFlagged] = useState(false)
+
+  // ── Date review helpers ──────────────────────────────────────────────────────
+
+  const allParsedRows = parseResults.flatMap(r => r.rows)
+  const flaggedRows = allParsedRows.filter(r => r.dateIssue)
+  const unresolvedRows = flaggedRows.filter(r => !dateDecisions[r.rowId])
+  const skippedRowCount = allParsedRows.filter(r => dateDecisions[r.rowId] === 'skip').length
+
+  /**
+   * Write a corrected date into the underlying parsed rows (not just the preview), so every
+   * later step — duplicate detection, trip creation and the final write — uses the fixed date.
+   */
+  const applyDateFix = (rowIds: string[], newDate: string) => {
+    if (!newDate) return
+    const ids = new Set(rowIds)
+    setParseResults(prev =>
+      prev.map(res => {
+        if (!res.rows.some(r => ids.has(r.rowId))) return res
+        const rows = res.rows.map(r =>
+          ids.has(r.rowId) ? { ...r, dateStr: newDate, dateIssue: getDateIssue(newDate) } : r
+        )
+        return { ...res, rows, previewRows: rows.slice(0, 10) }
+      })
+    )
+    // A correction replaces any earlier decision for these rows
+    setDateDecisions(prev => {
+      const next = { ...prev }
+      for (const id of rowIds) delete next[id]
+      return next
+    })
+  }
+
+  const setDecision = (rowIds: string[], decision: 'import-anyway' | 'skip' | null) => {
+    setDateDecisions(prev => {
+      const next = { ...prev }
+      for (const id of rowIds) {
+        if (decision) next[id] = decision
+        else delete next[id]
+      }
+      return next
+    })
+  }
 
   // ── Step 1: File upload ──────────────────────────────────────────────────────
 
@@ -93,6 +143,8 @@ export function ImportPage() {
         return parseSheet(workbook, sheet.name, kind, colMapOverrides[sheet.name])
       })
       setParseResults(results)
+      setDateDecisions({})
+      setShowAllFlagged(false)
       setStep('preview')
     } finally {
       setParsing(false)
@@ -108,8 +160,12 @@ export function ImportPage() {
   // ── Step 4: Categories → duplicate check ─────────────────────────────────────
 
   const handleCheckDuplicates = () => {
-    const monthlyResults = parseResults.filter(r => r.sheet.kind === 'monthly')
-    const tripResults    = parseResults.filter(r => r.sheet.kind === 'trip')
+    const activeResults = parseResults.map(r => ({
+      ...r,
+      rows: r.rows.filter(row => dateDecisions[row.rowId] !== 'skip'),
+    }))
+    const monthlyResults = activeResults.filter(r => r.sheet.kind === 'monthly')
+    const tripResults    = activeResults.filter(r => r.sheet.kind === 'trip')
     const monthlyRows    = monthlyResults.flatMap(r => r.rows)
     const dups = detectDuplicates(monthlyRows, tripResults)
     setDuplicates(dups)
@@ -124,6 +180,12 @@ export function ImportPage() {
 
   const handleImport = async () => {
     if (!user) return
+    // Safety net: never write rows with an unresolved date problem
+    if (unresolvedRows.length > 0) {
+      setError(`${unresolvedRows.length} row${unresolvedRows.length === 1 ? '' : 's'} still need date correction.`)
+      setStep('preview')
+      return
+    }
     setStep('importing')
     setError(null)
     try {
@@ -152,6 +214,8 @@ export function ImportPage() {
       for (const result of parseResults) {
         const tripId = tripIdMap[result.sheet.name] ?? null
         for (const row of result.rows) {
+          // Rows the user chose to skip because of an unusable date
+          if (dateDecisions[row.rowId] === 'skip') continue
           // Skip monthly rows excluded by duplicate resolution
           const key = `${row.sheetName}::${row.description}::${row.dateStr}`
           if (excludedMonthlyDescs.has(key)) continue
@@ -195,7 +259,7 @@ export function ImportPage() {
   ]
   const stepIdx = STEPS.findIndex(s => s.key === step)
 
-  const totalRows = parseResults.reduce((s, r) => s + r.rows.length, 0)
+  const totalRows = parseResults.reduce((s, r) => s + r.rows.length, 0) - skippedRowCount
 
   return (
     <div className="flex flex-col gap-5 pb-20 md:pb-6">
@@ -288,6 +352,18 @@ export function ImportPage() {
       {/* ── STEP: PREVIEW ── */}
       {step === 'preview' && (
         <div className="flex flex-col gap-4">
+          {/* ── Date review: unparseable or future dates must be fixed (or deliberately overridden) ── */}
+          <DateReviewPanel
+            flaggedRows={flaggedRows}
+            unresolvedCount={unresolvedRows.length}
+            decisions={dateDecisions}
+            showAll={showAllFlagged}
+            onToggleShowAll={() => setShowAllFlagged(v => !v)}
+            onFix={applyDateFix}
+            onDecide={setDecision}
+            error={error}
+          />
+
           {parseResults.map(result => (
             <div key={result.sheet.name} className="rounded-2xl border border-[var(--border)] bg-[var(--surface)]">
               <button
@@ -298,7 +374,7 @@ export function ImportPage() {
                   <span className="text-base">{result.sheet.kind === 'trip' ? '✈️' : '📅'}</span>
                   <div className="text-left">
                     <p className="text-sm font-semibold text-[var(--text-primary)]">{result.sheet.name}</p>
-                    <p className="text-xs text-[var(--text-muted)]">{result.rows.length} rows · {result.warnings.length > 0 ? `${result.warnings.length} warnings` : 'clean'}</p>
+                    <p className="text-xs text-[var(--text-muted)]">{result.rows.length} rows · {result.warnings.length > 0 ? `${result.warnings.length} warnings` : 'clean'}{result.rows.some(r => r.dateIssue) ? ` · ${result.rows.filter(r => r.dateIssue).length} date issue(s)` : ''}</p>
                   </div>
                 </div>
                 {expandedSheet === result.sheet.name ? <ChevronUp className="h-4 w-4 text-[var(--text-muted)]" /> : <ChevronDown className="h-4 w-4 text-[var(--text-muted)]" />}
@@ -364,7 +440,7 @@ export function ImportPage() {
                           <tr key={i} className="border-b border-[var(--border)] last:border-0">
                             <td className="max-w-[160px] truncate px-3 py-2 text-[var(--text-primary)]">{row.description}</td>
                             <td className="px-3 py-2 text-right font-mono text-[var(--text-primary)]">{formatINR(row.amountPaise)}</td>
-                            <td className="px-3 py-2 text-[var(--text-muted)]">{row.dateStr}</td>
+                            <td className={`px-3 py-2 ${row.dateIssue ? 'font-semibold text-[var(--warning)]' : 'text-[var(--text-muted)]'}`}>{row.dateStr || `? ${row.rawDate}`}</td>
                             <td className="px-3 py-2">
                               <span className={`rounded-full px-2 py-0.5 text-[9px] font-medium ${
                                 row.suggestedCategoryName
@@ -397,8 +473,12 @@ export function ImportPage() {
           ))}
 
           <button onClick={handleGoToCategories}
-            className="flex items-center justify-center gap-2 rounded-xl bg-[var(--primary)] py-3.5 text-sm font-semibold text-white">
-            <ArrowRight className="h-4 w-4" /> Review Categories
+            disabled={unresolvedRows.length > 0}
+            className="flex items-center justify-center gap-2 rounded-xl bg-[var(--primary)] py-3.5 text-sm font-semibold text-white disabled:opacity-50 disabled:cursor-not-allowed">
+            <ArrowRight className="h-4 w-4" />
+            {unresolvedRows.length > 0
+              ? `Fix ${unresolvedRows.length} date${unresolvedRows.length === 1 ? '' : 's'} to continue`
+              : 'Review Categories'}
           </button>
         </div>
       )}
@@ -406,7 +486,10 @@ export function ImportPage() {
       {/* ── STEP: CATEGORIES bulk review ── */}
       {step === 'categories' && (
         <CategoryReviewStep
-          parseResults={parseResults}
+          parseResults={parseResults.map(r => ({
+            ...r,
+            rows: r.rows.filter(row => dateDecisions[row.rowId] !== 'skip'),
+          }))}
           categories={categories}
           catOverrides={catOverrides}
           onOverride={(desc, catId) => setCatOverrides(p => ({ ...p, [desc.toLowerCase()]: catId }))}
@@ -488,15 +571,18 @@ export function ImportPage() {
           {/* Summary */}
           <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5">
             <h3 className="mb-3 text-sm font-semibold text-[var(--text-primary)]">Import Summary</h3>
-            {parseResults.map(r => (
-              <div key={r.sheet.name} className="flex items-center justify-between py-2 border-b border-[var(--border)] last:border-0">
-                <div className="flex items-center gap-2">
-                  <span>{r.sheet.kind === 'trip' ? '✈️' : '📅'}</span>
-                  <span className="text-sm text-[var(--text-primary)]">{r.sheet.name}</span>
+            {parseResults.map(r => {
+              const activeCount = r.rows.filter(row => dateDecisions[row.rowId] !== 'skip').length
+              return (
+                <div key={r.sheet.name} className="flex items-center justify-between py-2 border-b border-[var(--border)] last:border-0">
+                  <div className="flex items-center gap-2">
+                    <span>{r.sheet.kind === 'trip' ? '✈️' : '📅'}</span>
+                    <span className="text-sm text-[var(--text-primary)]">{r.sheet.name}</span>
+                  </div>
+                  <span className="text-sm font-semibold text-[var(--text-primary)]">{activeCount} rows</span>
                 </div>
-                <span className="text-sm font-semibold text-[var(--text-primary)]">{r.rows.length} rows</span>
-              </div>
-            ))}
+              )
+            })}
             <div className="mt-3 flex items-center justify-between border-t border-[var(--border)] pt-3">
               <span className="text-sm font-semibold text-[var(--text-primary)]">Total</span>
               <span className="text-sm font-bold text-[var(--primary)]">{totalRows} transactions</span>
@@ -662,6 +748,168 @@ function CategoryReviewStep({ parseResults, categories, catOverrides, onOverride
         className="flex items-center justify-center gap-2 rounded-xl bg-[var(--primary)] py-3.5 text-sm font-semibold text-white">
         <ArrowRight className="h-4 w-4" /> Check for Duplicates
       </button>
+    </div>
+  )
+}
+
+// ─── Date Review Sub-components ───────────────────────────────────────────────
+
+interface DateReviewProps {
+  flaggedRows: ParsedRow[]
+  unresolvedCount: number
+  decisions: Record<string, 'import-anyway' | 'skip'>
+  showAll: boolean
+  onToggleShowAll: () => void
+  onFix: (rowIds: string[], newDate: string) => void
+  onDecide: (rowIds: string[], decision: 'import-anyway' | 'skip' | null) => void
+  error: string | null
+}
+
+const FLAGGED_PAGE_SIZE = 50
+
+function DateReviewPanel({
+  flaggedRows, unresolvedCount, decisions, showAll, onToggleShowAll, onFix, onDecide, error,
+}: DateReviewProps) {
+  if (flaggedRows.length === 0) {
+    return (
+      <div className="flex items-center gap-2 rounded-2xl border border-[var(--border)] bg-[var(--success-muted)] px-4 py-3 text-xs font-medium text-[var(--success)]">
+        <CheckCircle2 className="h-4 w-4 shrink-0" /> All dates look valid — none are unparseable or in the future.
+      </div>
+    )
+  }
+
+  // Unresolved first, then those already handled
+  const ordered = [...flaggedRows].sort(
+    (a, b) => Number(!!decisions[a.rowId]) - Number(!!decisions[b.rowId])
+  )
+  const visible = showAll ? ordered : ordered.slice(0, FLAGGED_PAGE_SIZE)
+
+  // Bulk fix groups: unresolved rows that share the exact same original cell text
+  const groups = new Map<string, ParsedRow[]>()
+  for (const r of flaggedRows) {
+    if (decisions[r.rowId]) continue
+    const list = groups.get(r.rawDate) ?? []
+    list.push(r)
+    groups.set(r.rawDate, list)
+  }
+  const bulkGroups = [...groups.entries()].filter(([, rows]) => rows.length >= 2)
+
+  const allClear = unresolvedCount === 0
+
+  return (
+    <div className={`rounded-2xl border bg-[var(--surface)] ${allClear ? 'border-[var(--success)]' : 'border-[var(--warning)]'}`}>
+      <div className={`flex items-start gap-2 rounded-t-2xl px-4 py-3 ${allClear ? 'bg-[var(--success-muted)]' : 'bg-[var(--warning-muted)]'}`}>
+        {allClear
+          ? <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-[var(--success)]" />
+          : <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--warning)]" />}
+        <div>
+          <p className={`text-sm font-semibold ${allClear ? 'text-[var(--success)]' : 'text-[var(--warning)]'}`}>
+            {allClear
+              ? 'All date issues resolved'
+              : `${unresolvedCount} row${unresolvedCount === 1 ? '' : 's'} need date correction before import`}
+          </p>
+          <p className="text-[11px] text-[var(--text-muted)]">
+            Pick the correct date for each row. Future dates can be kept deliberately with "Import anyway";
+            rows with an unreadable date can be skipped. Import stays locked until the count reaches zero.
+          </p>
+        </div>
+      </div>
+
+      {error && (
+        <p className="border-b border-[var(--border)] px-4 py-2 text-xs font-medium text-[var(--danger)]">{error}</p>
+      )}
+
+      {bulkGroups.length > 0 && (
+        <div className="flex flex-col gap-2 border-b border-[var(--border)] px-4 py-3">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Bulk fix</p>
+          {bulkGroups.map(([raw, rows]) => (
+            <BulkDateFix key={raw} rawDate={raw} rows={rows} onApply={onFix} />
+          ))}
+        </div>
+      )}
+
+      <ul className="divide-y divide-[var(--border)]">
+        {visible.map(row => {
+          const decision = decisions[row.rowId]
+          return (
+            <li key={row.rowId} className="flex flex-col gap-2 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium text-[var(--text-primary)]">{row.description}</p>
+                <p className="text-[11px] text-[var(--text-muted)]">
+                  {formatINR(row.amountPaise)} · {row.sheetName} ·{' '}
+                  <span className="font-semibold text-[var(--warning)]">
+                    {row.dateIssue === 'future'
+                      ? `future date ${row.dateStr}`
+                      : `unreadable date “${row.rawDate}”`}
+                  </span>
+                </p>
+              </div>
+              <div className="flex shrink-0 flex-wrap items-center gap-2">
+                <input
+                  type="date"
+                  max={todayISO()}
+                  value={row.dateIssue === 'future' ? '' : row.dateStr}
+                  onChange={e => onFix([row.rowId], e.target.value)}
+                  aria-label={`Correct date for ${row.description}`}
+                  className="rounded-lg border border-[var(--border)] bg-[var(--surface-2)] px-2 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--primary)]"
+                />
+                <label className="flex cursor-pointer items-center gap-1.5 text-xs text-[var(--text-muted)]">
+                  <input
+                    type="checkbox"
+                    checked={!!decision}
+                    onChange={e =>
+                      onDecide([row.rowId], e.target.checked ? (row.dateIssue === 'future' ? 'import-anyway' : 'skip') : null)
+                    }
+                    className="h-3.5 w-3.5 accent-[var(--primary)]"
+                  />
+                  {row.dateIssue === 'future' ? 'Import anyway' : 'Skip row'}
+                </label>
+              </div>
+            </li>
+          )
+        })}
+      </ul>
+
+      {ordered.length > FLAGGED_PAGE_SIZE && (
+        <button
+          type="button"
+          onClick={onToggleShowAll}
+          className="w-full rounded-b-2xl border-t border-[var(--border)] px-4 py-2.5 text-xs font-medium text-[var(--primary)]"
+        >
+          {showAll ? 'Show fewer' : `Show all ${ordered.length} flagged rows`}
+        </button>
+      )}
+    </div>
+  )
+}
+
+function BulkDateFix({
+  rawDate, rows, onApply,
+}: { rawDate: string; rows: ParsedRow[]; onApply: (rowIds: string[], newDate: string) => void }) {
+  const [value, setValue] = useState('')
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-[var(--surface-2)] px-3 py-2">
+      <p className="text-xs text-[var(--text-primary)]">
+        {rows.length} rows share the date “{rawDate || '(blank)'}”
+      </p>
+      <div className="flex items-center gap-2">
+        <input
+          type="date"
+          max={todayISO()}
+          value={value}
+          onChange={e => setValue(e.target.value)}
+          aria-label={`Date for all ${rows.length} rows with “${rawDate}”`}
+          className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--primary)]"
+        />
+        <button
+          type="button"
+          disabled={!value}
+          onClick={() => { onApply(rows.map(r => r.rowId), value); setValue('') }}
+          className="rounded-lg border border-[var(--primary)] px-2.5 py-1.5 text-xs font-semibold text-[var(--primary)] disabled:opacity-40"
+        >
+          Apply to all {rows.length}
+        </button>
+      </div>
     </div>
   )
 }

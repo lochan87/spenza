@@ -187,6 +187,30 @@ export function classifySheet(name: string): SheetKind {
   return 'unknown'
 }
 
+/** Derive a clean human-readable trip name from a worksheet name (e.g. "Gokarna Trip - Feb 2026" → "Gokarna Trip") */
+export function inferTripNameFromSheet(sheetName: string): string {
+  const cleaned = sheetName
+    .replace(/[-–—]\s*(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s*\d{2,4}/i, '')
+    .trim()
+  return cleaned || sheetName.trim()
+}
+
+/** Infer start and end ISO dates ("YYYY-MM-DD") from a trip sheet's parsed rows */
+export function inferTripDateRange(rows: ParsedRow[]): { startDate: string; endDate: string } {
+  const validDates = rows
+    .map(r => r.dateStr)
+    .filter(d => d && isValidISODate(d))
+    .sort()
+  if (validDates.length === 0) {
+    const today = todayISO()
+    return { startDate: today, endDate: today }
+  }
+  return {
+    startDate: validDates[0],
+    endDate: validDates[validDates.length - 1],
+  }
+}
+
 // ─── Column auto-detection ────────────────────────────────────────────────────
 
 /** Try to auto-detect which columns are Expense/Amount/Date from headers */
@@ -240,11 +264,12 @@ export function parseWorkbook(buffer: ArrayBuffer, fileName?: string): {
     const ws = workbook.Sheets[name]
     const range = XLSX.utils.decode_range(ws['!ref'] ?? 'A1')
     const rowCount = Math.max(0, range.e.r - range.s.r) // exclude header
+    const kind = classifySheet(name)
     return {
       name,
       rowCount,
-      kind: classifySheet(name),
-      guessedTripName: classifySheet(name) === 'trip' ? name.replace(/[-–—]\s*(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\s*\d{4}/i, '').trim() : undefined,
+      kind,
+      guessedTripName: kind === 'trip' ? inferTripNameFromSheet(name) : undefined,
     }
   })
   return { sheets, workbook }
@@ -264,9 +289,11 @@ export function parseSheet(
 
   const warnings: string[] = []
 
+  const guessedTripName = kind === 'trip' ? inferTripNameFromSheet(sheetName) : undefined
+
   if (rawRows.length === 0) {
     return {
-      sheet: { name: sheetName, rowCount: 0, kind },
+      sheet: { name: sheetName, rowCount: 0, kind, guessedTripName },
       rows: [],
       colMap: colMapOverride ?? { description: '', amount: '', date: '' },
       previewRows: [],
@@ -313,7 +340,7 @@ export function parseSheet(
   }
 
   return {
-    sheet: { name: sheetName, rowCount: rows.length, kind },
+    sheet: { name: sheetName, rowCount: rows.length, kind, guessedTripName },
     rows,
     colMap,
     previewRows: rows.slice(0, 10),

@@ -1,19 +1,21 @@
 import { useState, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { Timestamp } from 'firebase/firestore'
 import {
   FileSpreadsheet, CheckCircle2, AlertTriangle, ChevronRight,
   ChevronDown, ChevronUp, Loader2, ArrowRight, Home, Check,
-  Info,
+  Info, Map as MapIcon,
 } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
 import { getCategories } from '@/services/transactions'
-import { getTrips } from '@/services/trips'
+import { getTrips, addTrip } from '@/services/trips'
 import {
   parseWorkbook, parseSheet, detectDuplicates, batchImportTransactions,
-  getDateIssue, todayISO,
+  getDateIssue, todayISO, isValidISODate, inferTripNameFromSheet, inferTripDateRange,
   type DetectedSheet, type SheetParseResult, type ParsedRow,
   type DuplicateCandidate, type SheetKind, type ImportProgress,
 } from '@/services/importExcel'
+import { TRIP_ACCENT_COLOR } from '@/utils/tripBuckets'
 import { formatINR } from '@/utils/format'
 import type { Category, Trip } from '@/types'
 
@@ -38,11 +40,14 @@ export function ImportPage() {
   const [categories, setCategories] = useState<Category[]>([])
   const [existingTrips, setExistingTrips] = useState<Trip[]>([])
   const [tripIdMap, setTripIdMap] = useState<Record<string, string | null>>({}) // sheetName → tripId
+  const [newTripConfigs, setNewTripConfigs] = useState<
+    Record<string, { name?: string; startDate?: string; endDate?: string }>
+  >({})
   const [catOverrides, setCatOverrides] = useState<Record<string, string>>({}) // description → categoryId
   const [duplicates, setDuplicates] = useState<DuplicateCandidate[]>([])
   const [dupResolutions, setDupResolutions] = useState<Record<number, 'monthly' | 'trip' | 'both'>>({})
   const [progress, setProgress] = useState<ImportProgress | null>(null)
-  const [result, setResult] = useState<{ imported: number; skipped: number } | null>(null)
+  const [result, setResult] = useState<{ imported: number; skipped: number; tripsCreated: number } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [expandedSheet, setExpandedSheet] = useState<string | null>(null)
   const [parsing, setParsing] = useState(false)
@@ -96,6 +101,19 @@ export function ImportPage() {
     })
   }
 
+  /** Resolve trip name + start/end dates for a trip sheet (combining user edits with inferred defaults) */
+  const getResolvedTripMeta = (res: SheetParseResult) => {
+    const activeRows = res.rows.filter(r => dateDecisions[r.rowId] !== 'skip')
+    const inferred = inferTripDateRange(activeRows)
+    const cfg = newTripConfigs[res.sheet.name]
+    const defaultName = res.sheet.guessedTripName || inferTripNameFromSheet(res.sheet.name)
+    const name = (cfg?.name !== undefined ? cfg.name : defaultName).trim() || defaultName
+    const rawStart = cfg?.startDate && isValidISODate(cfg.startDate) ? cfg.startDate : inferred.startDate
+    const rawEnd = cfg?.endDate && isValidISODate(cfg.endDate) ? cfg.endDate : inferred.endDate
+    const [startDate, endDate] = rawStart <= rawEnd ? [rawStart, rawEnd] : [rawEnd, rawStart]
+    return { name, startDate, endDate }
+  }
+
   // ── Step 1: File upload ──────────────────────────────────────────────────────
 
   const handleFile = useCallback(async (file: File) => {
@@ -144,6 +162,7 @@ export function ImportPage() {
       })
       setParseResults(results)
       setDateDecisions({})
+      setNewTripConfigs({})
       setShowAllFlagged(false)
       setStep('preview')
     } finally {
@@ -211,23 +230,57 @@ export function ImportPage() {
         // 'both': include everything
       }
 
-      for (const result of parseResults) {
-        const tripId = tripIdMap[result.sheet.name] ?? null
-        for (const row of result.rows) {
-          // Rows the user chose to skip because of an unusable date
-          if (dateDecisions[row.rowId] === 'skip') continue
-          // Skip monthly rows excluded by duplicate resolution
-          const key = `${row.sheetName}::${row.description}::${row.dateStr}`
-          if (excludedMonthlyDescs.has(key)) continue
-          if (excludedTripSheets.has(row.sheetName)) continue
+      const resolvedTripIds: Record<string, string | null> = { ...tripIdMap }
+      let tripsCreated = 0
 
+      for (const result of parseResults) {
+        if (excludedTripSheets.has(result.sheet.name)) continue
+
+        const activeSheetRows = result.rows.filter(row => {
+          if (dateDecisions[row.rowId] === 'skip') return false
+          const key = `${row.sheetName}::${row.description}::${row.dateStr}`
+          if (excludedMonthlyDescs.has(key)) return false
+          return true
+        })
+
+        if (activeSheetRows.length === 0) continue
+
+        let tripId = resolvedTripIds[result.sheet.name] ?? null
+
+        // If this is a trip sheet and the user kept "Create a new trip for this sheet",
+        // create the parent users/{uid}/trips/{tripId} document FIRST so every row in this
+        // sheet references a real Trip document with valid startDate/endDate Timestamps.
+        if (result.sheet.kind === 'trip' && !tripId) {
+          const meta = getResolvedTripMeta(result)
+          tripId = await addTrip(user.uid, {
+            name: meta.name,
+            startDate: Timestamp.fromDate(new Date(meta.startDate + 'T12:00:00')),
+            endDate: Timestamp.fromDate(new Date(meta.endDate + 'T12:00:00')),
+            coverEmoji: '✈️',
+            coverColor: TRIP_ACCENT_COLOR,
+            budgetPaise: null,
+            isArchived: false,
+            notes: `Imported from Excel sheet "${result.sheet.name}"`,
+          })
+          resolvedTripIds[result.sheet.name] = tripId
+          tripsCreated++
+        }
+
+        for (const row of activeSheetRows) {
           // Apply category overrides
           const overrideCatId = catOverrides[row.description.toLowerCase()]
-          if (overrideCatId) row.resolvedCategoryId = overrideCatId
+          const resolvedCategoryId = overrideCatId ?? row.resolvedCategoryId
 
-          allRows.push({ ...row, tripId })
+          allRows.push({
+            ...row,
+            resolvedCategoryId,
+            isTripRow: result.sheet.kind === 'trip',
+            tripId: result.sheet.kind === 'trip' ? tripId : null,
+          })
         }
       }
+
+      setTripIdMap(resolvedTripIds)
 
       const res = await batchImportTransactions(
         user.uid, allRows, catNameToId, otherCat,
@@ -236,7 +289,7 @@ export function ImportPage() {
       if (!res.cacheInvalidated) {
         setError('Transactions imported, but failed to refresh the Insights cache automatically.')
       }
-      setResult(res)
+      setResult({ ...res, tripsCreated })
       setStep('done')
     } catch (err) {
       console.error('[Spenza Import]', err)
@@ -380,27 +433,89 @@ export function ImportPage() {
                 {expandedSheet === result.sheet.name ? <ChevronUp className="h-4 w-4 text-[var(--text-muted)]" /> : <ChevronDown className="h-4 w-4 text-[var(--text-muted)]" />}
               </button>
 
+              {/* Trip Setup: always visible for trip sheets so user can confirm trip name & dates */}
+              {result.sheet.kind === 'trip' && (() => {
+                const selectedTripId = tripIdMap[result.sheet.name] ?? ''
+                const meta = getResolvedTripMeta(result)
+                return (
+                  <div className="border-t border-[var(--border)] bg-[var(--surface-2)]/50 px-5 py-3.5">
+                    <div className="flex flex-col gap-3">
+                      <div>
+                        <label className="mb-1 block text-xs font-medium text-[var(--text-muted)]">
+                          Link to Trip
+                        </label>
+                        <select
+                          value={selectedTripId}
+                          onChange={e => setTripIdMap(p => ({ ...p, [result.sheet.name]: e.target.value || null }))}
+                          className="w-full rounded-xl border border-[var(--border)] bg-[var(--surface-2)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none"
+                        >
+                          <option value="">✨ Create a new trip for this sheet</option>
+                          {existingTrips.map(t => (
+                            <option key={t.id} value={t.id}>{t.coverEmoji} {t.name}</option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {!selectedTripId && (
+                        <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
+                          <div>
+                            <label className="mb-1 block text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">
+                              New Trip Name
+                            </label>
+                            <input
+                              type="text"
+                              value={newTripConfigs[result.sheet.name]?.name ?? (result.sheet.guessedTripName || inferTripNameFromSheet(result.sheet.name))}
+                              onChange={e =>
+                                setNewTripConfigs(p => ({
+                                  ...p,
+                                  [result.sheet.name]: { ...p[result.sheet.name], name: e.target.value },
+                                }))
+                              }
+                              placeholder="Trip name"
+                              className="w-full rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2.5 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--primary)]"
+                            />
+                          </div>
+                          <div>
+                            <label className="mb-1 block text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">
+                              Start Date
+                            </label>
+                            <input
+                              type="date"
+                              value={meta.startDate}
+                              onChange={e =>
+                                setNewTripConfigs(p => ({
+                                  ...p,
+                                  [result.sheet.name]: { ...p[result.sheet.name], startDate: e.target.value },
+                                }))
+                              }
+                              className="w-full rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2.5 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--primary)]"
+                            />
+                          </div>
+                          <div>
+                            <label className="mb-1 block text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">
+                              End Date
+                            </label>
+                            <input
+                              type="date"
+                              value={meta.endDate}
+                              onChange={e =>
+                                setNewTripConfigs(p => ({
+                                  ...p,
+                                  [result.sheet.name]: { ...p[result.sheet.name], endDate: e.target.value },
+                                }))
+                              }
+                              className="w-full rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2.5 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--primary)]"
+                            />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )
+              })()}
+
               {expandedSheet === result.sheet.name && (
                 <div className="border-t border-[var(--border)] px-5 pb-5">
-                  {/* Trip: assign existing or new trip */}
-                  {result.sheet.kind === 'trip' && (
-                    <div className="my-3">
-                      <label className="mb-1.5 block text-xs font-medium text-[var(--text-muted)]">
-                        Link to Trip
-                      </label>
-                      <select
-                        value={tripIdMap[result.sheet.name] ?? ''}
-                        onChange={e => setTripIdMap(p => ({ ...p, [result.sheet.name]: e.target.value || null }))}
-                        className="w-full rounded-xl border border-[var(--border)] bg-[var(--surface-2)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none"
-                      >
-                        <option value="">— Create a new trip for this sheet —</option>
-                        {existingTrips.map(t => (
-                          <option key={t.id} value={t.id}>{t.coverEmoji} {t.name}</option>
-                        ))}
-                      </select>
-                    </div>
-                  )}
-
                   {/* Column remapping */}
                   <div className="my-3 grid grid-cols-3 gap-2">
                     {(['description', 'amount', 'date'] as const).map(field => {
@@ -573,13 +688,29 @@ export function ImportPage() {
             <h3 className="mb-3 text-sm font-semibold text-[var(--text-primary)]">Import Summary</h3>
             {parseResults.map(r => {
               const activeCount = r.rows.filter(row => dateDecisions[row.rowId] !== 'skip').length
+              const linkedTrip = r.sheet.kind === 'trip' && tripIdMap[r.sheet.name]
+                ? existingTrips.find(t => t.id === tripIdMap[r.sheet.name])
+                : null
+              const newTripMeta = r.sheet.kind === 'trip' && !linkedTrip ? getResolvedTripMeta(r) : null
               return (
-                <div key={r.sheet.name} className="flex items-center justify-between py-2 border-b border-[var(--border)] last:border-0">
-                  <div className="flex items-center gap-2">
-                    <span>{r.sheet.kind === 'trip' ? '✈️' : '📅'}</span>
-                    <span className="text-sm text-[var(--text-primary)]">{r.sheet.name}</span>
+                <div key={r.sheet.name} className="flex items-center justify-between py-2.5 border-b border-[var(--border)] last:border-0">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span>{r.sheet.kind === 'trip' ? '✈️' : '📅'}</span>
+                      <span className="text-sm text-[var(--text-primary)]">{r.sheet.name}</span>
+                    </div>
+                    {linkedTrip && (
+                      <p className="mt-0.5 pl-6 text-xs text-[var(--primary)]">
+                        Linked to existing trip: <strong>{linkedTrip.name}</strong>
+                      </p>
+                    )}
+                    {newTripMeta && activeCount > 0 && (
+                      <p className="mt-0.5 pl-6 text-xs text-[var(--primary)]">
+                        Will create trip: <strong>{newTripMeta.name}</strong> ({newTripMeta.startDate} → {newTripMeta.endDate})
+                      </p>
+                    )}
                   </div>
-                  <span className="text-sm font-semibold text-[var(--text-primary)]">{activeCount} rows</span>
+                  <span className="shrink-0 text-sm font-semibold text-[var(--text-primary)]">{activeCount} rows</span>
                 </div>
               )
             })}
@@ -639,14 +770,21 @@ export function ImportPage() {
             <h2 className="text-xl font-bold text-[var(--text-primary)]">Import Complete!</h2>
             <p className="mt-1 text-sm text-[var(--text-muted)]">
               {result.imported.toLocaleString()} transactions imported
+              {result.tripsCreated > 0 ? ` · ${result.tripsCreated} trip${result.tripsCreated === 1 ? '' : 's'} created` : ''}
               {result.skipped > 0 ? ` · ${result.skipped} skipped` : ''}
             </p>
           </div>
-          <div className="grid grid-cols-2 gap-3 w-full max-w-xs">
+          <div className={`grid gap-3 w-full max-w-sm ${result.tripsCreated > 0 ? 'grid-cols-3' : 'grid-cols-2'}`}>
             <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 text-center">
               <p className="text-2xl font-bold text-[var(--success)]">{result.imported.toLocaleString()}</p>
               <p className="text-xs text-[var(--text-muted)]">Imported</p>
             </div>
+            {result.tripsCreated > 0 && (
+              <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 text-center">
+                <p className="text-2xl font-bold text-[var(--primary)]">{result.tripsCreated}</p>
+                <p className="text-xs text-[var(--text-muted)]">Trips Created</p>
+              </div>
+            )}
             <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 text-center">
               <p className="text-2xl font-bold text-[var(--text-muted)]">{result.skipped}</p>
               <p className="text-xs text-[var(--text-muted)]">Skipped</p>
@@ -656,10 +794,18 @@ export function ImportPage() {
             <div className="rounded-xl bg-[var(--primary-muted)] px-4 py-3 text-xs text-[var(--text-muted)]">
               📌 All imported transactions are marked <code className="rounded bg-[var(--surface)] px-1">isImported: true</code> with <code className="rounded bg-[var(--surface)] px-1">paymentMode: "Other"</code>. You can filter these in Transactions to update categories or tags over time.
             </div>
-            <button onClick={() => navigate('/app')}
-              className="flex items-center justify-center gap-2 rounded-xl bg-[var(--primary)] py-3.5 text-sm font-semibold text-white">
-              <Home className="h-4 w-4" /> View Dashboard
-            </button>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              {result.tripsCreated > 0 && (
+                <button onClick={() => navigate('/app/trips')}
+                  className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface)] py-3.5 text-sm font-semibold text-[var(--text-primary)] hover:bg-[var(--surface-2)]">
+                  <MapIcon className="h-4 w-4 text-[var(--primary)]" /> View Trips
+                </button>
+              )}
+              <button onClick={() => navigate('/app')}
+                className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-[var(--primary)] py-3.5 text-sm font-semibold text-white">
+                <Home className="h-4 w-4" /> View Dashboard
+              </button>
+            </div>
           </div>
         </div>
       )}

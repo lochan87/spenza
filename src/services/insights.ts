@@ -17,6 +17,7 @@ import {
   subMonths,
   startOfMonth,
   endOfMonth,
+  startOfDay,
   differenceInCalendarDays,
   parseISO,
 } from 'date-fns'
@@ -43,7 +44,7 @@ import type {
 const summaryRef = (uid: string) => doc(db, 'users', uid, 'insights', 'summary')
 
 /** Current schema version for cached InsightsSummary documents */
-export const INSIGHTS_SCHEMA_VERSION = 2
+export const INSIGHTS_SCHEMA_VERSION = 3
 
 /**
  * CHOSEN APPROACH: On-demand cached summary document (`users/{uid}/insights/summary`).
@@ -511,20 +512,15 @@ export async function computeAndCacheInsights(uid: string): Promise<InsightsSumm
   // ── 11. Day-of-Week / Spending Pattern (Section 4) ─────────────────────────
   const dowTotals = new Map<number, number>()
   const dowTxCounts = new Map<number, number>()
-  const dowUniqueDates = new Map<number, Set<string>>()
   const dowCats = new Map<number, Map<string, number>>()
   const weekendCats = new Map<string, number>()
 
   for (const tx of allTxns) {
     const d = toDate(tx.date)
     const dayIdx = d.getDay() // 0=Sun..6=Sat
-    const dateKey = format(d, 'yyyy-MM-dd')
 
     dowTotals.set(dayIdx, (dowTotals.get(dayIdx) ?? 0) + tx.amountPaise)
     dowTxCounts.set(dayIdx, (dowTxCounts.get(dayIdx) ?? 0) + 1)
-
-    if (!dowUniqueDates.has(dayIdx)) dowUniqueDates.set(dayIdx, new Set())
-    dowUniqueDates.get(dayIdx)!.add(dateKey)
 
     if (!dowCats.has(dayIdx)) dowCats.set(dayIdx, new Map())
     const dc = dowCats.get(dayIdx)!
@@ -535,11 +531,24 @@ export async function computeAndCacheInsights(uid: string): Promise<InsightsSumm
     }
   }
 
+  // Count actual calendar occurrences of each weekday across the data's date span
+  const firstTxDay = startOfDay(toDate(allTxns[0].date))
+  const lastTxDay = startOfDay(toDate(allTxns[allTxns.length - 1].date))
+  const totalSpanDays = Math.max(1, differenceInCalendarDays(lastTxDay, firstTxDay) + 1)
+  const fullWeeks = Math.floor(totalSpanDays / 7)
+  const remainderDays = totalSpanDays % 7
+  const firstDayOfWeek = firstTxDay.getDay()
+
+  const getCalendarOccurrences = (dayIdx: number): number => {
+    const offset = (dayIdx - firstDayOfWeek + 7) % 7
+    return fullWeeks + (offset < remainderDays ? 1 : 0)
+  }
+
   const days: DayOfWeekItem[] = DAY_META.map(meta => {
     const totalPaise = dowTotals.get(meta.index) ?? 0
     const txCount = dowTxCounts.get(meta.index) ?? 0
-    const activeDates = dowUniqueDates.get(meta.index)?.size ?? 0
-    const avgPerOccurrencePaise = activeDates > 0 ? Math.round(totalPaise / activeDates) : 0
+    const occurrences = Math.max(1, getCalendarOccurrences(meta.index))
+    const avgPerOccurrencePaise = Math.round(totalPaise / occurrences)
 
     let topCategoryName: string | null = null
     let topCatAmt = 0
@@ -566,15 +575,27 @@ export async function computeAndCacheInsights(uid: string): Promise<InsightsSumm
   })
 
   const peakDay = days.reduce<DayOfWeekItem>(
-    (best, d) => (d.totalPaise > best.totalPaise ? d : best),
+    (best, d) => (d.avgPerOccurrencePaise > best.avgPerOccurrencePaise ? d : best),
     days[0]
   )
 
   const weekendTotalPaise = (dowTotals.get(0) ?? 0) + (dowTotals.get(6) ?? 0)
   const weekdayTotalPaise = totalAllTimePaise - weekendTotalPaise
-  // Normalized per day-of-week slot (2 weekend days vs 5 weekday days)
-  const weekendDailyAvgPaise = Math.round(weekendTotalPaise / 2)
-  const weekdayDailyAvgPaise = Math.round(weekdayTotalPaise / 5)
+  const weekendCalendarDays = Math.max(
+    1,
+    getCalendarOccurrences(0) + getCalendarOccurrences(6)
+  )
+  const weekdayCalendarDays = Math.max(
+    1,
+    getCalendarOccurrences(1) +
+      getCalendarOccurrences(2) +
+      getCalendarOccurrences(3) +
+      getCalendarOccurrences(4) +
+      getCalendarOccurrences(5)
+  )
+
+  const weekendDailyAvgPaise = Math.round(weekendTotalPaise / weekendCalendarDays)
+  const weekdayDailyAvgPaise = Math.round(weekdayTotalPaise / weekdayCalendarDays)
   const weekendVsWeekdayPct =
     weekdayDailyAvgPaise > 0
       ? Math.round(((weekendDailyAvgPaise - weekdayDailyAvgPaise) / weekdayDailyAvgPaise) * 100)

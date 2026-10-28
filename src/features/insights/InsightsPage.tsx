@@ -889,13 +889,13 @@ export function InsightsPage() {
 
               <div className="mb-3 grid grid-cols-2 gap-2">
                 <div className="rounded-xl bg-[var(--surface-2)] px-3 py-2">
-                  <p className="text-[10px] text-[var(--text-muted)]">Weekday Share / Day</p>
+                  <p className="text-[10px] text-[var(--text-muted)]">Weekday Avg / Day</p>
                   <p className="text-xs font-bold text-[var(--text-primary)]">
                     {formatINRCompact(dayOfWeekStats.weekdayDailyAvgPaise)}
                   </p>
                 </div>
                 <div className="rounded-xl bg-[var(--surface-2)] px-3 py-2">
-                  <p className="text-[10px] text-[var(--text-muted)]">Weekend Share / Day</p>
+                  <p className="text-[10px] text-[var(--text-muted)]">Weekend Avg / Day</p>
                   <p className="text-xs font-bold text-[var(--text-primary)]">
                     {formatINRCompact(dayOfWeekStats.weekendDailyAvgPaise)}
                   </p>
@@ -923,7 +923,9 @@ export function InsightsPage() {
                   />
                   <Tooltip
                     formatter={(val: any, _name: any, item: any) => [
-                      `${formatINR(Number(val))} (${item.payload.txCount} txns${
+                      `Avg ${formatINR(Number(val))}/day · Total ${formatINRCompact(
+                        item.payload.totalPaise
+                      )} (${item.payload.txCount} txns${
                         item.payload.topCategoryName ? ` · Top: ${item.payload.topCategoryName}` : ''
                       })`,
                       item.payload.fullName,
@@ -935,7 +937,7 @@ export function InsightsPage() {
                       fontSize: '12px',
                     }}
                   />
-                  <Bar dataKey="totalPaise" radius={[5, 5, 0, 0]}>
+                  <Bar dataKey="avgPerOccurrencePaise" radius={[5, 5, 0, 0]}>
                     {dayOfWeekStats.days.map((d, idx) => (
                       <Cell
                         key={idx}

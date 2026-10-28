@@ -46,7 +46,12 @@ import { formatINR, formatINRCompact } from '@/utils/format'
 import { getCategoryMeta, getCategoryColor } from '@/utils/categoryColors'
 import { getPaymentColor } from '@/utils/paymentColors'
 import { useTheme } from '@/hooks/useTheme'
-import type { InsightsSummary, MonthlyTrendPoint, Budget } from '@/types'
+import type {
+  InsightsSummary,
+  MonthlyTrendPoint,
+  DayOfWeekItem,
+  Budget,
+} from '@/types'
 
 const currentYear = new Date().getFullYear()
 
@@ -177,6 +182,83 @@ function MonthlyTrendTooltip({
           <p className="text-[var(--text-muted)]">
             Top: <strong className="text-[var(--text-primary)]">{pt.topCategoryName}</strong> (
             {formatINRCompact(pt.topCategoryPaise)})
+          </p>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function CategoryTrendTooltip({
+  active,
+  payload,
+  categoryName,
+  categoryEmoji,
+  categoryColor,
+}: {
+  active?: boolean
+  payload?: Array<{
+    value: number
+    payload: { label: string; totalPaise: number; isCurrentMonth: boolean }
+  }>
+  categoryName: string
+  categoryEmoji: string
+  categoryColor: string
+}) {
+  if (!active || !payload?.length) return null
+  const pt = payload[0].payload
+  return (
+    <div className="min-w-[155px] rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3.5 py-2.5 shadow-[var(--shadow-lg)]">
+      <p className="text-xs font-semibold text-[var(--text-primary)]">
+        {pt.label}
+        {pt.isCurrentMonth ? ' (in progress)' : ''}
+      </p>
+      <div className="mt-1 flex items-center justify-between gap-3">
+        <span className="flex items-center gap-1.5 text-xs font-medium text-[var(--text-secondary)]">
+          <span
+            className="h-2 w-2 shrink-0 rounded-full"
+            style={{ backgroundColor: categoryColor }}
+          />
+          {categoryEmoji} {categoryName}
+        </span>
+        <span className="text-xs font-bold text-[var(--text-primary)]">
+          {formatINR(pt.totalPaise)}
+        </span>
+      </div>
+    </div>
+  )
+}
+
+function DayOfWeekTooltip({
+  active,
+  payload,
+}: {
+  active?: boolean
+  payload?: Array<{ payload: DayOfWeekItem }>
+}) {
+  if (!active || !payload?.length) return null
+  const d = payload[0].payload
+  return (
+    <div className="min-w-[180px] rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3.5 py-2.5 shadow-[var(--shadow-lg)]">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-xs font-semibold text-[var(--text-primary)]">{d.fullName}</p>
+        {d.isWeekend && (
+          <span className="rounded-full bg-[var(--accent-muted)] px-1.5 py-0.5 text-[9px] font-semibold text-[var(--accent)]">
+            Weekend
+          </span>
+        )}
+      </div>
+      <p className="mt-1 text-sm font-bold text-[var(--primary)]">
+        Avg {formatINR(d.avgPerOccurrencePaise)}/day
+      </p>
+      <div className="mt-1.5 flex flex-col gap-0.5 border-t border-[var(--border)] pt-1.5 text-[11px] text-[var(--text-secondary)]">
+        <p>
+          Total: <strong className="text-[var(--text-primary)]">{formatINRCompact(d.totalPaise)}</strong>{' '}
+          ({d.txCount} {d.txCount === 1 ? 'txn' : 'txns'})
+        </p>
+        {d.topCategoryName && (
+          <p>
+            Top: <strong className="text-[var(--text-primary)]">{d.topCategoryName}</strong>
           </p>
         )}
       </div>
@@ -877,13 +959,14 @@ export function InsightsPage() {
                     width={46}
                   />
                   <Tooltip
-                    formatter={(val: any) => [formatINR(Number(val)), activeCatTrend.name]}
-                    contentStyle={{
-                      backgroundColor: 'var(--surface)',
-                      borderColor: 'var(--border)',
-                      borderRadius: '12px',
-                      fontSize: '12px',
-                    }}
+                    cursor={{ fill: 'var(--surface-2)', opacity: 0.6 }}
+                    content={
+                      <CategoryTrendTooltip
+                        categoryName={activeCatTrend.name}
+                        categoryEmoji={activeCatMeta.emoji}
+                        categoryColor={activeCatMeta.color}
+                      />
+                    }
                   />
                   <Bar dataKey="totalPaise" radius={[5, 5, 0, 0]}>
                     {activeCatTrend.months.map((m, idx) => (
@@ -953,20 +1036,8 @@ export function InsightsPage() {
                     width={46}
                   />
                   <Tooltip
-                    formatter={(val: any, _name: any, item: any) => [
-                      `Avg ${formatINR(Number(val))}/day · Total ${formatINRCompact(
-                        item.payload.totalPaise
-                      )} (${item.payload.txCount} txns${
-                        item.payload.topCategoryName ? ` · Top: ${item.payload.topCategoryName}` : ''
-                      })`,
-                      item.payload.fullName,
-                    ]}
-                    contentStyle={{
-                      backgroundColor: 'var(--surface)',
-                      borderColor: 'var(--border)',
-                      borderRadius: '12px',
-                      fontSize: '12px',
-                    }}
+                    cursor={{ fill: 'var(--surface-2)', opacity: 0.6 }}
+                    content={<DayOfWeekTooltip />}
                   />
                   <Bar dataKey="avgPerOccurrencePaise" radius={[5, 5, 0, 0]}>
                     {dayOfWeekStats.days.map((d, idx) => (
@@ -1036,7 +1107,10 @@ export function InsightsPage() {
                 tickLine={false}
                 width={52}
               />
-              <Tooltip content={<YoYChartTooltip />} />
+              <Tooltip
+                cursor={{ fill: 'var(--surface-2)', opacity: 0.6 }}
+                content={<YoYChartTooltip />}
+              />
               <Bar dataKey="totalPaise" radius={[6, 6, 0, 0]}>
                 {yearlyTotals.map((entry, i) => (
                   <Cell

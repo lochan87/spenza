@@ -59,9 +59,25 @@ interface InsightCardProps {
   sub?: string
   badge?: string
   accentColor?: string
+  accentBg?: string
 }
 
-function InsightCard({ icon, label, value, sub, badge, accentColor }: InsightCardProps) {
+function InsightCard({
+  icon,
+  label,
+  value,
+  sub,
+  badge,
+  accentColor,
+  accentBg,
+}: InsightCardProps) {
+  const resolvedColor = accentColor ?? 'var(--primary)'
+  const resolvedBg =
+    accentBg ??
+    (accentColor
+      ? `color-mix(in srgb, ${accentColor} 15%, transparent)`
+      : 'var(--primary-muted)')
+
   return (
     <div className="flex flex-col justify-between rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 shadow-[var(--shadow-sm)]">
       <div>
@@ -69,11 +85,7 @@ function InsightCard({ icon, label, value, sub, badge, accentColor }: InsightCar
           <div className="flex items-center gap-2 min-w-0">
             <div
               className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg"
-              style={
-                accentColor
-                  ? { backgroundColor: accentColor + '20', color: accentColor }
-                  : { backgroundColor: 'var(--primary-muted)', color: 'var(--primary)' }
-              }
+              style={{ backgroundColor: resolvedBg, color: resolvedColor }}
             >
               {icon}
             </div>
@@ -84,11 +96,7 @@ function InsightCard({ icon, label, value, sub, badge, accentColor }: InsightCar
           {badge && (
             <span
               className="shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold"
-              style={
-                accentColor
-                  ? { backgroundColor: accentColor + '20', color: accentColor }
-                  : { backgroundColor: 'var(--primary-muted)', color: 'var(--primary)' }
-              }
+              style={{ backgroundColor: resolvedBg, color: resolvedColor }}
             >
               {badge}
             </span>
@@ -178,6 +186,26 @@ function MonthlyTrendTooltip({
 
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
+function readCssThemeTokens() {
+  if (typeof window === 'undefined') {
+    return {
+      primaryColor: 'var(--primary)',
+      accentColor: 'var(--accent)',
+      warningColor: 'var(--warning)',
+      gridColor: 'var(--border)',
+      textColor: 'var(--text-muted)',
+    }
+  }
+  const style = getComputedStyle(document.documentElement)
+  return {
+    primaryColor: style.getPropertyValue('--primary').trim() || 'var(--primary)',
+    accentColor: style.getPropertyValue('--accent').trim() || 'var(--accent)',
+    warningColor: style.getPropertyValue('--warning').trim() || 'var(--warning)',
+    gridColor: style.getPropertyValue('--border').trim() || 'var(--border)',
+    textColor: style.getPropertyValue('--text-muted').trim() || 'var(--text-muted)',
+  }
+}
+
 export function InsightsPage() {
   const { user } = useAuth()
   const { isDark } = useTheme()
@@ -189,11 +217,17 @@ export function InsightsPage() {
   const [computing, setComputing] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [cacheAge, setCacheAge] = useState<string>('')
+  const [themeColors, setThemeColors] = useState(readCssThemeTokens)
 
-  const primaryColor = isDark ? '#14B8A6' : '#0F766E'
-  const warningColor = isDark ? '#FBBF24' : '#D97706'
-  const gridColor = isDark ? '#334155' : '#E2E8F0'
-  const textColor = isDark ? '#94A3B8' : '#64748B'
+  // Re-read computed CSS custom properties whenever light/dark theme toggles
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => {
+      setThemeColors(readCssThemeTokens())
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [isDark])
+
+  const { primaryColor, accentColor, warningColor, gridColor, textColor } = themeColors
 
   const loadInsights = async (forceRefresh = false) => {
     if (!user) return
@@ -855,11 +889,8 @@ export function InsightsPage() {
                     {activeCatTrend.months.map((m, idx) => (
                       <Cell
                         key={idx}
-                        fill={
-                          m.isCurrentMonth
-                            ? activeCatMeta.color + '80'
-                            : activeCatMeta.color
-                        }
+                        fill={activeCatMeta.color}
+                        fillOpacity={m.isCurrentMonth ? 0.5 : 1}
                       />
                     ))}
                   </Bar>
@@ -945,8 +976,11 @@ export function InsightsPage() {
                           d.fullName === dayOfWeekStats.peakDayName
                             ? primaryColor
                             : d.isWeekend
-                            ? '#0284C7'
-                            : primaryColor + '65'
+                            ? accentColor
+                            : primaryColor
+                        }
+                        fillOpacity={
+                          d.fullName === dayOfWeekStats.peakDayName || d.isWeekend ? 1 : 0.45
                         }
                       />
                     ))}
@@ -1007,7 +1041,8 @@ export function InsightsPage() {
                 {yearlyTotals.map((entry, i) => (
                   <Cell
                     key={`cell-${i}`}
-                    fill={entry.year === currentYear ? primaryColor + '80' : primaryColor}
+                    fill={primaryColor}
+                    fillOpacity={entry.year === currentYear ? 0.5 : 1}
                   />
                 ))}
               </Bar>
@@ -1043,7 +1078,8 @@ export function InsightsPage() {
               value={formatINR(highestSpendingDay.totalPaise)}
               badge={format(parseISO(highestSpendingDay.dateStr), 'd MMM yyyy')}
               sub={`Driven by ${highestSpendingDay.topDescription} (${highestSpendingDay.topCategoryName})`}
-              accentColor="#EF4444"
+              accentColor="var(--danger)"
+              accentBg="var(--danger-muted)"
             />
           )}
 
@@ -1077,7 +1113,8 @@ export function InsightsPage() {
               label="Largest single expense"
               value={formatINR(insights.largestSingleExpense.amountPaise)}
               sub={insights.largestSingleExpense.description}
-              accentColor="#F59E0B"
+              accentColor="var(--warning)"
+              accentBg="var(--warning-muted)"
             />
           )}
 
@@ -1097,7 +1134,8 @@ export function InsightsPage() {
                   ? `Last 3 mos avg: ${formatINR(avgTransactionSize.last3MonthsAvgPaise)}`
                   : 'Across all logged transactions'
               }
-              accentColor="#6366F1"
+              accentColor="var(--accent)"
+              accentBg="var(--accent-muted)"
             />
           )}
 
@@ -1132,7 +1170,8 @@ export function InsightsPage() {
                     )}`
                   : 'Consecutive days with logged expenses'
               }
-              accentColor="#F97316"
+              accentColor="var(--warning)"
+              accentBg="var(--warning-muted)"
             />
           )}
 
@@ -1151,7 +1190,7 @@ export function InsightsPage() {
             icon={<ZapIcon className="h-4 w-4" />}
             label="Gifts & Events all-time"
             value={formatINR(insights.giftEventTotalPaise)}
-            accentColor="#EC4899"
+            accentColor={getCategoryColor('Gifts & Events')}
           />
 
           {/* 11. Trip spending all-time (existing) */}
@@ -1159,7 +1198,7 @@ export function InsightsPage() {
             icon={<span className="text-base">✈️</span>}
             label="Trip spending all-time"
             value={formatINR(insights.tripTotalPaise)}
-            accentColor="#06B6D4"
+            accentColor={getCategoryColor('Travel')}
           />
         </div>
       </div>

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import { useForm, Controller } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -10,7 +10,7 @@ import {
 import { useAuth } from '@/hooks/useAuth'
 import { addTransaction, updateTransaction, getPaymentAccounts, addPaymentAccount, getPastDescriptions } from '@/services/transactions'
 import { getTrips } from '@/services/trips'
-import { getCategoryMeta, DEFAULT_CATEGORY_ORDER } from '@/utils/categoryColors'
+import { getCategoryMeta, resolveCategoryName, DEFAULT_CATEGORY_ORDER } from '@/utils/categoryColors'
 import { getPaymentMeta, getAccountTypeMeta } from '@/utils/paymentColors'
 import { suggestCategory } from '@/utils/categoryKeywords'
 import { TransactionSchema } from '@/utils/schemas'
@@ -142,12 +142,16 @@ export function AddExpenseForm({
     amountRef.current?.select()
   }, [])
 
-  // Auto-suggest category from description
+  // Auto-suggest category from description.
+  // suggestCategory returns a canonical name; resolve legacy (pre-migration) names so
+  // e.g. "Transport" still matches the suggestion "Transport & Vehicle".
   useEffect(() => {
     if (!watchedDescription || isEditing) return
     const suggestion = suggestCategory(watchedDescription)
     if (suggestion) {
-      const cat = categories.find(c => c.name === suggestion)
+      const cat = categories.find(
+        c => !c.isArchived && resolveCategoryName(c.name) === suggestion
+      )
       if (cat && !watchedCategoryId) {
         setCategorySuggestion(cat.name)
       }
@@ -155,6 +159,19 @@ export function AddExpenseForm({
       setCategorySuggestion(null)
     }
   }, [watchedDescription, categories, watchedCategoryId, isEditing])
+
+  // Picker categories: rendered from live Firestore data. Categories in DEFAULT_CATEGORY_ORDER
+  // come first (in that order), everything else (e.g. user-created) follows alphabetically.
+  // Archived categories are hidden, except the one on the transaction currently being edited.
+  const pickerCategories = useMemo(() => {
+    const rank = (c: Category) => {
+      const idx = DEFAULT_CATEGORY_ORDER.indexOf(resolveCategoryName(c.name))
+      return idx === -1 ? Number.MAX_SAFE_INTEGER : idx
+    }
+    return categories
+      .filter(c => !c.isArchived || c.id === editTransaction?.categoryId)
+      .sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name))
+  }, [categories, editTransaction?.categoryId])
 
   // Description autocomplete
   const handleDescriptionChange = useCallback((value: string) => {
@@ -387,9 +404,8 @@ export function AddExpenseForm({
             Category
           </label>
           <div className="grid grid-cols-5 gap-2 sm:grid-cols-6">
-            {DEFAULT_CATEGORY_ORDER.map(catName => {
-              const cat = categories.find(c => c.name === catName)
-              if (!cat) return null
+            {pickerCategories.map(cat => {
+              const catName = cat.name
               const meta = getCategoryMeta(catName)
               const selected = watchedCategoryId === cat.id
               return (

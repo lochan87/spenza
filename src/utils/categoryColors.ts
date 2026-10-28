@@ -34,7 +34,8 @@ const LEGACY_CATEGORY_ALIASES: Record<string, string> = {
   Personal: 'Personal/Household',
 }
 
-function resolveCategoryName(name: string): string {
+/** Resolve a (possibly pre-migration) category name to its current canonical name */
+export function resolveCategoryName(name: string): string {
   return LEGACY_CATEGORY_ALIASES[name] ?? name
 }
 

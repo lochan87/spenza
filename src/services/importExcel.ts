@@ -39,6 +39,8 @@ export interface ParsedRow {
   rawAmount: string    // original amount string for display
   /** Set when the date is unparseable or in the future; must be resolved before import */
   dateIssue: DateIssue | null
+  /** True when a trip row's date was auto-derived from the trip range / "Day N" marker rather than an explicit cell date */
+  isApproximateDate?: boolean
   /** Auto-suggested category name from keyword matching */
   suggestedCategoryName: string | null
   /** Final resolved category id — set after user review */
@@ -197,20 +199,127 @@ export function inferTripNameFromSheet(sheetName: string): string {
   return cleaned || sheetName.trim()
 }
 
-/** Infer start and end ISO dates ("YYYY-MM-DD") from a trip sheet's parsed rows */
-export function inferTripDateRange(rows: ParsedRow[]): { startDate: string; endDate: string } {
-  const validDates = rows
+/** Extract a 1-based day number from text like "Day 1 Breakfast", "Day 2 Lunch", etc. */
+export function extractDayNumber(text: string): number | null {
+  const m = text.match(/\bday\s*(\d{1,2})\b/i)
+  if (!m) return null
+  const n = Number(m[1])
+  return n >= 1 && n <= 60 ? n : null
+}
+
+/** Add days to an ISO "YYYY-MM-DD" date string */
+export function addDaysISO(isoDate: string, daysToAdd: number): string {
+  if (!isValidISODate(isoDate)) return isoDate
+  const [y, m, d] = isoDate.split('-').map(Number)
+  const dt = new Date(y, m - 1, d + daysToAdd)
+  return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`
+}
+
+/** Try to infer "YYYY-MM-01" from a sheet name like "Gokarna Trip - Feb 2026" */
+export function inferMonthStartFromSheetName(sheetName: string): string | null {
+  const lower = sheetName.toLowerCase()
+  let monthIdx = -1
+  for (let i = 0; i < MONTH_NAMES.length; i++) {
+    if (lower.includes(MONTH_NAMES[i])) {
+      monthIdx = i + 1
+      break
+    }
+  }
+  if (monthIdx === -1) return null
+
+  const yearMatch = sheetName.match(/\b(20\d{2}|\d{2})\b/)
+  let year = new Date().getFullYear()
+  if (yearMatch) {
+    const rawYr = Number(yearMatch[1])
+    year = rawYr < 100 ? 2000 + rawYr : rawYr
+  }
+  const iso = `${year}-${String(monthIdx).padStart(2, '0')}-01`
+  return isValidISODate(iso) ? iso : null
+}
+
+/**
+ * Infer start and end ISO dates ("YYYY-MM-DD") from a trip sheet's parsed rows and sheet name.
+ * Uses explicit valid row dates if present; otherwise falls back to the month/year in the
+ * sheet name (e.g. "Gokarna Trip - Feb 2026" → "2026-02-01") and extends `endDate` by any
+ * "Day N" markers found in row descriptions.
+ */
+export function inferTripDateRange(
+  rows: ParsedRow[],
+  sheetName?: string
+): { startDate: string; endDate: string } {
+  const explicitDates = rows
+    .filter(r => !r.isApproximateDate && r.dateStr && isValidISODate(r.dateStr) && !getDateIssue(r.dateStr))
     .map(r => r.dateStr)
-    .filter(d => d && isValidISODate(d))
     .sort()
-  if (validDates.length === 0) {
-    const today = todayISO()
-    return { startDate: today, endDate: today }
+
+  const maxDayNum = rows.reduce((max, r) => {
+    const dDesc = extractDayNumber(r.description)
+    const dRaw = extractDayNumber(r.rawDate)
+    return Math.max(max, dDesc ?? 1, dRaw ?? 1)
+  }, 1)
+
+  if (explicitDates.length > 0) {
+    const startDate = explicitDates[0]
+    const minEndByDay = addDaysISO(startDate, maxDayNum - 1)
+    const lastExplicit = explicitDates[explicitDates.length - 1]
+    return {
+      startDate,
+      endDate: lastExplicit >= minEndByDay ? lastExplicit : minEndByDay,
+    }
   }
-  return {
-    startDate: validDates[0],
-    endDate: validDates[validDates.length - 1],
-  }
+
+  const startDate = (sheetName ? inferMonthStartFromSheetName(sheetName) : null) ?? todayISO()
+  const endDate = addDaysISO(startDate, Math.max(0, maxDayNum - 1))
+  return { startDate, endDate }
+}
+
+/**
+ * Hybrid trip row date assignment:
+ *  - If a row has its own valid, non-future calendar date (`!r.isApproximateDate`), keep it.
+ *  - Otherwise, track "Day N" markers in `description` or `rawDate` sequentially down the sheet:
+ *    - Rows before "Day 1" (and rows in sheets with no "Day N" markers) use offset 0 (`startDate`).
+ *    - When a row contains "Day N" (e.g. "Day 2 Breakfast"), `currentDayOffset` updates to `N - 1`,
+ *      so that row and subsequent undated rows on the same day receive `startDate + (N - 1) days`
+ *      (clamped to `endDate`).
+ *  - Clears `dateIssue` (`null`) so trip sheets never block import on per-row date review.
+ */
+export function resolveTripRowDates(
+  rows: ParsedRow[],
+  startDate: string,
+  endDate: string
+): ParsedRow[] {
+  const validStart = isValidISODate(startDate) ? startDate : todayISO()
+  const validEnd = isValidISODate(endDate) && endDate >= validStart ? endDate : validStart
+
+  let currentDayOffset = 0
+
+  return rows.map(row => {
+    const dayFromDesc = extractDayNumber(row.description)
+    const dayFromRaw = extractDayNumber(row.rawDate)
+    const detectedDay = dayFromDesc ?? dayFromRaw
+    if (detectedDay !== null) {
+      currentDayOffset = Math.max(0, detectedDay - 1)
+    }
+
+    // Keep an explicit valid calendar date from a real Date column
+    if (!row.isApproximateDate && row.dateStr && isValidISODate(row.dateStr) && !getDateIssue(row.dateStr)) {
+      return {
+        ...row,
+        dateIssue: null,
+        isApproximateDate: false,
+      }
+    }
+
+    const candidateDate = addDaysISO(validStart, currentDayOffset)
+    const clampedDate = candidateDate > validEnd ? validEnd : candidateDate
+
+    return {
+      ...row,
+      dateStr: clampedDate,
+      dateIssue: null,
+      isApproximateDate: true,
+    }
+  })
 }
 
 // ─── Column auto-detection ────────────────────────────────────────────────────
@@ -426,12 +535,19 @@ export function parseSheet(
     })
   }
 
+  const finalRows = kind === 'trip'
+    ? (() => {
+        const range = inferTripDateRange(rows, sheetName)
+        return resolveTripRowDates(rows, range.startDate, range.endDate)
+      })()
+    : rows
+
   return {
-    sheet: { name: sheetName, rowCount: rows.length, kind, guessedTripName },
-    rows,
+    sheet: { name: sheetName, rowCount: finalRows.length, kind, guessedTripName },
+    rows: finalRows,
     headers,
     colMap,
-    previewRows: rows.slice(0, 10),
+    previewRows: finalRows.slice(0, 10),
     warnings,
   }
 }

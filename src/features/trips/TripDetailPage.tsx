@@ -93,6 +93,9 @@ export function TripDetailPage() {
     .sort((a, b) => (bucketTotals.get(b) ?? 0) - (bucketTotals.get(a) ?? 0))
 
   // ── Per-day totals ────────────────────────────────────────────────────────────
+  const uniqueTxnDays = new Set(
+    txns.map(tx => format((tx.date as Timestamp).toDate(), 'yyyy-MM-dd'))
+  ).size
   const dayTotals: DayTotal[] = eachDayOfInterval({ start: startDate, end: endDate }).map((d, i) => {
     const dStr = format(d, 'yyyy-MM-dd')
     const dayTotal = txns
@@ -238,8 +241,8 @@ export function TripDetailPage() {
         </div>
       )}
 
-      {/* Per-day spending bar chart */}
-      {dayTotals.length > 0 && dayTotals.length <= 30 && (
+      {/* Per-day spending bar chart (hidden when a multi-day trip has all transactions on a single default date) */}
+      {dayTotals.length > 0 && dayTotals.length <= 30 && (days === 1 || uniqueTxnDays >= 2) && (
         <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-sm)]">
           <h3 className="mb-4 text-sm font-semibold text-[var(--text-primary)]">Day-by-Day Spending</h3>
           <ResponsiveContainer width="100%" height={160}>

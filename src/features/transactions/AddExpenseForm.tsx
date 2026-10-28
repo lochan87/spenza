@@ -5,7 +5,7 @@ import { z } from 'zod'
 import { format } from 'date-fns'
 import { Timestamp } from 'firebase/firestore'
 import {
-  X, Plus, Check, Loader2
+  X, Plus, Check, Loader2, AlertTriangle
 } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
 import { addTransaction, updateTransaction, getPaymentAccounts, addPaymentAccount, getPastDescriptions } from '@/services/transactions'
@@ -15,7 +15,7 @@ import { getPaymentMeta, getAccountTypeMeta } from '@/utils/paymentColors'
 import { suggestCategory } from '@/utils/categoryKeywords'
 import { TransactionSchema } from '@/utils/schemas'
 import { DatePicker } from '@/components/ui/DatePicker'
-import type { Transaction, PaymentAccount, Category, PaymentMode, TransactionType } from '@/types'
+import type { Transaction, PaymentAccount, Category, PaymentMode, TransactionType, Trip } from '@/types'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -70,7 +70,7 @@ export function AddExpenseForm({
   const [newAccountName, setNewAccountName] = useState('')
   const [newAccountType, setNewAccountType] = useState<'Bank' | 'UPI' | 'Card' | 'Wallet'>('Bank')
   const [toast, setToast] = useState<string | null>(null)
-  const [trips, setTrips] = useState<Array<{ id: string; name: string; coverEmoji: string }>>([])
+  const [trips, setTrips] = useState<Trip[]>([])
 
   const isEditing = !!editTransaction
 
@@ -122,7 +122,30 @@ export function AddExpenseForm({
   const watchedCategoryId = watch('categoryId')
   const watchedDescription = watch('description')
   const watchedType = watch('type')
+  const watchedTripId = watch('tripId')
+  const watchedDate = watch('date')
   const needsAccount = ACCOUNT_REQUIRED.includes(watchedPaymentMode as PaymentMode)
+
+  const selectedTripRange = useMemo(() => {
+    if (watchedType !== 'trip' || !watchedTripId) return null
+    const trip = trips.find(t => t.id === watchedTripId)
+    if (!trip) return null
+    const startDt = (trip.startDate as Timestamp).toDate?.()
+    if (!startDt) return null
+    const endDt = trip.endDate ? (trip.endDate as Timestamp).toDate?.() : null
+    const startISO = format(startDt, 'yyyy-MM-dd')
+    const endISO = endDt ? format(endDt, 'yyyy-MM-dd') : null
+    const isOutOfRange =
+      watchedDate < startISO || (endISO !== null && watchedDate > endISO)
+    return {
+      trip,
+      startDt,
+      endDt,
+      startISO,
+      endISO,
+      isOutOfRange,
+    }
+  }, [watchedType, watchedTripId, watchedDate, trips])
 
   // Load payment accounts
   useEffect(() => {
@@ -699,6 +722,31 @@ export function AddExpenseForm({
                     {trip.name}
                   </button>
                 ))}
+              </div>
+            )}
+            {selectedTripRange?.isOutOfRange && (
+              <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--warning)]/40 bg-[var(--warning-muted)] px-3 py-2 text-xs">
+                <span className="flex items-center gap-1.5 text-[var(--warning)]">
+                  <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                  <span>
+                    Expense date ({watchedDate}) is outside{' '}
+                    <strong>{selectedTripRange.trip.name}</strong> (
+                    {format(selectedTripRange.startDt, 'd MMM')}
+                    {selectedTripRange.endDt
+                      ? ` – ${format(selectedTripRange.endDt, 'd MMM yyyy')}`
+                      : ` ${format(selectedTripRange.startDt, 'yyyy')}`}
+                    ).
+                  </span>
+                </span>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setValue('date', selectedTripRange.startISO, { shouldValidate: true })
+                  }
+                  className="shrink-0 rounded-lg border border-[var(--warning)] bg-[var(--surface)] px-2.5 py-1 text-[11px] font-semibold text-[var(--warning)] hover:opacity-90"
+                >
+                  Set to {format(selectedTripRange.startDt, 'd MMM yyyy')}
+                </button>
               </div>
             )}
           </div>

@@ -12,6 +12,7 @@ import { getTrips, addTrip } from '@/services/trips'
 import {
   parseWorkbook, parseSheet, detectDuplicates, batchImportTransactions,
   getDateIssue, todayISO, isValidISODate, inferTripNameFromSheet, inferTripDateRange,
+  resolveTripRowDates,
   type DetectedSheet, type SheetParseResult, type ParsedRow,
   type DuplicateCandidate, type SheetKind, type ImportProgress,
 } from '@/services/importExcel'
@@ -63,7 +64,8 @@ export function ImportPage() {
   // ── Date review helpers ──────────────────────────────────────────────────────
 
   const allParsedRows = parseResults.flatMap(r => r.rows)
-  const flaggedRows = allParsedRows.filter(r => r.dateIssue)
+  // Trip sheet rows use trip-level date range + hybrid Day N mapping and never block import
+  const flaggedRows = allParsedRows.filter(r => !r.isTripRow && r.dateIssue)
   const unresolvedRows = flaggedRows.filter(r => !dateDecisions[r.rowId])
   const skippedRowCount = allParsedRows.filter(r => dateDecisions[r.rowId] === 'skip').length
 
@@ -103,16 +105,30 @@ export function ImportPage() {
   }
 
   /** Resolve trip name + start/end dates for a trip sheet (combining user edits with inferred defaults) */
-  const getResolvedTripMeta = (res: SheetParseResult) => {
+  const getResolvedTripMeta = (
+    res: SheetParseResult,
+    overrideCfg?: { name?: string; startDate?: string; endDate?: string }
+  ) => {
     const activeRows = res.rows.filter(r => dateDecisions[r.rowId] !== 'skip')
-    const inferred = inferTripDateRange(activeRows)
-    const cfg = newTripConfigs[res.sheet.name]
+    const inferred = inferTripDateRange(activeRows, res.sheet.name)
+    const cfg = overrideCfg ?? newTripConfigs[res.sheet.name]
     const defaultName = res.sheet.guessedTripName || inferTripNameFromSheet(res.sheet.name)
     const name = (cfg?.name !== undefined ? cfg.name : defaultName).trim() || defaultName
     const rawStart = cfg?.startDate && isValidISODate(cfg.startDate) ? cfg.startDate : inferred.startDate
     const rawEnd = cfg?.endDate && isValidISODate(cfg.endDate) ? cfg.endDate : inferred.endDate
     const [startDate, endDate] = rawStart <= rawEnd ? [rawStart, rawEnd] : [rawEnd, rawStart]
     return { name, startDate, endDate }
+  }
+
+  /** Re-compute a trip sheet's row dates using the hybrid Day N + startDate rule whenever trip dates change */
+  const syncTripSheetDates = (sheetName: string, startDate: string, endDate: string) => {
+    setParseResults(prev =>
+      prev.map(res => {
+        if (res.sheet.name !== sheetName || res.sheet.kind !== 'trip') return res
+        const rows = resolveTripRowDates(res.rows, startDate, endDate)
+        return { ...res, rows, previewRows: rows.slice(0, 10) }
+      })
+    )
   }
 
   // ── Step 1: File upload ──────────────────────────────────────────────────────
@@ -247,27 +263,46 @@ export function ImportPage() {
         if (activeSheetRows.length === 0) continue
 
         let tripId = resolvedTripIds[result.sheet.name] ?? null
+        let tripStartISO = ''
+        let tripEndISO = ''
 
-        // If this is a trip sheet and the user kept "Create a new trip for this sheet",
-        // create the parent users/{uid}/trips/{tripId} document FIRST so every row in this
-        // sheet references a real Trip document with valid startDate/endDate Timestamps.
-        if (result.sheet.kind === 'trip' && !tripId) {
-          const meta = getResolvedTripMeta(result)
-          tripId = await addTrip(user.uid, {
-            name: meta.name,
-            startDate: Timestamp.fromDate(new Date(meta.startDate + 'T12:00:00')),
-            endDate: Timestamp.fromDate(new Date(meta.endDate + 'T12:00:00')),
-            coverEmoji: '✈️',
-            coverColor: TRIP_ACCENT_COLOR,
-            budgetPaise: null,
-            isArchived: false,
-            notes: `Imported from Excel sheet "${result.sheet.name}"`,
-          })
-          resolvedTripIds[result.sheet.name] = tripId
-          tripsCreated++
+        if (result.sheet.kind === 'trip') {
+          if (tripId) {
+            const linked = existingTrips.find(t => t.id === tripId)
+            if (linked) {
+              const s = (linked.startDate as Timestamp).toDate()
+              const e = linked.endDate ? (linked.endDate as Timestamp).toDate() : s
+              tripStartISO = `${s.getFullYear()}-${String(s.getMonth() + 1).padStart(2, '0')}-${String(s.getDate()).padStart(2, '0')}`
+              tripEndISO = `${e.getFullYear()}-${String(e.getMonth() + 1).padStart(2, '0')}-${String(e.getDate()).padStart(2, '0')}`
+            }
+          } else {
+            const meta = getResolvedTripMeta(result)
+            tripStartISO = meta.startDate
+            tripEndISO = meta.endDate
+            // If this is a trip sheet and the user kept "Create a new trip for this sheet",
+            // create the parent users/{uid}/trips/{tripId} document FIRST so every row in this
+            // sheet references a real Trip document with valid startDate/endDate Timestamps.
+            tripId = await addTrip(user.uid, {
+              name: meta.name,
+              startDate: Timestamp.fromDate(new Date(meta.startDate + 'T12:00:00')),
+              endDate: Timestamp.fromDate(new Date(meta.endDate + 'T12:00:00')),
+              coverEmoji: '✈️',
+              coverColor: TRIP_ACCENT_COLOR,
+              budgetPaise: null,
+              isArchived: false,
+              notes: `Imported from Excel sheet "${result.sheet.name}"`,
+            })
+            resolvedTripIds[result.sheet.name] = tripId
+            tripsCreated++
+          }
         }
 
-        for (const row of activeSheetRows) {
+        const dateResolvedSheetRows =
+          result.sheet.kind === 'trip' && tripStartISO
+            ? resolveTripRowDates(activeSheetRows, tripStartISO, tripEndISO || tripStartISO)
+            : activeSheetRows
+
+        for (const row of dateResolvedSheetRows) {
           // Apply category overrides
           const overrideCatId = catOverrides[row.description.toLowerCase()]
           const resolvedCategoryId = overrideCatId ?? row.resolvedCategoryId
@@ -447,7 +482,23 @@ export function ImportPage() {
                         </label>
                         <select
                           value={selectedTripId}
-                          onChange={e => setTripIdMap(p => ({ ...p, [result.sheet.name]: e.target.value || null }))}
+                          onChange={e => {
+                            const nextId = e.target.value || null
+                            setTripIdMap(p => ({ ...p, [result.sheet.name]: nextId }))
+                            if (nextId) {
+                              const linked = existingTrips.find(t => t.id === nextId)
+                              if (linked) {
+                                const s = (linked.startDate as Timestamp).toDate()
+                                const en = linked.endDate ? (linked.endDate as Timestamp).toDate() : s
+                                const sISO = `${s.getFullYear()}-${String(s.getMonth() + 1).padStart(2, '0')}-${String(s.getDate()).padStart(2, '0')}`
+                                const eISO = `${en.getFullYear()}-${String(en.getMonth() + 1).padStart(2, '0')}-${String(en.getDate()).padStart(2, '0')}`
+                                syncTripSheetDates(result.sheet.name, sISO, eISO)
+                              }
+                            } else {
+                              const m = getResolvedTripMeta(result)
+                              syncTripSheetDates(result.sheet.name, m.startDate, m.endDate)
+                            }
+                          }}
                           className="w-full rounded-xl border border-[var(--border)] bg-[var(--surface-2)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none"
                         >
                           <option value="">✨ Create a new trip for this sheet</option>
@@ -483,12 +534,12 @@ export function ImportPage() {
                             <DatePicker
                               size="sm"
                               value={meta.startDate}
-                              onChange={val =>
-                                setNewTripConfigs(p => ({
-                                  ...p,
-                                  [result.sheet.name]: { ...p[result.sheet.name], startDate: val },
-                                }))
-                              }
+                              onChange={val => {
+                                const nextCfg = { ...newTripConfigs[result.sheet.name], startDate: val }
+                                setNewTripConfigs(p => ({ ...p, [result.sheet.name]: nextCfg }))
+                                const nextMeta = getResolvedTripMeta(result, nextCfg)
+                                syncTripSheetDates(result.sheet.name, nextMeta.startDate, nextMeta.endDate)
+                              }}
                               className="w-full bg-[var(--surface)]"
                               aria-label={`Start date for ${result.sheet.name}`}
                             />
@@ -502,18 +553,22 @@ export function ImportPage() {
                               value={meta.endDate}
                               minDate={meta.startDate}
                               defaultMonthDate={meta.startDate}
-                              onChange={val =>
-                                setNewTripConfigs(p => ({
-                                  ...p,
-                                  [result.sheet.name]: { ...p[result.sheet.name], endDate: val },
-                                }))
-                              }
+                              onChange={val => {
+                                const nextCfg = { ...newTripConfigs[result.sheet.name], endDate: val }
+                                setNewTripConfigs(p => ({ ...p, [result.sheet.name]: nextCfg }))
+                                const nextMeta = getResolvedTripMeta(result, nextCfg)
+                                syncTripSheetDates(result.sheet.name, nextMeta.startDate, nextMeta.endDate)
+                              }}
                               className="w-full bg-[var(--surface)]"
                               aria-label={`End date for ${result.sheet.name}`}
                             />
                           </div>
                         </div>
                       )}
+
+                      <p className="text-[11px] text-[var(--text-muted)]">
+                        ✨ Row dates in this trip are auto-assigned from the trip date range (using <code className="rounded bg-[var(--surface)] px-1">Day 1 / Day 2</code> markers or defaulting to Start Date).
+                      </p>
                     </div>
                   </div>
                 )
@@ -571,7 +626,12 @@ export function ImportPage() {
                           <tr key={i} className="border-b border-[var(--border)] last:border-0">
                             <td className="max-w-[160px] truncate px-3 py-2 text-[var(--text-primary)]">{row.description}</td>
                             <td className="px-3 py-2 text-right font-mono text-[var(--text-primary)]">{formatINR(row.amountPaise)}</td>
-                            <td className={`px-3 py-2 ${row.dateIssue ? 'font-semibold text-[var(--warning)]' : 'text-[var(--text-muted)]'}`}>{row.dateStr || `? ${row.rawDate}`}</td>
+                            <td
+                              className={`px-3 py-2 ${row.dateIssue ? 'font-semibold text-[var(--warning)]' : 'text-[var(--text-muted)]'}`}
+                              title={row.isApproximateDate ? 'Auto-mapped from trip date range / Day marker' : undefined}
+                            >
+                              {row.isApproximateDate ? `~${row.dateStr}` : (row.dateStr || `? ${row.rawDate}`)}
+                            </td>
                             <td className="px-3 py-2">
                               <span className={`rounded-full px-2 py-0.5 text-[9px] font-medium ${
                                 row.suggestedCategoryName

@@ -41,12 +41,6 @@ import {
   getLiveTransactionCount,
   invalidateInsightsCache,
 } from '@/services/insights'
-import {
-  previewCategoryMigration,
-  runCategoryMigration,
-  type CategoryMigrationPreview,
-  type CategoryMigrationResult,
-} from '@/services/categoryMigration'
 import { getAccountTypeMeta } from '@/utils/paymentColors'
 import type { Category, PaymentAccount } from '@/types'
 
@@ -200,12 +194,6 @@ export function SettingsPage() {
   const [importedTxCount, setImportedTxCount] = useState<number | null>(null)
   const [exporting, setExporting] = useState(false)
   const [resettingCache, setResettingCache] = useState(false)
-  const [migrationPreview, setMigrationPreview] =
-    useState<CategoryMigrationPreview | null>(null)
-  const [migrationResult, setMigrationResult] =
-    useState<CategoryMigrationResult | null>(null)
-  const [runningMigration, setRunningMigration] = useState(false)
-  const [showMigrationDetails, setShowMigrationDetails] = useState(false)
   const [confirmClearImports, setConfirmClearImports] = useState(false)
   const [clearingImports, setClearingImports] = useState(false)
   const [confirmClearAll, setConfirmClearAll] = useState(false)
@@ -217,18 +205,16 @@ export function SettingsPage() {
 
   const reloadData = useCallback(async () => {
     if (!user) return
-    const [accs, cats, totalCount, importedCount, catPreview] = await Promise.all([
+    const [accs, cats, totalCount, importedCount] = await Promise.all([
       getPaymentAccounts(user.uid),
       getCategories(user.uid),
       getLiveTransactionCount(user.uid),
       getImportedTransactionsCount(user.uid),
-      previewCategoryMigration(user.uid),
     ])
     setAccounts(accs)
     setCategories(cats)
     setTotalTxCount(totalCount)
     setImportedTxCount(importedCount)
-    setMigrationPreview(catPreview)
   }, [user])
 
   useEffect(() => {
@@ -306,35 +292,6 @@ export function SettingsPage() {
       })
     } finally {
       setResettingCache(false)
-    }
-  }
-
-  const handleRunCategoryMigration = async () => {
-    if (!user) return
-    setRunningMigration(true)
-    setStatusBanner(null)
-    try {
-      const res = await runCategoryMigration(user.uid)
-      setMigrationResult(res)
-      setShowMigrationDetails(true)
-      await reloadData()
-      const hasProblems = res.failedCount > 0 || res.skippedCount > 0
-      setStatusBanner({
-        type: res.failedCount > 0 ? 'error' : 'success',
-        message: `Category migration ${
-          hasProblems ? 'finished with issues' : 'complete'
-        }: renamed ${res.renamedCount}, created ${res.addedCount}, skipped ${res.skippedCount}, failed ${res.failedCount}.${
-          res.cacheInvalidated ? ' Insights cache invalidated.' : ''
-        } See the result details below.`,
-      })
-    } catch (err) {
-      console.error('[Spenza Settings] Category migration error:', err)
-      setStatusBanner({
-        type: 'error',
-        message: 'Failed to run category migration. Check console for details.',
-      })
-    } finally {
-      setRunningMigration(false)
     }
   }
 
@@ -663,243 +620,6 @@ export function SettingsPage() {
               Open Import Tool
             </Link>
           </div>
-        </div>
-
-        {/* Category Taxonomy Migration (One-Time In-Place Rename + Outings & Social) */}
-        <div className="flex flex-col gap-3 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4">
-          <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
-            <div>
-              <div className="flex flex-wrap items-center gap-2">
-                <p className="text-sm font-semibold text-[var(--text-primary)]">
-                  Category Taxonomy Migration
-                </p>
-                {migrationPreview && (
-                  <span
-                    className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
-                      migrationPreview.alreadyUpToDate
-                        ? 'bg-[var(--success-muted)] text-[var(--success)]'
-                        : 'bg-[var(--warning-muted)] text-[var(--warning)]'
-                    }`}
-                  >
-                    {migrationPreview.alreadyUpToDate
-                      ? 'Up to Date'
-                      : `${migrationPreview.plannedRenames.length} rename(s) · ${migrationPreview.plannedAdditions.length} new`}
-                  </span>
-                )}
-              </div>
-              <p className="mt-0.5 text-xs text-[var(--text-muted)]">
-                Renames <strong>Transport → Transport &amp; Vehicle</strong>,{' '}
-                <strong>Health → Health &amp; Medical</strong>, and{' '}
-                <strong>Education → Education &amp; Career</strong> in-place on their existing Firestore documents (preserving IDs so 0 transactions lose their category link), and creates{' '}
-                <strong>Outings &amp; Social</strong> and <strong>Entertainment</strong> if missing.
-              </p>
-            </div>
-            <div className="flex shrink-0 flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setShowMigrationDetails(v => !v)}
-                className="rounded-xl border border-[var(--border)] bg-[var(--surface-2)] px-3 py-2 text-xs font-semibold text-[var(--text-primary)] transition-colors hover:border-[var(--border-strong)]"
-              >
-                {showMigrationDetails ? 'Hide Preview' : 'Inspect Categories'}
-              </button>
-              {migrationPreview && !migrationPreview.alreadyUpToDate && (
-                <button
-                  id="run-category-migration-btn"
-                  type="button"
-                  onClick={handleRunCategoryMigration}
-                  disabled={runningMigration}
-                  className="flex items-center gap-1.5 rounded-xl bg-[var(--primary)] px-3.5 py-2 text-xs font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
-                >
-                  {runningMigration && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-                  {runningMigration ? 'Migrating…' : 'Confirm & Run Migration'}
-                </button>
-              )}
-            </div>
-          </div>
-
-          {showMigrationDetails && migrationPreview && (
-            <div className="flex flex-col gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-2)] p-3.5 text-xs">
-              {/* Planned In-Place Renames */}
-              <div>
-                <p className="font-semibold text-[var(--text-primary)]">
-                  1. Planned In-Place Document Renames (Firestore IDs preserved):
-                </p>
-                {migrationPreview.plannedRenames.length === 0 ? (
-                  <p className="mt-1 text-[var(--text-muted)]">
-                    None — all legacy category names have already been migrated.
-                  </p>
-                ) : (
-                  <ul className="mt-1.5 flex flex-col gap-1">
-                    {migrationPreview.plannedRenames.map(r => (
-                      <li
-                        key={r.id}
-                        className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-[var(--surface)] px-2.5 py-1.5"
-                      >
-                        <span>
-                          <strong>{r.fromName}</strong> →{' '}
-                          <strong className="text-[var(--primary)]">
-                            {r.icon} {r.toName}
-                          </strong>{' '}
-                          <span className="font-mono text-[10px] text-[var(--text-muted)]">
-                            (doc id: {r.id})
-                          </span>
-                        </span>
-                        <span
-                          className={`text-[10px] font-semibold ${
-                            r.targetAlreadyExists
-                              ? 'text-[var(--danger)]'
-                              : 'text-[var(--success)]'
-                          }`}
-                        >
-                          {r.targetAlreadyExists
-                            ? 'Conflict: target name already exists (will skip)'
-                            : 'No duplicate target exists'}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-
-              {/* Planned Additions */}
-              <div>
-                <p className="font-semibold text-[var(--text-primary)]">
-                  2. New Categories to Create:
-                </p>
-                {migrationPreview.plannedAdditions.length === 0 ? (
-                  <p className="mt-1 text-[var(--text-muted)]">
-                    None — Outings &amp; Social and Entertainment already exist.
-                  </p>
-                ) : (
-                  <ul className="mt-1.5 flex flex-col gap-1">
-                    {migrationPreview.plannedAdditions.map(add => (
-                      <li
-                        key={add.name}
-                        className="flex items-center justify-between rounded-lg bg-[var(--surface)] px-2.5 py-1.5"
-                      >
-                        <span>
-                          <strong className="text-[var(--primary)]">
-                            {add.icon} {add.name}
-                          </strong>{' '}
-                          <span className="font-mono text-[10px] text-[var(--text-muted)]">
-                            ({add.color})
-                          </span>
-                        </span>
-                        <span className="text-[10px] font-semibold text-[var(--success)]">
-                          Will create 1 new doc
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-
-              {/* Per-document migration results */}
-              {migrationResult && (
-                <div className="rounded-lg bg-[var(--surface)] p-2.5">
-                  <p className="mb-1.5 font-semibold text-[var(--text-primary)]">
-                    Migration Result: {migrationResult.renamedCount} renamed ·{' '}
-                    {migrationResult.addedCount} created · {migrationResult.skippedCount} skipped ·{' '}
-                    {migrationResult.failedCount} failed
-                  </p>
-                  {migrationResult.operations.length === 0 ? (
-                    <p className="text-[var(--text-muted)]">No operations were needed.</p>
-                  ) : (
-                    <ul className="flex flex-col gap-1">
-                      {migrationResult.operations.map((op, idx) => (
-                        <li
-                          key={`${op.kind}-${op.id ?? 'new'}-${idx}`}
-                          className="flex flex-wrap items-center justify-between gap-2 text-[11px]"
-                        >
-                          <span className="text-[var(--text-primary)]">{op.label}</span>
-                          <span
-                            className={`text-[10px] font-semibold ${
-                              op.status === 'success'
-                                ? 'text-[var(--success)]'
-                                : op.status === 'skipped'
-                                ? 'text-[var(--warning)]'
-                                : 'text-[var(--danger)]'
-                            }`}
-                          >
-                            {op.status === 'success'
-                              ? 'done'
-                              : op.detail ?? op.status}
-                          </span>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-              )}
-
-              {/* Before vs After or Current Category Inventory */}
-              {migrationResult ? (
-                <div className="grid grid-cols-1 gap-3 pt-1 sm:grid-cols-2">
-                  <div className="rounded-lg bg-[var(--surface)] p-2.5">
-                    <p className="mb-1.5 font-semibold text-[var(--text-muted)]">
-                      Before Migration ({migrationResult.before.length} docs)
-                    </p>
-                    <ul className="flex flex-col gap-1">
-                      {migrationResult.before.map(c => (
-                        <li
-                          key={c.id}
-                          className="flex items-center justify-between text-[11px]"
-                        >
-                          <span>
-                            {c.icon} {c.name}
-                          </span>
-                          <span className="font-mono text-[10px] text-[var(--text-subtle)]">
-                            {c.id.slice(0, 8)}…
-                          </span>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                  <div className="rounded-lg bg-[var(--surface)] p-2.5">
-                    <p className="mb-1.5 font-semibold text-[var(--success)]">
-                      After Migration ({migrationResult.after.length} docs)
-                    </p>
-                    <ul className="flex flex-col gap-1">
-                      {migrationResult.after.map(c => (
-                        <li
-                          key={c.id}
-                          className="flex items-center justify-between text-[11px]"
-                        >
-                          <span className="font-medium text-[var(--text-primary)]">
-                            {c.icon} {c.name}
-                          </span>
-                          <span className="font-mono text-[10px] text-[var(--text-subtle)]">
-                            {c.id.slice(0, 8)}…
-                          </span>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                </div>
-              ) : (
-                <div className="rounded-lg bg-[var(--surface)] p-2.5">
-                  <p className="mb-1.5 font-semibold text-[var(--text-muted)]">
-                    Current Firestore Category Documents ({migrationPreview.existingCategories.length})
-                  </p>
-                  <div className="grid grid-cols-1 gap-1 sm:grid-cols-2">
-                    {migrationPreview.existingCategories.map(c => (
-                      <div
-                        key={c.id}
-                        className="flex items-center justify-between rounded px-1.5 py-0.5 text-[11px]"
-                      >
-                        <span>
-                          {c.icon} {c.name}
-                        </span>
-                        <span className="font-mono text-[10px] text-[var(--text-subtle)]">
-                          id: {c.id.slice(0, 8)}…
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
         </div>
 
         {/* Insights Cache Reset */}

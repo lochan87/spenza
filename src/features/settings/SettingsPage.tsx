@@ -318,13 +318,14 @@ export function SettingsPage() {
       setMigrationResult(res)
       setShowMigrationDetails(true)
       await reloadData()
+      const hasProblems = res.failedCount > 0 || res.skippedCount > 0
       setStatusBanner({
-        type: 'success',
-        message: `Category migration complete: renamed ${res.renamedCount} category document${
-          res.renamedCount === 1 ? '' : 's'
-        } in-place (0 orphaned transactions), created ${res.addedCount} new category document${
-          res.addedCount === 1 ? '' : 's'
-        }, and invalidated Insights cache.`,
+        type: res.failedCount > 0 ? 'error' : 'success',
+        message: `Category migration ${
+          hasProblems ? 'finished with issues' : 'complete'
+        }: renamed ${res.renamedCount}, created ${res.addedCount}, skipped ${res.skippedCount}, failed ${res.failedCount}.${
+          res.cacheInvalidated ? ' Insights cache invalidated.' : ''
+        } See the result details below.`,
       })
     } catch (err) {
       console.error('[Spenza Settings] Category migration error:', err)
@@ -690,7 +691,7 @@ export function SettingsPage() {
                 Renames <strong>Transport → Transport &amp; Vehicle</strong>,{' '}
                 <strong>Health → Health &amp; Medical</strong>, and{' '}
                 <strong>Education → Education &amp; Career</strong> in-place on their existing Firestore documents (preserving IDs so 0 transactions lose their category link), and creates{' '}
-                <strong>Outings &amp; Social</strong>.
+                <strong>Outings &amp; Social</strong> and <strong>Entertainment</strong> if missing.
               </p>
             </div>
             <div className="flex shrink-0 flex-wrap items-center gap-2">
@@ -767,7 +768,7 @@ export function SettingsPage() {
                 </p>
                 {migrationPreview.plannedAdditions.length === 0 ? (
                   <p className="mt-1 text-[var(--text-muted)]">
-                    None — Outings &amp; Social already exists.
+                    None — Outings &amp; Social and Entertainment already exist.
                   </p>
                 ) : (
                   <ul className="mt-1.5 flex flex-col gap-1">
@@ -792,6 +793,44 @@ export function SettingsPage() {
                   </ul>
                 )}
               </div>
+
+              {/* Per-document migration results */}
+              {migrationResult && (
+                <div className="rounded-lg bg-[var(--surface)] p-2.5">
+                  <p className="mb-1.5 font-semibold text-[var(--text-primary)]">
+                    Migration Result: {migrationResult.renamedCount} renamed ·{' '}
+                    {migrationResult.addedCount} created · {migrationResult.skippedCount} skipped ·{' '}
+                    {migrationResult.failedCount} failed
+                  </p>
+                  {migrationResult.operations.length === 0 ? (
+                    <p className="text-[var(--text-muted)]">No operations were needed.</p>
+                  ) : (
+                    <ul className="flex flex-col gap-1">
+                      {migrationResult.operations.map((op, idx) => (
+                        <li
+                          key={`${op.kind}-${op.id ?? 'new'}-${idx}`}
+                          className="flex flex-wrap items-center justify-between gap-2 text-[11px]"
+                        >
+                          <span className="text-[var(--text-primary)]">{op.label}</span>
+                          <span
+                            className={`text-[10px] font-semibold ${
+                              op.status === 'success'
+                                ? 'text-[var(--success)]'
+                                : op.status === 'skipped'
+                                ? 'text-[var(--warning)]'
+                                : 'text-[var(--danger)]'
+                            }`}
+                          >
+                            {op.status === 'success'
+                              ? 'done'
+                              : op.detail ?? op.status}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
 
               {/* Before vs After or Current Category Inventory */}
               {migrationResult ? (

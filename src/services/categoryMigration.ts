@@ -43,6 +43,13 @@ export const NEW_CATEGORIES_TO_ADD: Omit<Category, 'id'>[] = [
     color: '#10B981',
     isArchived: false,
   },
+  {
+    // Same icon/color as DEFAULT_CATEGORIES in seed.ts and CATEGORY_COLORS in categoryColors.ts
+    name: 'Entertainment',
+    icon: '🎮',
+    color: '#F43F5E',
+    isArchived: false,
+  },
 ]
 
 export interface PlannedCategoryRename {
@@ -62,11 +69,28 @@ export interface CategoryMigrationPreview {
   hasDuplicateConflicts: boolean
 }
 
+export type MigrationOperationStatus = 'success' | 'skipped' | 'failed'
+
+/** Outcome of a single document write (rename or create) during the migration. */
+export interface MigrationOperationResult {
+  kind: 'rename' | 'create'
+  /** Document id (renames) or null (creates, where the id is assigned by Firestore) */
+  id: string | null
+  /** Human-readable description, e.g. "Transport → Transport & Vehicle" */
+  label: string
+  status: MigrationOperationStatus
+  /** Reason for skipped/failed operations */
+  detail?: string
+}
+
 export interface CategoryMigrationResult {
   before: Category[]
   after: Category[]
   renamedCount: number
   addedCount: number
+  skippedCount: number
+  failedCount: number
+  operations: MigrationOperationResult[]
   cacheInvalidated: boolean
 }
 
@@ -125,8 +149,11 @@ export async function previewCategoryMigration(
  * Runs the one-time category taxonomy migration:
  * 1. Updates old category names IN-PLACE on their existing Firestore documents
  *    (preserving document IDs so 100% of existing transaction categoryId references remain intact).
- * 2. Adds "Outings & Social" if it does not already exist.
+ * 2. Adds "Outings & Social" and "Entertainment" if they do not already exist.
  * 3. Invalidates the cached Insights summary so renamed categories appear immediately.
+ *
+ * Every document write is isolated in its own try/catch and reported individually in
+ * `operations` (success / skipped / failed), so one failure never aborts the rest.
  */
 export async function runCategoryMigration(
   uid: string
@@ -134,36 +161,82 @@ export async function runCategoryMigration(
   const preview = await previewCategoryMigration(uid)
   const before = preview.existingCategories
 
-  let renamedCount = 0
+  const operations: MigrationOperationResult[] = []
+  const errorMessage = (err: unknown) =>
+    err instanceof Error ? err.message : String(err)
+
   for (const rename of preview.plannedRenames) {
+    const label = `${rename.fromName} → ${rename.toName}`
     if (rename.targetAlreadyExists) {
       console.warn(
         `[Spenza CategoryMigration] Skipping rename of "${rename.fromName}" (${rename.id}) because "${rename.toName}" already exists.`
       )
+      operations.push({
+        kind: 'rename',
+        id: rename.id,
+        label,
+        status: 'skipped',
+        detail: 'skipped: target already exists',
+      })
       continue
     }
-    await updateCategory(uid, rename.id, {
-      name: rename.toName,
-      icon: rename.icon,
-      color: rename.color,
-    })
-    renamedCount++
+    try {
+      await updateCategory(uid, rename.id, {
+        name: rename.toName,
+        icon: rename.icon,
+        color: rename.color,
+      })
+      operations.push({ kind: 'rename', id: rename.id, label, status: 'success' })
+    } catch (err) {
+      console.error(`[Spenza CategoryMigration] Rename failed: ${label} (${rename.id})`, err)
+      operations.push({
+        kind: 'rename',
+        id: rename.id,
+        label,
+        status: 'failed',
+        detail: errorMessage(err),
+      })
+    }
   }
 
-  let addedCount = 0
   for (const addition of preview.plannedAdditions) {
-    await addCategory(uid, addition)
-    addedCount++
+    const label = `Create ${addition.name}`
+    try {
+      await addCategory(uid, addition)
+      operations.push({ kind: 'create', id: null, label, status: 'success' })
+    } catch (err) {
+      console.error(`[Spenza CategoryMigration] Create failed: ${addition.name}`, err)
+      operations.push({
+        kind: 'create',
+        id: null,
+        label,
+        status: 'failed',
+        detail: errorMessage(err),
+      })
+    }
   }
 
-  const cacheInvalidated = await invalidateInsightsCache(uid)
-  const after = await getCategories(uid)
+  const count = (kind: 'rename' | 'create', status: MigrationOperationStatus) =>
+    operations.filter(o => o.kind === kind && o.status === status).length
+
+  // Invalidate only if something was actually written; never let a read failure hide the per-document results.
+  const anyWritten = operations.some(o => o.status === 'success')
+  const cacheInvalidated = anyWritten ? await invalidateInsightsCache(uid) : false
+  let after: Category[] = before
+  try {
+    after = await getCategories(uid)
+  } catch (err) {
+    console.error('[Spenza CategoryMigration] Failed to re-read categories after migration', err)
+  }
 
   return {
     before,
     after,
-    renamedCount,
-    addedCount,
+    renamedCount: count('rename', 'success'),
+    addedCount: count('create', 'success'),
+    skippedCount: operations.filter(o => o.status === 'skipped').length,
+    failedCount: operations.filter(o => o.status === 'failed').length,
+    operations,
     cacheInvalidated,
   }
 }

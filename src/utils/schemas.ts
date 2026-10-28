@@ -189,3 +189,13 @@ export const CategorySchema = z.object({
 })
 
 export type CategoryFormValues = z.infer<typeof CategorySchema>
+
+// ─── Person Schema ────────────────────────────────────────────────────────────
+
+export const PersonSchema = z.object({
+  name: z.string().trim().min(1, 'Person name is required').max(100),
+  isArchived: z.boolean().default(false),
+})
+
+export type PersonFormValues = z.infer<typeof PersonSchema>
+

@@ -329,3 +329,170 @@ export function allocateCustomMyShareSplitPaise(
 
 export type TransactionTypeWithSplits = TransactionType
 
+export interface RepaymentResult {
+  splits: SplitShare[]
+  reimbursementStatus: ReimbursementStatus
+  appliedPaise: number
+  remainingPersonBalancePaise: number
+}
+
+export interface SettlementResult {
+  splits: SplitShare[]
+  reimbursementStatus: ReimbursementStatus
+  settledPaise: number
+}
+
+/**
+ * Apply a repayment of `repaymentPaise` (integer paise) from `personId` to an existing transaction.
+ *
+ * Guarantees:
+ * - Throws if `repaymentPaise <= 0` or non-integer.
+ * - Throws if `personId` is not found among the transaction's split shares.
+ * - Throws if `repaymentPaise` exceeds the person's remaining balance (`amountPaise - repaidPaise`).
+ * - Updates only the target person's `repaidPaise` and `settledAt`.
+ * - Does not mutate the input transaction object.
+ * - Leaves all other split shares, gross `amountPaise`, and net personal spend completely unchanged.
+ */
+export function applyRepayment(
+  tx: SplitAwareTransaction,
+  personId: string,
+  repaymentPaise: number,
+  settledAt?: any
+): RepaymentResult {
+  if (typeof repaymentPaise !== 'number' || !Number.isInteger(repaymentPaise) || repaymentPaise <= 0) {
+    throw new Error('Repayment amount must be a positive integer number of paise')
+  }
+
+  const pid = personId?.trim()
+  if (!pid) {
+    throw new Error('Person ID is required for recording a repayment')
+  }
+
+  const splits = getNormalizedSplits(tx)
+  if (splits.length === 0) {
+    throw new Error('Transaction has no recoverable split shares')
+  }
+
+  const targetIndex = splits.findIndex(
+    s =>
+      s.personId === pid ||
+      (s.personId === UNASSIGNED_PERSON_ID && s.personName.toLowerCase() === pid.toLowerCase())
+  )
+
+  if (targetIndex === -1) {
+    throw new Error(`No split share found for person "${pid}" on this transaction`)
+  }
+
+  const target = splits[targetIndex]
+  const outstanding = target.amountPaise - target.repaidPaise
+  if (outstanding <= 0) {
+    throw new Error(`Split share for "${target.personName}" is already fully repaid`)
+  }
+
+  if (repaymentPaise > outstanding) {
+    throw new Error(
+      `Repayment of ${repaymentPaise} paise exceeds outstanding balance of ${outstanding} paise for "${target.personName}"`
+    )
+  }
+
+  const updatedSplits = splits.map((s, idx) => {
+    if (idx !== targetIndex) return { ...s }
+
+    const newRepaid = s.repaidPaise + repaymentPaise
+    const isNowSettled = newRepaid === s.amountPaise
+
+    return {
+      ...s,
+      repaidPaise: newRepaid,
+      settledAt: isNowSettled ? (settledAt ?? s.settledAt ?? null) : s.settledAt,
+    }
+  })
+
+  const newStatus = getReimbursementStatus({ ...tx, splits: updatedSplits })
+
+  return {
+    splits: updatedSplits,
+    reimbursementStatus: newStatus,
+    appliedPaise: repaymentPaise,
+    remainingPersonBalancePaise: outstanding - repaymentPaise,
+  }
+}
+
+/**
+ * Settle the entire remaining balance for `personId` (or all participants if `personId` is omitted).
+ *
+ * Guarantees:
+ * - If already fully settled, returns 0 settled paise without error.
+ * - Does not mutate the input transaction object.
+ * - Derives the correct `reimbursementStatus`.
+ */
+export function applyFullSettlement(
+  tx: SplitAwareTransaction,
+  personId?: string,
+  settledAt?: any
+): SettlementResult {
+  const pid = personId?.trim()
+
+  if (pid) {
+    const splits = getNormalizedSplits(tx)
+    const target = splits.find(
+      s =>
+        s.personId === pid ||
+        (s.personId === UNASSIGNED_PERSON_ID && s.personName.toLowerCase() === pid.toLowerCase())
+    )
+
+    if (!target) {
+      throw new Error(`No split share found for person "${pid}" on this transaction`)
+    }
+
+    const outstanding = target.amountPaise - target.repaidPaise
+    if (outstanding <= 0) {
+      return {
+        splits,
+        reimbursementStatus: getReimbursementStatus(tx),
+        settledPaise: 0,
+      }
+    }
+
+    const res = applyRepayment(tx, pid, outstanding, settledAt)
+    return {
+      splits: res.splits,
+      reimbursementStatus: res.reimbursementStatus,
+      settledPaise: res.appliedPaise,
+    }
+  }
+
+  // Settle all participants in this transaction
+  const splits = getNormalizedSplits(tx)
+  if (splits.length === 0) {
+    return {
+      splits: [],
+      reimbursementStatus: 'none',
+      settledPaise: 0,
+    }
+  }
+
+  let totalSettled = 0
+  const updatedSplits = splits.map(s => {
+    const outstanding = s.amountPaise - s.repaidPaise
+    if (outstanding > 0) {
+      totalSettled += outstanding
+      return {
+        ...s,
+        repaidPaise: s.amountPaise,
+        settledAt: settledAt ?? s.settledAt ?? null,
+      }
+    }
+    return { ...s }
+  })
+
+  const newStatus = getReimbursementStatus({ ...tx, splits: updatedSplits })
+
+  return {
+    splits: updatedSplits,
+    reimbursementStatus: newStatus,
+    settledPaise: totalSettled,
+  }
+}
+
+

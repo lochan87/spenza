@@ -17,10 +17,10 @@ export const TRIP_BUCKET_META: Record<TripBucket, { color: string; emoji: string
   Misc:       { color: '#64748B', emoji: '📦', bg: 'rgba(100, 116, 139, 0.12)' },
 }
 
-const TRANSPORT_KW  = ['transport', 'travel', 'auto', 'cab', 'taxi', 'bus', 'train', 'flight', 'metro', 'fuel', 'petrol', 'uber', 'ola', 'rapido', 'rickshaw', 'ferry', 'toll']
+const TRANSPORT_KW  = ['transport', 'vehicle', 'travel', 'auto', 'cab', 'taxi', 'bus', 'train', 'flight', 'metro', 'fuel', 'petrol', 'uber', 'ola', 'rapido', 'rickshaw', 'ferry', 'toll']
 const FOOD_KW       = ['food', 'drink', 'restaurant', 'cafe', 'coffee', 'dining', 'eat', 'meal', 'snack', 'breakfast', 'lunch', 'dinner', 'zomato', 'swiggy', 'blinkit', 'grocery']
 const STAY_KW       = ['stay', 'hotel', 'accommodation', 'hostel', 'airbnb', 'lodge', 'pg', 'oyo', 'resort', 'guesthouse', 'homestay']
-const ACTIVITIES_KW = ['entertainment', 'sport', 'cinema', 'movie', 'park', 'museum', 'event', 'show', 'gym', 'activity', 'experience', 'tour', 'adventure', 'trek', 'hike', 'shopping', 'souvenir']
+const ACTIVITIES_KW = ['entertainment', 'outing', 'outings', 'social', 'meetup', 'hangout', 'sport', 'cinema', 'movie', 'park', 'museum', 'event', 'show', 'gym', 'activity', 'experience', 'tour', 'adventure', 'trek', 'hike', 'shopping', 'souvenir']
 
 /**
  * Map a main category name to one of the 5 trip buckets.

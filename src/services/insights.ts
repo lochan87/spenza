@@ -39,6 +39,9 @@ import type {
 
 const summaryRef = (uid: string) => doc(db, 'users', uid, 'insights', 'summary')
 
+/** Current schema version for cached InsightsSummary documents */
+export const INSIGHTS_SCHEMA_VERSION = 2
+
 /**
  * CHOSEN APPROACH: On-demand cached summary document (`users/{uid}/insights/summary`).
  *
@@ -93,16 +96,14 @@ export function isCacheFresh(summary: InsightsSummary): boolean {
 
 /**
  * True if the cached summary no longer reflects the current transactions collection
- * or lacks the extended Phase 6+ fields.
+ * or was computed with an older schemaVersion.
  */
 export function isCacheStaleAgainstCount(summary: InsightsSummary, liveCount: number): boolean {
   if (liveCount < 3) return true
   if (typeof summary.transactionCount !== 'number') return true
   if (
-    !summary.monthlyTrend ||
-    !summary.monthComparison ||
-    !summary.categoryMonthlyTrends ||
-    !summary.dayOfWeekStats
+    typeof summary.schemaVersion !== 'number' ||
+    summary.schemaVersion < INSIGHTS_SCHEMA_VERSION
   ) {
     return true
   }
@@ -760,6 +761,7 @@ export async function computeAndCacheInsights(uid: string): Promise<InsightsSumm
 
   const summary: InsightsSummary = {
     computedAt: Timestamp.now(),
+    schemaVersion: INSIGHTS_SCHEMA_VERSION,
     computedMonthKey: currentMonthKey,
     transactionCount: allTxns.length,
     highestSpendingMonth,

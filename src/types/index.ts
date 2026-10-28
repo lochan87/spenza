@@ -264,6 +264,8 @@ export interface PaymentModeInsightInfo {
 /** Cached at users/{uid}/insights/summary — recomputed on-demand */
 export interface InsightsSummary {
   computedAt: Timestamp
+  /** Schema version of the cached summary document */
+  schemaVersion?: number
   /** Calendar month ("YYYY-MM") when this summary was computed */
   computedMonthKey?: string
   /** Total number of transactions when this summary was computed */

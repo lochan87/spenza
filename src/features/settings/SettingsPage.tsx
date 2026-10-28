@@ -272,11 +272,18 @@ export function SettingsPage() {
     setResettingCache(true)
     setStatusBanner(null)
     try {
-      await invalidateInsightsCache(user.uid)
-      setStatusBanner({
-        type: 'success',
-        message: 'Insights cache cleared — Insights will recompute fresh on your next visit.',
-      })
+      const ok = await invalidateInsightsCache(user.uid)
+      if (ok) {
+        setStatusBanner({
+          type: 'success',
+          message: 'Insights cache cleared — Insights will recompute fresh on your next visit.',
+        })
+      } else {
+        setStatusBanner({
+          type: 'error',
+          message: 'Failed to clear insights cache. Please check your connection and try again.',
+        })
+      }
     } catch (err) {
       console.error('[Spenza Settings] Cache reset error:', err)
       setStatusBanner({
@@ -293,15 +300,24 @@ export function SettingsPage() {
     setClearingImports(true)
     setStatusBanner(null)
     try {
-      const deleted = await clearImportedTransactions(user.uid)
+      const { deleted, cacheInvalidated } = await clearImportedTransactions(user.uid)
       setConfirmClearImports(false)
       await reloadData()
-      setStatusBanner({
-        type: 'success',
-        message: `Deleted ${deleted.toLocaleString()} imported transaction${
-          deleted !== 1 ? 's' : ''
-        } and invalidated the Insights cache.`,
-      })
+      if (!cacheInvalidated) {
+        setStatusBanner({
+          type: 'error',
+          message: `Deleted ${deleted.toLocaleString()} imported transaction${
+            deleted !== 1 ? 's' : ''
+          }, but failed to invalidate the Insights cache. Please click Reset Cache manually.`,
+        })
+      } else {
+        setStatusBanner({
+          type: 'success',
+          message: `Deleted ${deleted.toLocaleString()} imported transaction${
+            deleted !== 1 ? 's' : ''
+          } and invalidated the Insights cache.`,
+        })
+      }
     } catch (err) {
       console.error('[Spenza Settings] Clear imports error:', err)
       setStatusBanner({
@@ -318,15 +334,24 @@ export function SettingsPage() {
     setClearingAll(true)
     setStatusBanner(null)
     try {
-      const deleted = await clearAllTransactions(user.uid)
+      const { deleted, cacheInvalidated } = await clearAllTransactions(user.uid)
       setConfirmClearAll(false)
       await reloadData()
-      setStatusBanner({
-        type: 'success',
-        message: `Deleted all ${deleted.toLocaleString()} transaction${
-          deleted !== 1 ? 's' : ''
-        } and cleared the Insights cache.`,
-      })
+      if (!cacheInvalidated) {
+        setStatusBanner({
+          type: 'error',
+          message: `Deleted all ${deleted.toLocaleString()} transaction${
+            deleted !== 1 ? 's' : ''
+          }, but failed to clear the Insights cache. Please click Reset Cache manually.`,
+        })
+      } else {
+        setStatusBanner({
+          type: 'success',
+          message: `Deleted all ${deleted.toLocaleString()} transaction${
+            deleted !== 1 ? 's' : ''
+          } and cleared the Insights cache.`,
+        })
+      }
     } catch (err) {
       console.error('[Spenza Settings] Clear all error:', err)
       setStatusBanner({

@@ -354,7 +354,7 @@ export async function batchImportTransactions(
   categoryMap: Map<string, string>, // categoryName → categoryId
   otherCategoryId: string,
   onProgress: (p: ImportProgress) => void
-): Promise<{ imported: number; skipped: number }> {
+): Promise<{ imported: number; skipped: number; cacheInvalidated: boolean }> {
   const txnColl = collection(db, 'users', uid, 'transactions')
   const totalBatches = Math.ceil(rows.length / BATCH_SIZE)
   let imported = 0
@@ -408,11 +408,12 @@ export async function batchImportTransactions(
     onProgress({ total: rows.length, done: Math.min((bi + 1) * BATCH_SIZE, rows.length), batchNum: bi + 1, totalBatches })
   }
 
+  let cacheInvalidated = true
   if (imported > 0) {
-    await invalidateInsightsCache(uid)
+    cacheInvalidated = await invalidateInsightsCache(uid)
   }
 
-  return { imported, skipped }
+  return { imported, skipped, cacheInvalidated }
 }
 
 // ─── Clear & Count imports ────────────────────────────────────────────────────
@@ -435,14 +436,16 @@ export async function getImportedTransactionsCount(uid: string): Promise<number>
  * Delete all transactions that were created via Excel import (isImported === true).
  * Runs in batches of 500 to stay within Firestore write limits, and invalidates
  * the cached insights summary document.
- * Returns the number of transactions deleted.
+ * Returns the number of transactions deleted and whether cache invalidation succeeded.
  */
-export async function clearImportedTransactions(uid: string): Promise<number> {
+export async function clearImportedTransactions(
+  uid: string
+): Promise<{ deleted: number; cacheInvalidated: boolean }> {
   const txnColl = collection(db, 'users', uid, 'transactions')
   const snap = await getDocs(query(txnColl, where('isImported', '==', true)))
   if (snap.empty) {
-    await invalidateInsightsCache(uid)
-    return 0
+    const cacheInvalidated = await invalidateInsightsCache(uid)
+    return { deleted: 0, cacheInvalidated }
   }
 
   let deleted = 0
@@ -457,21 +460,23 @@ export async function clearImportedTransactions(uid: string): Promise<number> {
     deleted += chunk.length
   }
 
-  await invalidateInsightsCache(uid)
-  return deleted
+  const cacheInvalidated = await invalidateInsightsCache(uid)
+  return { deleted, cacheInvalidated }
 }
 
 /**
  * Delete ALL transactions (both imported and manually entered) and invalidate
  * the cached insights summary document.
- * Returns the number of transactions deleted.
+ * Returns the number of transactions deleted and whether cache invalidation succeeded.
  */
-export async function clearAllTransactions(uid: string): Promise<number> {
+export async function clearAllTransactions(
+  uid: string
+): Promise<{ deleted: number; cacheInvalidated: boolean }> {
   const txnColl = collection(db, 'users', uid, 'transactions')
   const snap = await getDocs(txnColl)
   if (snap.empty) {
-    await invalidateInsightsCache(uid)
-    return 0
+    const cacheInvalidated = await invalidateInsightsCache(uid)
+    return { deleted: 0, cacheInvalidated }
   }
 
   let deleted = 0
@@ -486,6 +491,6 @@ export async function clearAllTransactions(uid: string): Promise<number> {
     deleted += chunk.length
   }
 
-  await invalidateInsightsCache(uid)
-  return deleted
+  const cacheInvalidated = await invalidateInsightsCache(uid)
+  return { deleted, cacheInvalidated }
 }

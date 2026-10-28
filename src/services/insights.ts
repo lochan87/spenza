@@ -57,9 +57,15 @@ export async function getCachedInsights(uid: string): Promise<InsightsSummary | 
   return snap.data() as InsightsSummary
 }
 
-/** Delete the cached insights summary document (called on bulk clear/import) */
-export async function invalidateInsightsCache(uid: string): Promise<void> {
-  await deleteDoc(summaryRef(uid)).catch(() => {})
+/** Delete the cached insights summary document (called on edits/bulk clear/import). Returns true on success. */
+export async function invalidateInsightsCache(uid: string): Promise<boolean> {
+  try {
+    await deleteDoc(summaryRef(uid))
+    return true
+  } catch (err) {
+    console.error('[Spenza Insights] Failed to invalidate insights cache:', err)
+    return false
+  }
 }
 
 /** Get the current number of transactions in Firestore (fast count aggregation with offline fallback) */

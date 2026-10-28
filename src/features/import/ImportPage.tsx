@@ -169,6 +169,9 @@ export function ImportPage() {
         user.uid, allRows, catNameToId, otherCat,
         (p) => setProgress(p)
       )
+      if (!res.cacheInvalidated) {
+        setError('Transactions imported, but failed to refresh the Insights cache automatically.')
+      }
       setResult(res)
       setStep('done')
     } catch (err) {

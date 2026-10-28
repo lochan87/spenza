@@ -109,6 +109,7 @@ export function CategoriesPage() {
   const [addingCat, setAddingCat] = useState(false)
   const [newCatName, setNewCatName] = useState('')
   const [showArchived, setShowArchived] = useState(false)
+  const [errorMsg, setErrorMsg] = useState<string | null>(null)
 
   const reload = useCallback(async () => {
     if (!user) return
@@ -143,6 +144,15 @@ export function CategoriesPage() {
           {activeCatCount} active
         </span>
       </div>
+
+      {errorMsg && (
+        <div className="mb-4 flex items-center justify-between rounded-xl border border-[var(--danger)]/30 bg-[var(--danger-muted)] px-4 py-2.5 text-xs font-medium text-[var(--danger)]">
+          <span>{errorMsg}</span>
+          <button type="button" onClick={() => setErrorMsg(null)} className="opacity-75 hover:opacity-100">
+            Dismiss
+          </button>
+        </div>
+      )}
 
       <div className="flex flex-col gap-3">
         {/* Add category form */}
@@ -219,8 +229,12 @@ export function CategoriesPage() {
                   value={cat.name}
                   onSave={async name => {
                     if (!name.trim()) return
+                    setErrorMsg(null)
                     await updateCategory(user!.uid, cat.id, { name: name.trim() })
-                    await invalidateInsightsCache(user!.uid)
+                    const cacheOk = await invalidateInsightsCache(user!.uid)
+                    if (!cacheOk) {
+                      setErrorMsg('Category renamed, but failed to invalidate Insights cache.')
+                    }
                     setEditingCat(null)
                     reload()
                   }}
@@ -233,8 +247,12 @@ export function CategoriesPage() {
                 cat={cat}
                 onEdit={c => setEditingCat(c.id)}
                 onArchive={async c => {
+                  setErrorMsg(null)
                   await updateCategory(user!.uid, c.id, { isArchived: !c.isArchived })
-                  await invalidateInsightsCache(user!.uid)
+                  const cacheOk = await invalidateInsightsCache(user!.uid)
+                  if (!cacheOk) {
+                    setErrorMsg('Category updated, but failed to invalidate Insights cache.')
+                  }
                   reload()
                 }}
               />

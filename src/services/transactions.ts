@@ -32,7 +32,10 @@ export async function addTransaction(
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   })
-  await invalidateInsightsCache(uid)
+  const cacheOk = await invalidateInsightsCache(uid)
+  if (!cacheOk) {
+    console.warn('[Spenza Transactions] Added transaction, but failed to invalidate insights cache.')
+  }
   return ref.id
 }
 
@@ -43,12 +46,18 @@ export async function updateTransaction(
 ): Promise<void> {
   const ref = doc(db, 'users', uid, 'transactions', id)
   await setDoc(ref, { ...data, updatedAt: serverTimestamp() }, { merge: true })
-  await invalidateInsightsCache(uid)
+  const cacheOk = await invalidateInsightsCache(uid)
+  if (!cacheOk) {
+    console.warn('[Spenza Transactions] Updated transaction, but failed to invalidate insights cache.')
+  }
 }
 
 export async function deleteTransaction(uid: string, id: string): Promise<void> {
   await deleteDoc(doc(db, 'users', uid, 'transactions', id))
-  await invalidateInsightsCache(uid)
+  const cacheOk = await invalidateInsightsCache(uid)
+  if (!cacheOk) {
+    console.warn('[Spenza Transactions] Deleted transaction, but failed to invalidate insights cache.')
+  }
 }
 
 export async function getTransaction(uid: string, id: string): Promise<Transaction | null> {

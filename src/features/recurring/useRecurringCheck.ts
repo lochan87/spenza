@@ -75,7 +75,10 @@ export function useRecurringCheck(): UseRecurringCheckReturn {
       nextDueDate: Timestamp.fromDate(nextDate),
       lastGeneratedDate: Timestamp.now(),
     })
-    await invalidateInsightsCache(user.uid)
+    const cacheOk = await invalidateInsightsCache(user.uid)
+    if (!cacheOk) {
+      console.warn('[Spenza Recurring] Confirmed recurring item, but failed to invalidate insights cache.')
+    }
 
     // 3. Remove from prompts
     setOverdueItems(prev => prev.filter(i => i.id !== item.id))

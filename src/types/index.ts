@@ -150,6 +150,8 @@ export interface RecurringItem {
 /** Cached at users/{uid}/insights/summary — recomputed on-demand */
 export interface InsightsSummary {
   computedAt: Timestamp
+  /** Total number of transactions when this summary was computed */
+  transactionCount?: number
   highestSpendingMonth: { monthKey: string; totalPaise: number } | null
   mostFrequentCategory: { categoryId: string; name: string; count: number } | null
   mostFrequentSmallDesc: { description: string; count: number } | null

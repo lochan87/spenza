@@ -6,9 +6,10 @@
  */
 
 import * as XLSX from 'xlsx'
-import { writeBatch, doc, collection, getDocs, query, where, serverTimestamp, Timestamp } from 'firebase/firestore'
+import { writeBatch, doc, collection, getDocs, getCountFromServer, query, where, serverTimestamp, Timestamp } from 'firebase/firestore'
 import { db } from '@/firebase/config'
 import { suggestCategory } from '@/utils/categoryKeywords'
+import { invalidateInsightsCache } from '@/services/insights'
 
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
@@ -407,20 +408,42 @@ export async function batchImportTransactions(
     onProgress({ total: rows.length, done: Math.min((bi + 1) * BATCH_SIZE, rows.length), batchNum: bi + 1, totalBatches })
   }
 
+  if (imported > 0) {
+    await invalidateInsightsCache(uid)
+  }
+
   return { imported, skipped }
 }
 
-// ─── Clear imports ────────────────────────────────────────────────────────────
+// ─── Clear & Count imports ────────────────────────────────────────────────────
+
+/**
+ * Count how many imported transactions (`isImported === true`) exist for a user.
+ */
+export async function getImportedTransactionsCount(uid: string): Promise<number> {
+  const q = query(collection(db, 'users', uid, 'transactions'), where('isImported', '==', true))
+  try {
+    const snap = await getCountFromServer(q)
+    return snap.data().count
+  } catch {
+    const snap = await getDocs(q)
+    return snap.size
+  }
+}
 
 /**
  * Delete all transactions that were created via Excel import (isImported === true).
- * Runs in batches of 500 to stay within Firestore write limits.
+ * Runs in batches of 500 to stay within Firestore write limits, and invalidates
+ * the cached insights summary document.
  * Returns the number of transactions deleted.
  */
 export async function clearImportedTransactions(uid: string): Promise<number> {
   const txnColl = collection(db, 'users', uid, 'transactions')
   const snap = await getDocs(query(txnColl, where('isImported', '==', true)))
-  if (snap.empty) return 0
+  if (snap.empty) {
+    await invalidateInsightsCache(uid)
+    return 0
+  }
 
   let deleted = 0
   const chunks: typeof snap.docs[] = []
@@ -433,5 +456,36 @@ export async function clearImportedTransactions(uid: string): Promise<number> {
     await batch.commit()
     deleted += chunk.length
   }
+
+  await invalidateInsightsCache(uid)
+  return deleted
+}
+
+/**
+ * Delete ALL transactions (both imported and manually entered) and invalidate
+ * the cached insights summary document.
+ * Returns the number of transactions deleted.
+ */
+export async function clearAllTransactions(uid: string): Promise<number> {
+  const txnColl = collection(db, 'users', uid, 'transactions')
+  const snap = await getDocs(txnColl)
+  if (snap.empty) {
+    await invalidateInsightsCache(uid)
+    return 0
+  }
+
+  let deleted = 0
+  const chunks: typeof snap.docs[] = []
+  for (let i = 0; i < snap.docs.length; i += 500) {
+    chunks.push(snap.docs.slice(i, i + 500))
+  }
+  for (const chunk of chunks) {
+    const batch = writeBatch(db)
+    chunk.forEach(d => batch.delete(d.ref))
+    await batch.commit()
+    deleted += chunk.length
+  }
+
+  await invalidateInsightsCache(uid)
   return deleted
 }

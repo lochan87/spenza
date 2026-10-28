@@ -1,5 +1,5 @@
 import {
-  collection, doc, setDoc, getDoc, getDocs,
+  collection, doc, setDoc, getDoc, getDocs, deleteDoc, getCountFromServer,
   query, orderBy, Timestamp,
 } from 'firebase/firestore'
 import { getYear, format } from 'date-fns'
@@ -13,22 +13,32 @@ const summaryRef = (uid: string) => doc(db, 'users', uid, 'insights', 'summary')
  * CHOSEN APPROACH: On-demand cached summary document.
  *
  * The insights summary is stored at users/{uid}/insights/summary.
- * - On page load: read 1 doc. If it's <7 days old, use cached data.
- * - If stale/missing: show a "Compute Insights" prompt (user initiates).
+ * - On page load: read 1 doc + live transaction count. If <7 days old and count matches, use cached data.
+ * - If stale/missing or count diverged (e.g. after bulk import/clear): recompute automatically.
  * - "Refresh" button always triggers a recompute.
- *
- * TRADEOFFS vs live query on every visit:
- *   ✅ Fast on repeat visits — 1 doc read instead of O(all transactions)
- *   ✅ User controls freshness via explicit "Refresh" button
- *   ✅ Firestore read cost stays flat as history grows
- *   ❌ Can be up to 7 days stale without manual refresh
- *   ❌ First-time compute reads all transactions (one-time cost per 7 days)
  */
 
 export async function getCachedInsights(uid: string): Promise<InsightsSummary | null> {
   const snap = await getDoc(summaryRef(uid))
   if (!snap.exists()) return null
   return snap.data() as InsightsSummary
+}
+
+/** Delete the cached insights summary document (called on bulk clear/import) */
+export async function invalidateInsightsCache(uid: string): Promise<void> {
+  await deleteDoc(summaryRef(uid)).catch(() => {})
+}
+
+/** Get the current number of transactions in Firestore (fast count aggregation with offline fallback) */
+export async function getLiveTransactionCount(uid: string): Promise<number> {
+  const coll = collection(db, 'users', uid, 'transactions')
+  try {
+    const countSnap = await getCountFromServer(coll)
+    return countSnap.data().count
+  } catch {
+    const snap = await getDocs(coll)
+    return snap.size
+  }
 }
 
 /** True if the cached summary is fresh (computed within last 7 days) */
@@ -38,8 +48,20 @@ export function isCacheFresh(summary: InsightsSummary): boolean {
   return computed > sevenDaysAgo
 }
 
+/**
+ * True if the cached summary no longer reflects the current transactions collection
+ * (e.g. transactions were cleared to <3, legacy doc lacks transactionCount, or count changed significantly).
+ */
+export function isCacheStaleAgainstCount(summary: InsightsSummary, liveCount: number): boolean {
+  if (liveCount < 3) return true
+  if (typeof summary.transactionCount !== 'number') return true
+  const diff = Math.abs(liveCount - summary.transactionCount)
+  const pctDiff = diff / Math.max(1, summary.transactionCount)
+  return diff >= 5 || pctDiff >= 0.1
+}
+
 /** Fetch all transactions and compute + persist the insights summary.
- * Returns null if there are fewer than 3 transactions (not enough data to show). */
+ * Returns null (and deletes any stale cached doc) if there are fewer than 3 transactions. */
 export async function computeAndCacheInsights(uid: string): Promise<InsightsSummary | null> {
   // Read ALL transactions — expensive but infrequent (7-day cache)
   const snap = await getDocs(
@@ -47,8 +69,11 @@ export async function computeAndCacheInsights(uid: string): Promise<InsightsSumm
   )
   const allTxns = snap.docs.map(d => ({ id: d.id, ...d.data() }) as Transaction)
 
-  // Not enough data to generate meaningful insights
-  if (allTxns.length < 3) return null
+  // Not enough data to generate meaningful insights — ensure any stale cached summary is removed
+  if (allTxns.length < 3) {
+    await invalidateInsightsCache(uid)
+    return null
+  }
 
   const categories = await getCategories(uid)
 
@@ -173,6 +198,7 @@ export async function computeAndCacheInsights(uid: string): Promise<InsightsSumm
 
   const summary: InsightsSummary = {
     computedAt: Timestamp.now(),
+    transactionCount: allTxns.length,
     highestSpendingMonth,
     mostFrequentCategory,
     mostFrequentSmallDesc,

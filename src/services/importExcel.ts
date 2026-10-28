@@ -359,58 +359,66 @@ export async function batchImportTransactions(
   const totalBatches = Math.ceil(rows.length / BATCH_SIZE)
   let imported = 0
   let skipped  = 0
-
-  for (let bi = 0; bi < totalBatches; bi++) {
-    const chunk = rows.slice(bi * BATCH_SIZE, (bi + 1) * BATCH_SIZE)
-    const batch = writeBatch(db)
-
-    for (const row of chunk) {
-      if (!row.amountPaise || !row.dateStr) { skipped++; continue }
-
-      const catId = row.resolvedCategoryId
-        ?? (row.suggestedCategoryName ? categoryMap.get(row.suggestedCategoryName) : null)
-        ?? otherCategoryId
-
-      const ref = doc(txnColl)
-      const parsedDate = new Date(row.dateStr + 'T12:00:00')
-      if (isNaN(parsedDate.getTime())) {
-        // Should not happen if parseExcelDate is correct, but guard against
-        // any edge-case date strings that JS Date refuses to parse
-        console.warn('[Spenza Import] Skipping row with unparseable date:', row.dateStr, row.description)
-        skipped++
-        continue
-      }
-      const date = Timestamp.fromDate(parsedDate)
-
-      batch.set(ref, {
-        id: ref.id,
-        amountPaise: row.amountPaise,
-        description: row.description,
-        categoryId: catId,
-        type: row.isTripRow ? 'trip' : 'everyday',
-        date,
-        paymentMode: 'Other',
-        paymentAccountId: null,
-        tripId: row.tripId ?? null,
-        personId: null,
-        tags: [],
-        notes: '',
-        receiptUrl: null,
-        isImported: true,
-        importSource: 'excel',
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      })
-      imported++
-    }
-
-    await batch.commit()
-    onProgress({ total: rows.length, done: Math.min((bi + 1) * BATCH_SIZE, rows.length), batchNum: bi + 1, totalBatches })
-  }
-
   let cacheInvalidated = true
-  if (imported > 0) {
-    cacheInvalidated = await invalidateInsightsCache(uid)
+
+  try {
+    for (let bi = 0; bi < totalBatches; bi++) {
+      const chunk = rows.slice(bi * BATCH_SIZE, (bi + 1) * BATCH_SIZE)
+      const batch = writeBatch(db)
+      let chunkImported = 0
+      let chunkSkipped = 0
+
+      for (const row of chunk) {
+        if (!row.amountPaise || !row.dateStr) { chunkSkipped++; continue }
+
+        const catId = row.resolvedCategoryId
+          ?? (row.suggestedCategoryName ? categoryMap.get(row.suggestedCategoryName) : null)
+          ?? otherCategoryId
+
+        const ref = doc(txnColl)
+        const parsedDate = new Date(row.dateStr + 'T12:00:00')
+        if (isNaN(parsedDate.getTime())) {
+          // Should not happen if parseExcelDate is correct, but guard against
+          // any edge-case date strings that JS Date refuses to parse
+          console.warn('[Spenza Import] Skipping row with unparseable date:', row.dateStr, row.description)
+          chunkSkipped++
+          continue
+        }
+        const date = Timestamp.fromDate(parsedDate)
+
+        batch.set(ref, {
+          id: ref.id,
+          amountPaise: row.amountPaise,
+          description: row.description,
+          categoryId: catId,
+          type: row.isTripRow ? 'trip' : 'everyday',
+          date,
+          paymentMode: 'Other',
+          paymentAccountId: null,
+          tripId: row.tripId ?? null,
+          personId: null,
+          tags: [],
+          notes: '',
+          receiptUrl: null,
+          isImported: true,
+          importSource: 'excel',
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        })
+        chunkImported++
+      }
+
+      if (chunkImported > 0) {
+        await batch.commit()
+      }
+      imported += chunkImported
+      skipped += chunkSkipped
+      onProgress({ total: rows.length, done: Math.min((bi + 1) * BATCH_SIZE, rows.length), batchNum: bi + 1, totalBatches })
+    }
+  } finally {
+    if (imported > 0) {
+      cacheInvalidated = await invalidateInsightsCache(uid)
+    }
   }
 
   return { imported, skipped, cacheInvalidated }
@@ -435,7 +443,7 @@ export async function getImportedTransactionsCount(uid: string): Promise<number>
 /**
  * Delete all transactions that were created via Excel import (isImported === true).
  * Runs in batches of 500 to stay within Firestore write limits, and invalidates
- * the cached insights summary document.
+ * the cached insights summary document (even if a partial batch failure occurs).
  * Returns the number of transactions deleted and whether cache invalidation succeeded.
  */
 export async function clearImportedTransactions(
@@ -449,24 +457,31 @@ export async function clearImportedTransactions(
   }
 
   let deleted = 0
+  let cacheInvalidated = true
   const chunks: typeof snap.docs[] = []
   for (let i = 0; i < snap.docs.length; i += 500) {
     chunks.push(snap.docs.slice(i, i + 500))
   }
-  for (const chunk of chunks) {
-    const batch = writeBatch(db)
-    chunk.forEach(d => batch.delete(d.ref))
-    await batch.commit()
-    deleted += chunk.length
+
+  try {
+    for (const chunk of chunks) {
+      const batch = writeBatch(db)
+      chunk.forEach(d => batch.delete(d.ref))
+      await batch.commit()
+      deleted += chunk.length
+    }
+  } finally {
+    if (deleted > 0) {
+      cacheInvalidated = await invalidateInsightsCache(uid)
+    }
   }
 
-  const cacheInvalidated = await invalidateInsightsCache(uid)
   return { deleted, cacheInvalidated }
 }
 
 /**
  * Delete ALL transactions (both imported and manually entered) and invalidate
- * the cached insights summary document.
+ * the cached insights summary document (even if a partial batch failure occurs).
  * Returns the number of transactions deleted and whether cache invalidation succeeded.
  */
 export async function clearAllTransactions(
@@ -480,17 +495,24 @@ export async function clearAllTransactions(
   }
 
   let deleted = 0
+  let cacheInvalidated = true
   const chunks: typeof snap.docs[] = []
   for (let i = 0; i < snap.docs.length; i += 500) {
     chunks.push(snap.docs.slice(i, i + 500))
   }
-  for (const chunk of chunks) {
-    const batch = writeBatch(db)
-    chunk.forEach(d => batch.delete(d.ref))
-    await batch.commit()
-    deleted += chunk.length
+
+  try {
+    for (const chunk of chunks) {
+      const batch = writeBatch(db)
+      chunk.forEach(d => batch.delete(d.ref))
+      await batch.commit()
+      deleted += chunk.length
+    }
+  } finally {
+    if (deleted > 0) {
+      cacheInvalidated = await invalidateInsightsCache(uid)
+    }
   }
 
-  const cacheInvalidated = await invalidateInsightsCache(uid)
   return { deleted, cacheInvalidated }
 }

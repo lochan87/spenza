@@ -20,6 +20,22 @@ export type TransactionType =
   | 'gift-event'
   | 'reimbursable'
 
+export type ReimbursementStatus = 'none' | 'pending' | 'partial' | 'settled'
+
+/** Per-person recoverable share embedded in a Transaction document */
+export interface SplitShare {
+  /** References users/{uid}/people/{id}, or '__unassigned__' for legacy/unnamed reimbursable items */
+  personId: string
+  /** Denormalized display name so rows render without extra reads and survive person archival */
+  personName: string
+  /** Integer paise fronted for this person (their share of the bill). Must be > 0. */
+  amountPaise: number
+  /** Integer paise repaid by this person so far. Always satisfies: 0 <= repaidPaise <= amountPaise */
+  repaidPaise: number
+  /** Timestamp of most recent repayment/settlement, or null if unpaid */
+  settledAt?: Timestamp | null
+}
+
 /** Core transaction document stored in users/{uid}/transactions/{id} */
 export interface Transaction {
   id: string
@@ -45,6 +61,18 @@ export interface Transaction {
   tags: string[]
   notes: string
   receiptUrl: string | null // reserved for Phase 2 image upload
+
+  // ── Recoverables & Splits (optional for backward compatibility) ─────────
+  /**
+   * Portion of amountPaise (in integer paise) fronted on behalf of other people.
+   * Net personal spending is amountPaise - recoverablePaise.
+   * Always satisfies: 0 <= recoverablePaise <= amountPaise.
+   */
+  recoverablePaise?: number
+  /** Per-person breakdown of recoverablePaise and their repayment progress. */
+  splits?: SplitShare[]
+  /** Summary status derived from splits / recoverablePaise. */
+  reimbursementStatus?: ReimbursementStatus
 
   // ── Import provenance ───────────────────────────────────────────────────
   /** True for rows bulk-imported from Excel. paymentMode will be 'Other' and paymentAccountId null. */
@@ -312,6 +340,7 @@ export interface InsightsSummary {
 export interface Person {
   id: string
   name: string
+  isArchived?: boolean
   createdAt: Timestamp
 }
 

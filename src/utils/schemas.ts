@@ -12,6 +12,40 @@ export const TransactionTypeSchema = z.enum([
   'reimbursable',
 ])
 
+export const ReimbursementStatusSchema = z.enum([
+  'none',
+  'pending',
+  'partial',
+  'settled',
+])
+
+export const SplitShareSchema = z
+  .object({
+    personId: z.string().min(1, 'Person ID is required'),
+    personName: z.string().min(1, 'Person name is required').max(100),
+    amountPaise: z
+      .number()
+      .int('Split share must be a whole number of paise')
+      .positive('Split share must be greater than zero'),
+    repaidPaise: z
+      .number()
+      .int('Repaid amount must be a whole number of paise')
+      .min(0, 'Repaid amount cannot be negative')
+      .default(0),
+    settledAt: z.any().nullable().optional(),
+  })
+  .superRefine((share, ctx) => {
+    if (share.repaidPaise > share.amountPaise) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['repaidPaise'],
+        message: 'Repaid amount cannot exceed split share amount.',
+      })
+    }
+  })
+
+export type SplitShareFormValues = z.infer<typeof SplitShareSchema>
+
 // ─── Transaction Zod Schema ───────────────────────────────────────────────────
 //
 // KEY VALIDATION RULE:
@@ -37,14 +71,23 @@ const BaseTransactionSchema = z.object({
   tags: z.array(z.string()).default([]),
   notes: z.string().default(''),
   receiptUrl: z.string().url().nullable().default(null),
+  recoverablePaise: z
+    .number()
+    .int('Recoverable amount must be a whole number of paise')
+    .min(0, 'Recoverable amount cannot be negative')
+    .optional(),
+  splits: z.array(SplitShareSchema).optional(),
+  reimbursementStatus: ReimbursementStatusSchema.optional(),
 })
 
 /**
- * Full transaction schema with conditional paymentAccountId validation.
+ * Full transaction schema with conditional paymentAccountId and split-balance validation.
  *
- * Rule:
+ * Rules:
  *   - "Cash" or "Other" → paymentAccountId must be null
  *   - "UPI", "Bank Transfer", "Card" → paymentAccountId must be a non-empty string
+ *   - recoverablePaise (when provided) must not exceed amountPaise
+ *   - splits (when non-empty) must sum to recoverablePaise (if provided) and must not exceed amountPaise
  */
 export const TransactionSchema = BaseTransactionSchema.superRefine((data, ctx) => {
   const accountRequiredModes = ['UPI', 'Bank Transfer', 'Card'] as const
@@ -67,6 +110,56 @@ export const TransactionSchema = BaseTransactionSchema.superRefine((data, ctx) =
         path: ['paymentAccountId'],
         message: `Payment account must be null for "${data.paymentMode}" transactions — no bank account needed.`,
       })
+    }
+  }
+
+  if (data.recoverablePaise !== undefined && data.recoverablePaise > data.amountPaise) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['recoverablePaise'],
+      message: 'Recoverable amount cannot exceed total transaction amount.',
+    })
+  }
+
+  if (data.splits !== undefined) {
+    if (data.splits.length === 0 && (data.recoverablePaise ?? 0) > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['splits'],
+        message: 'At least one split share is required when recoverablePaise is greater than zero.',
+      })
+    }
+
+    if (data.splits.length > 0) {
+      const seenPersonIds = new Set<string>()
+      for (const s of data.splits) {
+        const pid = s.personId.trim()
+        if (seenPersonIds.has(pid)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['splits'],
+            message: `Duplicate split participant "${s.personName}" (${pid}) is not allowed in the same transaction.`,
+          })
+          break
+        }
+        seenPersonIds.add(pid)
+      }
+
+      const splitsSum = data.splits.reduce((sum, s) => sum + s.amountPaise, 0)
+      if (splitsSum > data.amountPaise) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['splits'],
+          message: 'Total of split shares cannot exceed total transaction amount.',
+        })
+      }
+      if (data.recoverablePaise !== undefined && splitsSum !== data.recoverablePaise) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['splits'],
+          message: `Sum of split shares (${splitsSum} paise) must match recoverablePaise (${data.recoverablePaise} paise).`,
+        })
+      }
     }
   }
 })

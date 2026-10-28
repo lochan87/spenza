@@ -14,6 +14,7 @@ import {
   type QueryDocumentSnapshot,
 } from 'firebase/firestore'
 import { db } from '@/firebase/config'
+import { invalidateInsightsCache } from '@/services/insights'
 import type { Transaction, PaymentAccount, Category } from '@/types'
 
 const PAGE_SIZE = 30
@@ -31,6 +32,7 @@ export async function addTransaction(
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   })
+  await invalidateInsightsCache(uid)
   return ref.id
 }
 
@@ -41,10 +43,12 @@ export async function updateTransaction(
 ): Promise<void> {
   const ref = doc(db, 'users', uid, 'transactions', id)
   await setDoc(ref, { ...data, updatedAt: serverTimestamp() }, { merge: true })
+  await invalidateInsightsCache(uid)
 }
 
 export async function deleteTransaction(uid: string, id: string): Promise<void> {
   await deleteDoc(doc(db, 'users', uid, 'transactions', id))
+  await invalidateInsightsCache(uid)
 }
 
 export async function getTransaction(uid: string, id: string): Promise<Transaction | null> {

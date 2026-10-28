@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { Plus, Archive, ArchiveRestore, Pencil, Check, X } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
 import { getCategories, addCategory, updateCategory } from '@/services/transactions'
+import { invalidateInsightsCache } from '@/services/insights'
 import { getCategoryMeta, DEFAULT_CATEGORY_ORDER } from '@/utils/categoryColors'
 import type { Category } from '@/types'
 
@@ -219,6 +220,7 @@ export function CategoriesPage() {
                   onSave={async name => {
                     if (!name.trim()) return
                     await updateCategory(user!.uid, cat.id, { name: name.trim() })
+                    await invalidateInsightsCache(user!.uid)
                     setEditingCat(null)
                     reload()
                   }}
@@ -232,6 +234,7 @@ export function CategoriesPage() {
                 onEdit={c => setEditingCat(c.id)}
                 onArchive={async c => {
                   await updateCategory(user!.uid, c.id, { isArchived: !c.isArchived })
+                  await invalidateInsightsCache(user!.uid)
                   reload()
                 }}
               />

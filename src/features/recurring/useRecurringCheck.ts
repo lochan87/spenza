@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { useAuth } from '@/hooks/useAuth'
 import { getOverdueRecurring } from '@/services/recurring'
 import { addTransaction } from '@/services/transactions'
+import { invalidateInsightsCache } from '@/services/insights'
 import { computeNextDueDate, updateRecurringItem } from '@/services/recurring'
 import { Timestamp } from 'firebase/firestore'
 import type { RecurringItem } from '@/types'
@@ -74,6 +75,7 @@ export function useRecurringCheck(): UseRecurringCheckReturn {
       nextDueDate: Timestamp.fromDate(nextDate),
       lastGeneratedDate: Timestamp.now(),
     })
+    await invalidateInsightsCache(user.uid)
 
     // 3. Remove from prompts
     setOverdueItems(prev => prev.filter(i => i.id !== item.id))

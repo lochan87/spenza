@@ -5,6 +5,7 @@ import { Timestamp } from 'firebase/firestore'
 import {
   Plus, Trash2, Pencil, Loader2, Receipt, Search, X,
   ChevronDown, ChevronUp, ExternalLink, Layers, RotateCcw,
+  Users,
 } from 'lucide-react'
 
 import { useAuth } from '@/hooks/useAuth'
@@ -18,20 +19,24 @@ import { getTrips } from '@/services/trips'
 import { deduplicateTripSummaryTransactions } from '@/services/importExcel'
 import { getCategoryMeta } from '@/utils/categoryColors'
 import { getPaymentMeta, getAccountTypeMeta } from '@/utils/paymentColors'
-import { formatINR, formatINRExact } from '@/utils/format'
+import { formatINR, formatTxAmount } from '@/utils/format'
+import {
+  getRecoverablePaise,
+  getNetSpendPaise,
+  getRepaidPaise,
+  getPendingRecoverablePaise,
+  getReimbursementStatus,
+  getNormalizedSplits,
+  isSplitOrRecoverable,
+} from '@/utils/splitMath'
 import { ThemedSelect } from '@/components/ui/ThemedSelect'
 import { AddExpenseForm } from './AddExpenseForm'
 import { Drawer } from '@/components/layout/Drawer'
-import type { Transaction, Category, PaymentAccount, Trip, PaymentMode } from '@/types'
+import type { Transaction, Category, PaymentAccount, Trip, PaymentMode, ReimbursementStatus } from '@/types'
 
 const VISIBLE_GROUPS_STEP = 15
 
-/** Format transaction amount: exact 2 decimals if paise has fractional rupees (e.g. ₹451.97), else clean integer INR */
-function formatTxAmount(paise: number): string {
-  return Math.round(paise) % 100 === 0 ? formatINR(paise) : formatINRExact(paise)
-}
-
-// ─── Badge helper ─────────────────────────────────────────────────────────────
+// ─── Badge helpers ────────────────────────────────────────────────────────────
 
 function TypeBadge({ type }: { type: string }) {
   if (type === 'everyday') return null
@@ -52,6 +57,29 @@ function TypeBadge({ type }: { type: string }) {
   return (
     <span className={`${map[type] ?? ''} inline-block shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold leading-none`}>
       {labels[type] ?? type}
+    </span>
+  )
+}
+
+function ReimbursementBadge({ status }: { status: ReimbursementStatus }) {
+  if (status === 'none') return null
+  if (status === 'settled') {
+    return (
+      <span className="inline-flex items-center rounded-full bg-[var(--success-muted)] px-2 py-0.5 text-[10px] font-semibold text-[var(--success)] leading-none">
+        Settled
+      </span>
+    )
+  }
+  if (status === 'partial') {
+    return (
+      <span className="inline-flex items-center rounded-full bg-[var(--primary-muted)] px-2 py-0.5 text-[10px] font-semibold text-[var(--primary)] leading-none">
+        Partial
+      </span>
+    )
+  }
+  return (
+    <span className="inline-flex items-center rounded-full bg-[var(--warning-muted)] px-2 py-0.5 text-[10px] font-semibold text-[var(--warning)] leading-none">
+      Pending
     </span>
   )
 }
@@ -174,119 +202,255 @@ function TransactionRow({
   onDelete: (tx: Transaction) => void
 }) {
   const [showActions, setShowActions] = useState(false)
+  const [expanded, setExpanded] = useState(false)
   const payMeta = getPaymentMeta(tx.paymentMode)
   const catMeta = getCategoryMeta(category?.name ?? 'Other')
   const accMeta = account ? getAccountTypeMeta(account.type) : null
 
+  const recoverablePaise = getRecoverablePaise(tx)
+  const isRecoverable = recoverablePaise > 0 || tx.type === 'reimbursable'
+  const netSpendPaise = getNetSpendPaise(tx)
+  const repaidPaise = getRepaidPaise(tx)
+  const pendingPaise = getPendingRecoverablePaise(tx)
+  const status = getReimbursementStatus(tx)
+  const splits = getNormalizedSplits(tx)
+
   return (
     <div
-      className="group relative flex items-center gap-3 px-3.5 py-3 transition-all hover:bg-[var(--surface-2)]/70"
-      onClick={() => setShowActions(v => !v)}
+      className="group relative flex flex-col px-3.5 py-3 transition-all hover:bg-[var(--surface-2)]/70 cursor-pointer"
+      onClick={() => {
+        if (isRecoverable) {
+          setExpanded(v => !v)
+        }
+        setShowActions(v => !v)
+      }}
     >
-      {/* Category icon */}
-      <div
-        className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-lg"
-        style={{ backgroundColor: catMeta.color + '20' }}
-      >
-        {catMeta.emoji}
-      </div>
+      <div className="flex items-center gap-3 w-full">
+        {/* Category icon */}
+        <div
+          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-lg"
+          style={{ backgroundColor: catMeta.color + '20' }}
+        >
+          {catMeta.emoji}
+        </div>
 
-      {/* Info */}
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-1.5">
-          <p className="truncate text-sm font-medium text-[var(--text-primary)]">
-            {tx.description}
-          </p>
-          <TypeBadge type={tx.type} />
-          {tx.isImported && (
+        {/* Info */}
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <p className="truncate text-sm font-medium text-[var(--text-primary)]">
+              {tx.description}
+            </p>
+            <TypeBadge type={tx.type} />
+            {isRecoverable && <ReimbursementBadge status={status} />}
+            {tx.isImported && (
+              <span
+                className="shrink-0 rounded bg-[var(--surface-2)] px-1.5 py-0.5 text-[9px] font-medium text-[var(--text-subtle)]"
+                title="Imported from Excel"
+              >
+                Excel
+              </span>
+            )}
+          </div>
+
+          <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
+            {showDateBadge && tx.date && (
+              <span className="text-[10px] font-medium text-[var(--text-muted)]">
+                {format((tx.date as Timestamp).toDate(), 'd MMM')} ·
+              </span>
+            )}
+            {/* Payment mode badge */}
             <span
-              className="shrink-0 rounded bg-[var(--surface-2)] px-1.5 py-0.5 text-[9px] font-medium text-[var(--text-subtle)]"
-              title="Imported from Excel"
+              className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold"
+              style={{ backgroundColor: payMeta.bgColor, color: payMeta.color }}
             >
-              Excel
+              {tx.paymentMode}
+            </span>
+            {/* Linked payment account */}
+            {account && accMeta && (
+              <span
+                className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium"
+                style={{ backgroundColor: accMeta.bgColor, color: accMeta.color }}
+              >
+                {account.name}
+              </span>
+            )}
+            {/* Category name */}
+            {category && (
+              <span className="text-[10px] text-[var(--text-subtle)]">{category.name}</span>
+            )}
+            {/* Linked trip pill (when not inside a collapsed trip bundle) */}
+            {trip && !showDateBadge && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-[var(--primary-muted)] px-2 py-0.5 text-[10px] font-medium text-[var(--primary)]">
+                <span>{trip.coverEmoji}</span>
+                <span className="truncate max-w-[110px]">{trip.name}</span>
+              </span>
+            )}
+            {/* Participant summary in row */}
+            {splits.length > 0 ? (
+              <span className="inline-flex items-center gap-1 text-[10px] text-[var(--text-muted)] truncate max-w-[180px]">
+                <Users className="h-2.5 w-2.5 shrink-0 text-[var(--text-subtle)]" />
+                <span>{splits.map(s => s.personName).join(', ')}</span>
+              </span>
+            ) : tx.personId ? (
+              <span className="text-[10px] text-[var(--text-muted)]">· 👤 {tx.personId}</span>
+            ) : null}
+            {tx.notes && (
+              <span className="truncate max-w-[140px] text-[10px] italic text-[var(--text-subtle)]">
+                · “{tx.notes}”
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* Amount */}
+        <div className="flex shrink-0 flex-col items-end">
+          {isRecoverable ? (
+            <>
+              <div className="flex items-center gap-1">
+                <span className="text-sm font-semibold text-[var(--text-primary)]">
+                  {netSpendPaise === 0 ? '₹0' : formatTxAmount(netSpendPaise)}
+                </span>
+                <span className="text-[10px] font-medium text-[var(--text-muted)]">net</span>
+              </div>
+              <span className="text-[10px] text-[var(--text-subtle)]">
+                Gross {formatTxAmount(tx.amountPaise)}
+              </span>
+            </>
+          ) : (
+            <span className="text-sm font-semibold text-[var(--text-primary)]">
+              {formatTxAmount(tx.amountPaise)}
             </span>
           )}
         </div>
 
-        <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
-          {showDateBadge && tx.date && (
-            <span className="text-[10px] font-medium text-[var(--text-muted)]">
-              {format((tx.date as Timestamp).toDate(), 'd MMM')} ·
-            </span>
-          )}
-          {/* Payment mode badge */}
-          <span
-            className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold"
-            style={{ backgroundColor: payMeta.bgColor, color: payMeta.color }}
+        {/* Actions: collapsed when idle so amount stays flush-right */}
+        <div
+          className={`items-center gap-1 ${
+            showActions ? 'flex' : 'hidden group-hover:flex'
+          }`}
+        >
+          <button
+            onClick={e => {
+              e.stopPropagation()
+              onEdit(tx)
+            }}
+            className="flex h-7 w-7 items-center justify-center rounded-lg text-[var(--text-muted)] hover:bg-[var(--surface-3)] hover:text-[var(--primary)] transition-colors"
+            aria-label="Edit"
           >
-            {tx.paymentMode}
-          </span>
-          {/* Linked payment account */}
-          {account && accMeta && (
-            <span
-              className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium"
-              style={{ backgroundColor: accMeta.bgColor, color: accMeta.color }}
-            >
-              {account.name}
+            <Pencil className="h-3.5 w-3.5" />
+          </button>
+          <button
+            onClick={e => {
+              e.stopPropagation()
+              onDelete(tx)
+            }}
+            className="flex h-7 w-7 items-center justify-center rounded-lg text-[var(--text-muted)] hover:bg-[var(--danger-muted)] hover:text-[var(--danger)] transition-colors"
+            aria-label="Delete"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+        </div>
+
+        {/* Expand/Collapse Chevron indicator for recoverable transactions */}
+        {isRecoverable && (
+          <div className="shrink-0 text-[var(--text-muted)]">
+            {expanded ? (
+              <ChevronUp className="h-3.5 w-3.5" />
+            ) : (
+              <ChevronDown className="h-3.5 w-3.5" />
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Expandable details when shared/recoverable */}
+      {expanded && isRecoverable && (
+        <div
+          onClick={e => e.stopPropagation()}
+          className="mt-2.5 rounded-xl border border-[var(--border)] bg-[var(--surface-2)]/60 p-3 text-xs"
+        >
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-1 text-[11px] text-[var(--text-secondary)]">
+            <span className="flex items-center gap-1.5 font-semibold text-[var(--text-primary)]">
+              <Users className="h-3.5 w-3.5 text-[var(--primary)]" />
+              <span>Split Breakdown</span>
+              <ReimbursementBadge status={status} />
             </span>
-          )}
-          {/* Category name */}
-          {category && (
-            <span className="text-[10px] text-[var(--text-subtle)]">{category.name}</span>
-          )}
-          {/* Linked trip pill (when not inside a collapsed trip bundle) */}
-          {trip && !showDateBadge && (
-            <span className="inline-flex items-center gap-1 rounded-full bg-[var(--primary-muted)] px-2 py-0.5 text-[10px] font-medium text-[var(--primary)]">
-              <span>{trip.coverEmoji}</span>
-              <span className="truncate max-w-[110px]">{trip.name}</span>
+            <span>
+              Recoverable: <strong className="text-[var(--text-primary)]">{formatINR(recoverablePaise)}</strong>
+              {repaidPaise > 0 && (
+                <span className="ml-1 text-[var(--success)]">· {formatINR(repaidPaise)} repaid</span>
+              )}
+              {pendingPaise > 0 ? (
+                <span className="ml-1 text-[var(--warning)]">({formatINR(pendingPaise)} due)</span>
+              ) : (
+                <span className="ml-1 text-[var(--success)]">(All settled)</span>
+              )}
             </span>
+          </div>
+
+          <div className="space-y-1.5 divide-y divide-[var(--border)]/60">
+            {splits.map(s => {
+              const friendPending = s.amountPaise - s.repaidPaise
+              const isFriendSettled = s.repaidPaise === s.amountPaise && s.amountPaise > 0
+              return (
+                <div key={s.personId} className="flex items-center justify-between pt-1.5 first:pt-0">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <span className="font-medium text-[var(--text-primary)] truncate">
+                      {s.personName}
+                    </span>
+                    {isFriendSettled ? (
+                      <span className="rounded bg-[var(--success-muted)] px-1.5 py-0.2 text-[9px] font-semibold text-[var(--success)]">
+                        Settled
+                      </span>
+                    ) : s.repaidPaise > 0 ? (
+                      <span className="rounded bg-[var(--primary-muted)] px-1.5 py-0.2 text-[9px] font-semibold text-[var(--primary)]">
+                        {formatINR(s.repaidPaise)} repaid
+                      </span>
+                    ) : (
+                      <span className="rounded bg-[var(--warning-muted)] px-1.5 py-0.2 text-[9px] font-semibold text-[var(--warning)]">
+                        Unpaid
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-right shrink-0">
+                    <span className="font-semibold text-[var(--text-primary)]">
+                      {formatINR(s.amountPaise)}
+                    </span>
+                    {friendPending > 0 && s.repaidPaise > 0 && (
+                      <span className="ml-1 text-[10px] text-[var(--warning)]">
+                        ({formatINR(friendPending)} due)
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+
+          {netSpendPaise > 0 && (
+            <div className="mt-2.5 flex items-center justify-between border-t border-[var(--border)] pt-2 text-[11px] text-[var(--text-muted)]">
+              <span>My personal share (absorbed by me)</span>
+              <span className="font-semibold text-[var(--text-primary)]">
+                {formatINR(netSpendPaise)}
+              </span>
+            </div>
           )}
-          {/* Person / notes indicator */}
-          {tx.personId && (
-            <span className="text-[10px] text-[var(--text-muted)]">· 👤 {tx.personId}</span>
-          )}
-          {tx.notes && (
-            <span className="truncate max-w-[140px] text-[10px] italic text-[var(--text-subtle)]">
-              · “{tx.notes}”
-            </span>
+
+          {tx.receiptUrl && (
+            <div className="mt-2 flex items-center gap-1 text-[11px] text-[var(--primary)]">
+              <ExternalLink className="h-3 w-3" />
+              <a
+                href={tx.receiptUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="hover:underline"
+              >
+                View attached receipt
+              </a>
+            </div>
           )}
         </div>
-      </div>
-
-      {/* Amount */}
-      <div className="flex shrink-0 flex-col items-end">
-        <span className="text-sm font-semibold text-[var(--text-primary)]">
-          {formatTxAmount(tx.amountPaise)}
-        </span>
-      </div>
-
-      {/* Actions: collapsed when idle so amount stays flush-right */}
-      <div
-        className={`items-center gap-1 ${
-          showActions ? 'flex' : 'hidden group-hover:flex'
-        }`}
-      >
-        <button
-          onClick={e => {
-            e.stopPropagation()
-            onEdit(tx)
-          }}
-          className="flex h-7 w-7 items-center justify-center rounded-lg text-[var(--text-muted)] hover:bg-[var(--surface-3)] hover:text-[var(--primary)] transition-colors"
-          aria-label="Edit"
-        >
-          <Pencil className="h-3.5 w-3.5" />
-        </button>
-        <button
-          onClick={e => {
-            e.stopPropagation()
-            onDelete(tx)
-          }}
-          className="flex h-7 w-7 items-center justify-center rounded-lg text-[var(--text-muted)] hover:bg-[var(--danger-muted)] hover:text-[var(--danger)] transition-colors"
-          aria-label="Delete"
-        >
-          <Trash2 className="h-3.5 w-3.5" />
-        </button>
-      </div>
+      )}
     </div>
   )
 }
@@ -562,6 +726,11 @@ export function TransactionsPage() {
           if (!tx.isImported) return false
         } else if (selectedTypeFilter === 'manual') {
           if (tx.isImported) return false
+        } else if (selectedTypeFilter === 'shared') {
+          if (!isSplitOrRecoverable(tx)) return false
+        } else if (selectedTypeFilter === 'pending_dues') {
+          const status = getReimbursementStatus(tx)
+          if (status !== 'pending' && status !== 'partial') return false
         } else if (tx.type !== selectedTypeFilter) {
           return false
         }
@@ -576,13 +745,15 @@ export function TransactionsPage() {
         const desc = (tx.description ?? '').toLowerCase()
         const notes = (tx.notes ?? '').toLowerCase()
         const person = (tx.personId ?? '').toLowerCase()
+        const splitPeople = (tx.splits ?? []).map(s => s.personName).join(' ').toLowerCase()
         if (
           !desc.includes(q) &&
           !catName.includes(q) &&
           !accName.includes(q) &&
           !tripName.includes(q) &&
           !notes.includes(q) &&
-          !person.includes(q)
+          !person.includes(q) &&
+          !splitPeople.includes(q)
         ) {
           return false
         }
@@ -636,6 +807,16 @@ export function TransactionsPage() {
     [filteredTransactions]
   )
 
+  const totalNetPaise = useMemo(
+    () => filteredTransactions.reduce((sum, tx) => sum + getNetSpendPaise(tx), 0),
+    [filteredTransactions]
+  )
+
+  const totalRecoverablePaise = useMemo(
+    () => filteredTransactions.reduce((sum, tx) => sum + getRecoverablePaise(tx), 0),
+    [filteredTransactions]
+  )
+
   const hasAnyTripTransactions = useMemo(
     () => filteredTransactions.some(tx => !!tx.tripId),
     [filteredTransactions]
@@ -656,6 +837,11 @@ export function TransactionsPage() {
                 {formatINR(totalPaise)}
               </span>{' '}
               total
+              {totalRecoverablePaise > 0 && (
+                <span className="text-xs text-[var(--text-muted)] font-normal ml-1">
+                  ({formatINR(totalNetPaise)} net spend · {formatINR(totalRecoverablePaise)} recoverable)
+                </span>
+              )}
             </p>
           )}
         </div>
@@ -773,6 +959,8 @@ export function TransactionsPage() {
                 { value: 'one-time', label: 'One-time' },
                 { value: 'gift-event', label: 'Gift / Event' },
                 { value: 'reimbursable', label: 'Reimbursable' },
+                { value: 'shared', label: '👥 Shared / Splits' },
+                { value: 'pending_dues', label: '⏳ Pending Dues' },
               ]}
             />
 

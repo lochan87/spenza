@@ -39,6 +39,13 @@ export function formatINRExact(paise: number): string {
 }
 
 /**
+ * Format transaction amount: exact 2 decimals if paise has fractional rupees (e.g. ₹451.97), else clean integer INR
+ */
+export function formatTxAmount(paise: number): string {
+  return Math.round(paise) % 100 === 0 ? formatINR(paise) : formatINRExact(paise)
+}
+
+/**
  * Format a % change with sign.
  * Returns e.g. "+12.4%" or "−8.1%"
  */

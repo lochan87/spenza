@@ -7,6 +7,7 @@ import { useAuth } from '@/hooks/useAuth'
 import { getTrips, getAllTripTransactions } from '@/services/trips'
 import { formatINR, formatINRCompact } from '@/utils/format'
 import { TRIP_ACCENT_COLOR } from '@/utils/tripBuckets'
+import { getNetSpendPaise, getRecoverablePaise, toNonNegativeIntPaise } from '@/utils/splitMath'
 import { Drawer } from '@/components/layout/Drawer'
 import { NewTripForm } from './NewTripForm'
 import { SkeletonCard } from '@/features/dashboard/components/SkeletonCard'
@@ -14,6 +15,8 @@ import type { Trip, Transaction } from '@/types'
 
 interface TripWithStats extends Trip {
   totalPaise: number
+  grossPaise: number
+  recoverablePaise: number
   days: number
   avgPerDay: number
 }
@@ -36,20 +39,34 @@ export function TripsPage() {
         getAllTripTransactions(user.uid),
       ])
 
-      // Group txn totals by tripId
+      // Group txn totals by tripId (net personal spend and gross outflow)
       const totalsMap = new Map<string, number>()
+      const grossMap = new Map<string, number>()
+      const recMap = new Map<string, number>()
+
       for (const tx of allTxns as Transaction[]) {
         if (tx.tripId) {
-          totalsMap.set(tx.tripId, (totalsMap.get(tx.tripId) ?? 0) + tx.amountPaise)
+          totalsMap.set(tx.tripId, (totalsMap.get(tx.tripId) ?? 0) + getNetSpendPaise(tx))
+          grossMap.set(tx.tripId, (grossMap.get(tx.tripId) ?? 0) + toNonNegativeIntPaise(tx.amountPaise))
+          recMap.set(tx.tripId, (recMap.get(tx.tripId) ?? 0) + getRecoverablePaise(tx))
         }
       }
 
       const withStats: TripWithStats[] = rawTrips.map(trip => {
         const totalPaise = totalsMap.get(trip.id) ?? 0
+        const grossPaise = grossMap.get(trip.id) ?? 0
+        const recoverablePaise = recMap.get(trip.id) ?? 0
         const start = (trip.startDate as Timestamp).toDate()
         const end = trip.endDate ? (trip.endDate as Timestamp).toDate() : new Date()
         const days = Math.max(1, Math.ceil((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1)
-        return { ...trip, totalPaise, days, avgPerDay: totalPaise / days }
+        return {
+          ...trip,
+          totalPaise,
+          grossPaise,
+          recoverablePaise,
+          days,
+          avgPerDay: Math.round(totalPaise / days),
+        }
       })
 
       setTrips(withStats)
@@ -156,6 +173,11 @@ export function TripsPage() {
                       <p className="text-base font-bold text-[var(--text-primary)]">
                         {formatINRCompact(trip.totalPaise)}
                       </p>
+                      {trip.grossPaise > trip.totalPaise && (
+                        <p className="text-[9px] text-[var(--text-subtle)]">
+                          Gross {formatINRCompact(trip.grossPaise)}
+                        </p>
+                      )}
                     </div>
                     <div>
                       <p className="text-[10px] text-[var(--text-subtle)]">Days</p>

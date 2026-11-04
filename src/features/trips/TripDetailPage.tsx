@@ -1,11 +1,11 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { format, eachDayOfInterval, differenceInDays } from 'date-fns'
+import { format } from 'date-fns'
 import { Timestamp } from 'firebase/firestore'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer
 } from 'recharts'
-import { ArrowLeft, Pencil, Calendar } from 'lucide-react'
+import { ArrowLeft, Pencil, Calendar, Users, CheckCircle2 } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
 import { getTrip, getTripTransactions } from '@/services/trips'
 import { getCategories, getPaymentAccounts } from '@/services/transactions'
@@ -13,15 +13,16 @@ import { formatINR, formatINRCompact } from '@/utils/format'
 import { getCategoryMeta } from '@/utils/categoryColors'
 import { getPaymentMeta, getAccountTypeMeta } from '@/utils/paymentColors'
 import {
-  TRIP_BUCKET_META, mapCategoryToTripBucket, getBudgetColor,
+  TRIP_BUCKET_META, getBudgetColor,
   type TripBucket,
+  calculateTripAccountingSummary,
+  calculateTripDayTotals,
 } from '@/utils/tripBuckets'
+import { getNetSpendPaise, getRecoverablePaise, toNonNegativeIntPaise } from '@/utils/splitMath'
 import { Drawer } from '@/components/layout/Drawer'
 import { NewTripForm } from './NewTripForm'
 import { SkeletonCard } from '@/features/dashboard/components/SkeletonCard'
 import type { Trip, Transaction, Category, PaymentAccount } from '@/types'
-
-interface DayTotal { label: string; totalPaise: number }
 
 export function TripDetailPage() {
   const { tripId } = useParams<{ tripId: string }>()
@@ -75,19 +76,24 @@ export function TripDetailPage() {
 
   const startDate = (trip.startDate as Timestamp).toDate()
   const endDate = trip.endDate ? (trip.endDate as Timestamp).toDate() : new Date()
-  const days = Math.max(1, differenceInDays(endDate, startDate) + 1)
-  const totalPaise = txns.reduce((s, t) => s + t.amountPaise, 0)
-  const avgPerDay = totalPaise / days
-  const budgetPct = trip.budgetPaise ? (totalPaise / trip.budgetPaise) * 100 : null
+
+  // ── Trip Accounting Summary ─────────────────────────────────────────────────
+  const summary = calculateTripAccountingSummary(trip, txns, categories)
+  const {
+    totalNetSpendPaise,
+    totalGrossOutflowPaise,
+    recoverablePaise,
+    repaidPaise,
+    pendingPaise,
+    days,
+    avgPerDayPaise,
+    budgetPct,
+    bucketTotals,
+  } = summary
+
   const catMap = new Map(categories.map(c => [c.id, c]))
 
   // ── Bucket breakdown ─────────────────────────────────────────────────────────
-  const bucketTotals = new Map<TripBucket, number>()
-  for (const tx of txns) {
-    const cat = catMap.get(tx.categoryId)
-    const bucket = mapCategoryToTripBucket(cat?.name ?? 'Other')
-    bucketTotals.set(bucket, (bucketTotals.get(bucket) ?? 0) + tx.amountPaise)
-  }
   const bucketRows = (Object.keys(TRIP_BUCKET_META) as TripBucket[])
     .filter(b => (bucketTotals.get(b) ?? 0) > 0)
     .sort((a, b) => (bucketTotals.get(b) ?? 0) - (bucketTotals.get(a) ?? 0))
@@ -96,22 +102,17 @@ export function TripDetailPage() {
   const uniqueTxnDays = new Set(
     txns.map(tx => format((tx.date as Timestamp).toDate(), 'yyyy-MM-dd'))
   ).size
-  const dayTotals: DayTotal[] = eachDayOfInterval({ start: startDate, end: endDate }).map((d, i) => {
-    const dStr = format(d, 'yyyy-MM-dd')
-    const dayTotal = txns
-      .filter(tx => format((tx.date as Timestamp).toDate(), 'yyyy-MM-dd') === dStr)
-      .reduce((s, t) => s + t.amountPaise, 0)
-    return { label: `D${i + 1}`, totalPaise: dayTotal }
-  })
+  const dayTotals = calculateTripDayTotals(txns, startDate, endDate)
 
-  // ── Payment mode breakdown ────────────────────────────────────────────────────
+  // ── Payment mode breakdown (Gross Outflow) ──────────────────────────────────
   const modeMap = new Map<string, number>()
   const accMap = new Map<string, number>()
   const ACCOUNT_MODES = new Set(['UPI', 'Bank Transfer', 'Card'])
   for (const tx of txns) {
-    modeMap.set(tx.paymentMode, (modeMap.get(tx.paymentMode) ?? 0) + tx.amountPaise)
+    const gross = toNonNegativeIntPaise(tx.amountPaise)
+    modeMap.set(tx.paymentMode, (modeMap.get(tx.paymentMode) ?? 0) + gross)
     if (ACCOUNT_MODES.has(tx.paymentMode) && tx.paymentAccountId) {
-      accMap.set(tx.paymentAccountId, (accMap.get(tx.paymentAccountId) ?? 0) + tx.amountPaise)
+      accMap.set(tx.paymentAccountId, (accMap.get(tx.paymentAccountId) ?? 0) + gross)
     }
   }
 
@@ -160,26 +161,33 @@ export function TripDetailPage() {
         </div>
 
         <div className="mt-4 grid grid-cols-3 gap-3">
-          {[
-            { label: 'Total Spent', value: formatINR(totalPaise) },
-            { label: 'Days', value: days.toString() },
-            { label: 'Avg/Day', value: formatINRCompact(avgPerDay) },
-          ].map(s => (
-            <div key={s.label} className="rounded-xl bg-[var(--surface-2)] px-3 py-2.5">
-              <p className="text-[10px] text-[var(--text-subtle)]">{s.label}</p>
-              <p className="text-base font-bold text-[var(--text-primary)]">{s.value}</p>
-            </div>
-          ))}
+          <div className="rounded-xl bg-[var(--surface-2)] px-3 py-2.5">
+            <p className="text-[10px] text-[var(--text-subtle)]">My Net Spend</p>
+            <p className="text-base font-bold text-[var(--text-primary)]">{formatINR(totalNetSpendPaise)}</p>
+            {totalGrossOutflowPaise > totalNetSpendPaise && (
+              <p className="text-[9px] text-[var(--text-subtle)] mt-0.5">
+                Gross {formatINR(totalGrossOutflowPaise)}
+              </p>
+            )}
+          </div>
+          <div className="rounded-xl bg-[var(--surface-2)] px-3 py-2.5">
+            <p className="text-[10px] text-[var(--text-subtle)]">Days</p>
+            <p className="text-base font-bold text-[var(--text-primary)]">{days}</p>
+          </div>
+          <div className="rounded-xl bg-[var(--surface-2)] px-3 py-2.5">
+            <p className="text-[10px] text-[var(--text-subtle)]">Avg/Day</p>
+            <p className="text-base font-bold text-[var(--text-primary)]">{formatINRCompact(avgPerDayPaise)}</p>
+          </div>
         </div>
 
         {/* Budget bar */}
         {budgetPct !== null && (
           <div className="mt-4">
             <div className="mb-1 flex justify-between text-xs text-[var(--text-muted)]">
-              <span>Budget</span>
+              <span>Trip Budget</span>
               <span>
-                {formatINR(totalPaise)} / {formatINR(trip.budgetPaise!)}
-                <span className={`ml-1 font-semibold`} style={{ color: getBudgetColor(budgetPct) }}>
+                {formatINR(totalNetSpendPaise)} / {formatINR(trip.budgetPaise!)}
+                <span className="ml-1 font-semibold" style={{ color: getBudgetColor(budgetPct) }}>
                   ({budgetPct.toFixed(0)}%)
                 </span>
               </span>
@@ -202,6 +210,61 @@ export function TripDetailPage() {
         )}
       </div>
 
+      {/* Trip-Level Recoverables & Dues */}
+      {recoverablePaise > 0 && (
+        <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-sm)]">
+          <div className="mb-3 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <div
+                className="flex h-7 w-7 items-center justify-center rounded-lg"
+                style={{
+                  backgroundColor: pendingPaise > 0 ? 'var(--warning-muted)' : 'var(--success-muted)',
+                  color: pendingPaise > 0 ? 'var(--warning)' : 'var(--success)',
+                }}
+              >
+                <Users className="h-3.5 w-3.5" />
+              </div>
+              <h3 className="text-sm font-semibold text-[var(--text-primary)]">
+                Trip Splits & Pending Dues
+              </h3>
+            </div>
+            {pendingPaise > 0 ? (
+              <span className="rounded-full bg-[var(--warning-muted)] px-2.5 py-0.5 text-[10px] font-semibold text-[var(--warning)]">
+                {formatINRCompact(pendingPaise)} pending
+              </span>
+            ) : (
+              <span className="flex items-center gap-1 rounded-full bg-[var(--success-muted)] px-2.5 py-0.5 text-[10px] font-semibold text-[var(--success)]">
+                <CheckCircle2 className="h-3 w-3" /> All settled
+              </span>
+            )}
+          </div>
+
+          <div className="grid grid-cols-3 gap-2 text-center">
+            <div className="rounded-xl bg-[var(--surface-2)] p-2.5">
+              <p className="text-[10px] text-[var(--text-subtle)]">Owed to You</p>
+              <p
+                className="text-sm font-extrabold"
+                style={{ color: pendingPaise > 0 ? 'var(--warning)' : 'var(--success)' }}
+              >
+                {formatINR(pendingPaise)}
+              </p>
+            </div>
+            <div className="rounded-xl bg-[var(--surface-2)] p-2.5">
+              <p className="text-[10px] text-[var(--text-subtle)]">Fronted for Group</p>
+              <p className="text-sm font-bold text-[var(--text-primary)]">
+                {formatINR(recoverablePaise)}
+              </p>
+            </div>
+            <div className="rounded-xl bg-[var(--surface-2)] p-2.5">
+              <p className="text-[10px] text-[var(--text-subtle)]">Repaid Back</p>
+              <p className="text-sm font-bold text-[var(--text-primary)]">
+                {formatINR(repaidPaise)}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Sub-category bucket breakdown */}
       {bucketRows.length > 0 && (
         <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-sm)]">
@@ -210,7 +273,7 @@ export function TripDetailPage() {
             {bucketRows.map(bucket => {
               const bTotal = bucketTotals.get(bucket) ?? 0
               const meta = TRIP_BUCKET_META[bucket]
-              const pct = totalPaise > 0 ? (bTotal / totalPaise) * 100 : 0
+              const pct = totalNetSpendPaise > 0 ? (bTotal / totalNetSpendPaise) * 100 : 0
               return (
                 <div key={bucket}>
                   <div className="mb-1 flex items-center justify-between">
@@ -255,7 +318,7 @@ export function TripDetailPage() {
                 tick={{ fontSize: 10, fill: 'var(--text-muted)' }}
                 axisLine={false} tickLine={false} width={48} />
               <Tooltip
-                formatter={(v) => [formatINR(Number(v ?? 0)), 'Spent']}
+                formatter={(v) => [formatINR(Number(v ?? 0)), 'Net Spent']}
                 contentStyle={{
                   backgroundColor: 'var(--surface)',
                   border: '1px solid var(--border)',
@@ -276,7 +339,7 @@ export function TripDetailPage() {
           <div className="flex flex-col gap-2">
             {[...modeMap.entries()].sort((a, b) => b[1] - a[1]).map(([mode, paise]) => {
               const meta = getPaymentMeta(mode)
-              const pct = totalPaise > 0 ? (paise / totalPaise) * 100 : 0
+              const pct = totalGrossOutflowPaise > 0 ? (paise / totalGrossOutflowPaise) * 100 : 0
               return (
                 <div key={mode} className="flex items-center gap-3">
                   <span className="shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold"
@@ -339,6 +402,9 @@ export function TripDetailPage() {
               const cat = catMap.get(tx.categoryId)
               const catMeta = getCategoryMeta(cat?.name ?? 'Other')
               const payMeta = getPaymentMeta(tx.paymentMode)
+              const netPaise = getNetSpendPaise(tx)
+              const recPaise = getRecoverablePaise(tx)
+
               return (
                 <div key={tx.id} className="flex items-center gap-3 py-2.5 first:pt-0 last:pb-0">
                   <div className="flex h-9 w-9 items-center justify-center rounded-lg text-base"
@@ -359,9 +425,16 @@ export function TripDetailPage() {
                       </span>
                     </div>
                   </div>
-                  <span className="shrink-0 text-sm font-bold text-[var(--text-primary)]">
-                    {formatINR(tx.amountPaise)}
-                  </span>
+                  <div className="flex flex-col items-end shrink-0">
+                    <span className="text-sm font-bold text-[var(--text-primary)]">
+                      {formatINR(netPaise)}
+                    </span>
+                    {recPaise > 0 && (
+                      <span className="text-[10px] text-[var(--text-subtle)]">
+                        Gross {formatINR(tx.amountPaise)}
+                      </span>
+                    )}
+                  </div>
                 </div>
               )
             })}

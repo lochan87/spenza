@@ -1,11 +1,11 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { format, isToday, isYesterday } from 'date-fns'
 import { Timestamp } from 'firebase/firestore'
 import {
   Plus, Trash2, Pencil, Loader2, Receipt, Search, X,
   ChevronDown, ChevronUp, ExternalLink, Layers, RotateCcw,
-  Users,
+  Users, Check,
 } from 'lucide-react'
 
 import { useAuth } from '@/hooks/useAuth'
@@ -32,7 +32,20 @@ import {
 import { ThemedSelect } from '@/components/ui/ThemedSelect'
 import { AddExpenseForm } from './AddExpenseForm'
 import { Drawer } from '@/components/layout/Drawer'
-import type { Transaction, Category, PaymentAccount, Trip, PaymentMode, ReimbursementStatus } from '@/types'
+import {
+  recordSplitRepayment,
+  settleSplitShare,
+  settleAllTransactionSplits,
+} from '@/services/people'
+import type {
+  Transaction,
+  Category,
+  PaymentAccount,
+  Trip,
+  PaymentMode,
+  ReimbursementStatus,
+  SplitShare,
+} from '@/types'
 
 const VISIBLE_GROUPS_STEP = 15
 
@@ -192,6 +205,8 @@ function TransactionRow({
   showDateBadge,
   onEdit,
   onDelete,
+  onRecordRepayment,
+  onSettleAll,
 }: {
   tx: Transaction
   category: Category | undefined
@@ -200,6 +215,8 @@ function TransactionRow({
   showDateBadge?: boolean
   onEdit: (tx: Transaction) => void
   onDelete: (tx: Transaction) => void
+  onRecordRepayment?: (tx: Transaction, share: SplitShare) => void
+  onSettleAll?: (tx: Transaction) => void
 }) {
   const [showActions, setShowActions] = useState(false)
   const [expanded, setExpanded] = useState(false)
@@ -375,17 +392,32 @@ function TransactionRow({
               <span>Split Breakdown</span>
               <ReimbursementBadge status={status} />
             </span>
-            <span>
-              Recoverable: <strong className="text-[var(--text-primary)]">{formatINR(recoverablePaise)}</strong>
-              {repaidPaise > 0 && (
-                <span className="ml-1 text-[var(--success)]">· {formatINR(repaidPaise)} repaid</span>
+            <div className="flex items-center gap-2">
+              <span>
+                Recoverable: <strong className="text-[var(--text-primary)]">{formatINR(recoverablePaise)}</strong>
+                {repaidPaise > 0 && (
+                  <span className="ml-1 text-[var(--success)]">· {formatINR(repaidPaise)} repaid</span>
+                )}
+                {pendingPaise > 0 ? (
+                  <span className="ml-1 text-[var(--warning)]">({formatINR(pendingPaise)} due)</span>
+                ) : (
+                  <span className="ml-1 text-[var(--success)]">(All settled)</span>
+                )}
+              </span>
+              {pendingPaise > 0 && onSettleAll && (
+                <button
+                  type="button"
+                  onClick={e => {
+                    e.stopPropagation()
+                    onSettleAll(tx)
+                  }}
+                  className="inline-flex items-center gap-1 rounded-lg border border-[var(--success)]/40 bg-[var(--success-muted)] px-2 py-0.5 text-[10px] font-semibold text-[var(--success)] hover:bg-[var(--success)] hover:text-white transition-colors"
+                  title="Settle all dues for this transaction"
+                >
+                  <Check className="h-3 w-3" /> Settle All
+                </button>
               )}
-              {pendingPaise > 0 ? (
-                <span className="ml-1 text-[var(--warning)]">({formatINR(pendingPaise)} due)</span>
-              ) : (
-                <span className="ml-1 text-[var(--success)]">(All settled)</span>
-              )}
-            </span>
+            </div>
           </div>
 
           <div className="space-y-1.5 divide-y divide-[var(--border)]/60">
@@ -412,14 +444,29 @@ function TransactionRow({
                       </span>
                     )}
                   </div>
-                  <div className="text-right shrink-0">
-                    <span className="font-semibold text-[var(--text-primary)]">
-                      {formatINR(s.amountPaise)}
-                    </span>
-                    {friendPending > 0 && s.repaidPaise > 0 && (
-                      <span className="ml-1 text-[10px] text-[var(--warning)]">
-                        ({formatINR(friendPending)} due)
+                  <div className="flex items-center gap-2 text-right shrink-0">
+                    <div>
+                      <span className="font-semibold text-[var(--text-primary)]">
+                        {formatINR(s.amountPaise)}
                       </span>
+                      {friendPending > 0 && s.repaidPaise > 0 && (
+                        <span className="ml-1 text-[10px] text-[var(--warning)]">
+                          ({formatINR(friendPending)} due)
+                        </span>
+                      )}
+                    </div>
+                    {friendPending > 0 && onRecordRepayment && (
+                      <button
+                        type="button"
+                        onClick={e => {
+                          e.stopPropagation()
+                          onRecordRepayment(tx, s)
+                        }}
+                        className="inline-flex items-center gap-1 rounded-lg border border-[var(--primary)]/30 bg-[var(--primary-muted)] px-2 py-0.5 text-[10px] font-semibold text-[var(--primary)] hover:bg-[var(--primary)] hover:text-white transition-all active:scale-95"
+                        title={`Record repayment from ${s.personName}`}
+                      >
+                        Repay
+                      </button>
                     )}
                   </div>
                 </div>
@@ -469,6 +516,8 @@ function TripBundleRow({
   onEdit,
   onDelete,
   onOpenTrip,
+  onRecordRepayment,
+  onSettleAll,
 }: {
   tripId: string
   trip: Trip | undefined
@@ -481,6 +530,8 @@ function TripBundleRow({
   onEdit: (tx: Transaction) => void
   onDelete: (tx: Transaction) => void
   onOpenTrip: (tripId: string) => void
+  onRecordRepayment?: (tx: Transaction, share: SplitShare) => void
+  onSettleAll?: (tx: Transaction) => void
 }) {
   const tripName = trip?.name ?? 'Trip Expenses'
   const tripEmoji = trip?.coverEmoji ?? '✈️'
@@ -566,6 +617,8 @@ function TripBundleRow({
               showDateBadge
               onEdit={onEdit}
               onDelete={onDelete}
+              onRecordRepayment={onRecordRepayment}
+              onSettleAll={onSettleAll}
             />
           ))}
         </div>
@@ -612,11 +665,273 @@ function DeleteConfirm({
   )
 }
 
+// ─── Repayment modal ──────────────────────────────────────────────────────────
+
+interface RepaymentModalProps {
+  tx: Transaction
+  share: SplitShare
+  onClose: () => void
+  onSuccess: (updatedTx: Transaction, appliedPaise: number) => void
+}
+
+function RepaymentModal({ tx, share, onClose, onSuccess }: RepaymentModalProps) {
+  const { user } = useAuth()
+  const outstandingPaise = Math.max(0, share.amountPaise - share.repaidPaise)
+  const [rupees, setRupees] = useState((outstandingPaise / 100).toFixed(2))
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const parsedPaise = Math.round(Number(rupees || '0') * 100)
+  const isFull = parsedPaise === outstandingPaise
+
+  async function handleConfirm() {
+    if (!user) return
+    if (!parsedPaise || parsedPaise <= 0 || !Number.isInteger(parsedPaise)) {
+      setError('Please enter a valid repayment amount greater than 0')
+      return
+    }
+    if (parsedPaise > outstandingPaise) {
+      setError(`Repayment cannot exceed the outstanding balance of ₹${(outstandingPaise / 100).toFixed(2)}`)
+      return
+    }
+
+    setLoading(true)
+    setError(null)
+    try {
+      let res: { tx: Transaction; appliedPaise?: number; settledPaise?: number }
+      if (isFull) {
+        const sRes = await settleSplitShare(user.uid, tx.id, share.personId)
+        res = { tx: sRes.tx, appliedPaise: sRes.settledPaise }
+      } else {
+        const rRes = await recordSplitRepayment(user.uid, tx.id, share.personId, parsedPaise)
+        res = { tx: rRes.tx, appliedPaise: rRes.appliedPaise }
+      }
+      onSuccess(res.tx, res.appliedPaise ?? parsedPaise)
+    } catch (err: any) {
+      console.error('[Spenza] Repayment error:', err)
+      setError(err?.message || 'Failed to record repayment')
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative z-10 w-full max-w-sm rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6 shadow-[var(--shadow-xl)]">
+        <div className="mb-4 flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-[var(--primary-muted)] text-[var(--primary)]">
+              <Users className="h-4 w-4" />
+            </div>
+            <div>
+              <h3 className="text-base font-bold text-[var(--text-primary)]">Record Repayment</h3>
+              <p className="text-xs text-[var(--text-muted)] truncate max-w-[200px]">{tx.description}</p>
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            className="flex h-7 w-7 items-center justify-center rounded-lg text-[var(--text-muted)] hover:bg-[var(--surface-2)]"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        {/* Participant & balance overview */}
+        <div className="mb-4 rounded-xl border border-[var(--border)] bg-[var(--surface-2)] p-3.5">
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-[var(--text-muted)]">Participant</span>
+            <span className="text-xs font-bold text-[var(--text-primary)]">{share.personName}</span>
+          </div>
+          <div className="mt-2 grid grid-cols-3 gap-1 border-t border-[var(--border)] pt-2 text-center text-xs">
+            <div>
+              <p className="text-[10px] text-[var(--text-subtle)]">Total Share</p>
+              <p className="font-semibold text-[var(--text-primary)]">{formatINR(share.amountPaise)}</p>
+            </div>
+            <div>
+              <p className="text-[10px] text-[var(--text-subtle)]">Already Repaid</p>
+              <p className="font-semibold text-[var(--success)]">{formatINR(share.repaidPaise)}</p>
+            </div>
+            <div>
+              <p className="text-[10px] text-[var(--text-subtle)]">Pending Due</p>
+              <p className="font-bold text-[var(--warning)]">{formatINR(outstandingPaise)}</p>
+            </div>
+          </div>
+        </div>
+
+        {/* Amount Input */}
+        <div className="mb-4">
+          <label className="mb-1.5 block text-xs font-medium text-[var(--text-secondary)]">
+            Repayment Amount Received
+          </label>
+          <div className="relative flex items-center">
+            <span className="absolute left-3.5 font-bold text-[var(--text-muted)]">₹</span>
+            <input
+              type="number"
+              step="any"
+              min="0.01"
+              max={(outstandingPaise / 100).toFixed(2)}
+              value={rupees}
+              onChange={e => {
+                setRupees(e.target.value)
+                setError(null)
+              }}
+              placeholder="0.00"
+              autoFocus
+              className="w-full rounded-xl border border-[var(--border)] bg-[var(--surface-2)] pl-8 pr-3 py-2.5 text-base font-semibold text-[var(--text-primary)] outline-none focus:border-[var(--primary)]"
+            />
+          </div>
+
+          {/* Quick presets */}
+          <div className="mt-2 flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => {
+                setRupees((outstandingPaise / 100).toFixed(2))
+                setError(null)
+              }}
+              className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-[11px] font-medium text-[var(--text-secondary)] hover:bg-[var(--surface-2)] transition-colors"
+            >
+              Full due ({formatINR(outstandingPaise)})
+            </button>
+            {outstandingPaise >= 200 && (
+              <button
+                type="button"
+                onClick={() => {
+                  setRupees((Math.floor(outstandingPaise / 2) / 100).toFixed(2))
+                  setError(null)
+                }}
+                className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-[11px] font-medium text-[var(--text-secondary)] hover:bg-[var(--surface-2)] transition-colors"
+              >
+                Half (₹{(Math.floor(outstandingPaise / 2) / 100).toFixed(2)})
+              </button>
+            )}
+          </div>
+
+          {error && (
+            <p className="mt-2 text-xs font-medium text-[var(--danger)]">{error}</p>
+          )}
+        </div>
+
+        {/* Modal Actions */}
+        <div className="flex gap-2.5">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={loading}
+            className="flex-1 rounded-xl border border-[var(--border)] py-2.5 text-sm font-medium text-[var(--text-muted)] hover:bg-[var(--surface-2)] transition-colors disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={handleConfirm}
+            disabled={loading}
+            className="flex-1 flex items-center justify-center gap-1.5 rounded-xl bg-[var(--primary)] py-2.5 text-sm font-semibold text-white hover:bg-[var(--primary-hover)] transition-colors disabled:opacity-50"
+          >
+            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+            {isFull ? 'Settle in Full' : 'Save Repayment'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Settle All Modal ─────────────────────────────────────────────────────────
+
+interface SettleAllModalProps {
+  tx: Transaction
+  onClose: () => void
+  onSuccess: (updatedTx: Transaction, settledPaise: number) => void
+}
+
+function SettleAllModal({ tx, onClose, onSuccess }: SettleAllModalProps) {
+  const { user } = useAuth()
+  const pendingPaise = getPendingRecoverablePaise(tx)
+  const splits = getNormalizedSplits(tx)
+  const unsettledSplits = splits.filter(s => s.amountPaise > s.repaidPaise)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function handleConfirm() {
+    if (!user) return
+    setLoading(true)
+    setError(null)
+    try {
+      const res = await settleAllTransactionSplits(user.uid, tx.id)
+      onSuccess(res.tx, res.settledPaise)
+    } catch (err: any) {
+      console.error('[Spenza] Settle all error:', err)
+      setError(err?.message || 'Failed to settle all shares')
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative z-10 w-full max-w-sm rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6 shadow-[var(--shadow-xl)]">
+        <div className="mb-3 flex items-center gap-2.5">
+          <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-[var(--success-muted)] text-[var(--success)]">
+            <Check className="h-4 w-4" />
+          </div>
+          <div>
+            <h3 className="text-base font-bold text-[var(--text-primary)]">Settle All Dues?</h3>
+            <p className="text-xs text-[var(--text-muted)] truncate max-w-[200px]">{tx.description}</p>
+          </div>
+        </div>
+
+        <p className="mb-3 text-xs text-[var(--text-secondary)]">
+          Mark all remaining balances as fully paid for this transaction. This will settle:
+        </p>
+
+        <div className="mb-4 space-y-1.5 rounded-xl border border-[var(--border)] bg-[var(--surface-2)] p-3 text-xs">
+          {unsettledSplits.map(s => (
+            <div key={s.personId} className="flex items-center justify-between">
+              <span className="font-medium text-[var(--text-primary)]">{s.personName}</span>
+              <span className="font-bold text-[var(--warning)]">{formatINR(s.amountPaise - s.repaidPaise)}</span>
+            </div>
+          ))}
+          <div className="border-t border-[var(--border)] pt-1.5 flex items-center justify-between font-bold text-[var(--text-primary)]">
+            <span>Total to Settle</span>
+            <span className="text-[var(--success)]">{formatINR(pendingPaise)}</span>
+          </div>
+        </div>
+
+        {error && (
+          <p className="mb-3 text-xs font-medium text-[var(--danger)]">{error}</p>
+        )}
+
+        <div className="flex gap-2.5">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={loading}
+            className="flex-1 rounded-xl border border-[var(--border)] py-2.5 text-sm font-medium text-[var(--text-muted)] hover:bg-[var(--surface-2)] transition-colors disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={handleConfirm}
+            disabled={loading}
+            className="flex-1 flex items-center justify-center gap-1.5 rounded-xl bg-[var(--success)] py-2.5 text-sm font-semibold text-white hover:opacity-90 transition-opacity disabled:opacity-50"
+          >
+            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+            Confirm Settle All
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ─── Main page ────────────────────────────────────────────────────────────────
 
 export function TransactionsPage() {
   const { user } = useAuth()
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
 
   const [transactions, setTransactions] = useState<Transaction[]>([])
   const [categories, setCategories] = useState<Category[]>([])
@@ -628,16 +943,32 @@ export function TransactionsPage() {
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedMonth, setSelectedMonth] = useState<string>('all')
   const [selectedCategoryId, setSelectedCategoryId] = useState<string>('all')
-  const [selectedTypeFilter, setSelectedTypeFilter] = useState<string>('all')
+  const initialFilter = searchParams.get('filter') || searchParams.get('type') || 'all'
+  const [selectedTypeFilter, setSelectedTypeFilter] = useState<string>(initialFilter)
   const [selectedModeFilter, setSelectedModeFilter] = useState<string>('all')
   const [collapseTrips, setCollapseTrips] = useState(true)
   const [expandedTripIds, setExpandedTripIds] = useState<Record<string, boolean>>({})
   const [visibleGroupCount, setVisibleGroupCount] = useState(VISIBLE_GROUPS_STEP)
 
-  // Drawer & delete modal state
+  // Drawer, delete & repayment modal state
   const [formOpen, setFormOpen] = useState(false)
   const [editTx, setEditTx] = useState<Transaction | null>(null)
   const [deleteTx, setDeleteTx] = useState<Transaction | null>(null)
+  const [repaymentTarget, setRepaymentTarget] = useState<{ tx: Transaction; share: SplitShare } | null>(null)
+  const [settleAllTarget, setSettleAllTarget] = useState<Transaction | null>(null)
+  const [toast, setToast] = useState<string | null>(null)
+
+  const showToast = useCallback((msg: string) => {
+    setToast(msg)
+    setTimeout(() => setToast(null), 3500)
+  }, [])
+
+  useEffect(() => {
+    const filterParam = searchParams.get('filter') || searchParams.get('type')
+    if (filterParam) {
+      setSelectedTypeFilter(filterParam)
+    }
+  }, [searchParams])
 
   const loadAll = useCallback(async () => {
     if (!user) return
@@ -683,6 +1014,29 @@ export function TransactionsPage() {
     setDeleteTx(null)
     loadAll()
   }, [user, deleteTx, loadAll])
+
+  const handleOpenRepayment = useCallback((tx: Transaction, share: SplitShare) => {
+    setRepaymentTarget({ tx, share })
+  }, [])
+
+  const handleOpenSettleAll = useCallback((tx: Transaction) => {
+    setSettleAllTarget(tx)
+  }, [])
+
+  const handleRepaymentSuccess = useCallback((updatedTx: Transaction, appliedPaise: number) => {
+    const name = repaymentTarget?.share.personName || 'participant'
+    setRepaymentTarget(null)
+    setTransactions(prev => prev.map(t => (t.id === updatedTx.id ? updatedTx : t)))
+    showToast(`Recorded ${formatINR(appliedPaise)} repayment from ${name} ✓`)
+    loadAll()
+  }, [repaymentTarget, showToast, loadAll])
+
+  const handleSettleAllSuccess = useCallback((updatedTx: Transaction, settledPaise: number) => {
+    setSettleAllTarget(null)
+    setTransactions(prev => prev.map(t => (t.id === updatedTx.id ? updatedTx : t)))
+    showToast(`All dues settled (${formatINR(settledPaise)}) ✓`)
+    loadAll()
+  }, [showToast, loadAll])
 
   const catMap = useMemo(() => new Map(categories.map(c => [c.id, c])), [categories])
   const accMap = useMemo(() => new Map(accounts.map(a => [a.id, a])), [accounts])
@@ -1041,6 +1395,8 @@ export function TransactionsPage() {
                         setFormOpen(true)
                       }}
                       onDelete={setDeleteTx}
+                      onRecordRepayment={handleOpenRepayment}
+                      onSettleAll={handleOpenSettleAll}
                     />
                   ) : (
                     <TripBundleRow
@@ -1064,6 +1420,8 @@ export function TransactionsPage() {
                       }}
                       onDelete={setDeleteTx}
                       onOpenTrip={id => navigate(`/app/trips/${id}`)}
+                      onRecordRepayment={handleOpenRepayment}
+                      onSettleAll={handleOpenSettleAll}
                     />
                   )
                 )}
@@ -1123,6 +1481,33 @@ export function TransactionsPage() {
           onConfirm={handleDelete}
           onCancel={() => setDeleteTx(null)}
         />
+      )}
+
+      {/* Repayment Modal */}
+      {repaymentTarget && (
+        <RepaymentModal
+          tx={repaymentTarget.tx}
+          share={repaymentTarget.share}
+          onClose={() => setRepaymentTarget(null)}
+          onSuccess={handleRepaymentSuccess}
+        />
+      )}
+
+      {/* Settle All Modal */}
+      {settleAllTarget && (
+        <SettleAllModal
+          tx={settleAllTarget}
+          onClose={() => setSettleAllTarget(null)}
+          onSuccess={handleSettleAllSuccess}
+        />
+      )}
+
+      {/* Toast Notification */}
+      {toast && (
+        <div className="fixed top-5 left-1/2 z-50 -translate-x-1/2 flex items-center gap-2 rounded-xl border border-[var(--success)] bg-[var(--success-muted)] px-4 py-2.5 text-sm font-medium text-[var(--success)] shadow-[var(--shadow-lg)]">
+          <Check className="h-4 w-4 shrink-0" />
+          <span>{toast}</span>
+        </div>
       )}
     </div>
   )

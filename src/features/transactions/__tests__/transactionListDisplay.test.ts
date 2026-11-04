@@ -8,6 +8,8 @@ import {
   getReimbursementStatus,
   getNormalizedSplits,
   isSplitOrRecoverable,
+  applyRepayment,
+  applyFullSettlement,
 } from '../../../utils/splitMath.ts'
 import { formatTxAmount } from '../../../utils/format.ts'
 import type { Transaction } from '../../../types/index.ts'
@@ -266,5 +268,89 @@ describe('TransactionsPage — Shared Expense & Recoverable Display Logic', () =
 
     assert.equal(matches.length, 1)
     assert.equal(matches[0].id, 'tx-2') // Fisherman's Wharf dinner
+  })
+
+  it('9. correctly applies partial and full repayment to split shares for UI display update', () => {
+    // Start with pending sharedTx (Aarav owes 100000, Meera owes 100000)
+    assert.equal(getPendingRecoverablePaise(sharedTx), 200000)
+    assert.equal(getReimbursementStatus(sharedTx), 'pending')
+
+    // Aarav pays back 40000 (₹400)
+    const partialUpdate = applyRepayment(sharedTx, 'p-aarav', 40000)
+    const updatedTx1: Transaction = {
+      ...sharedTx,
+      splits: partialUpdate.splits,
+      reimbursementStatus: partialUpdate.reimbursementStatus,
+    }
+
+    assert.equal(getRepaidPaise(updatedTx1), 40000)
+    assert.equal(getPendingRecoverablePaise(updatedTx1), 160000)
+    assert.equal(getReimbursementStatus(updatedTx1), 'partial')
+    // Financial Invariant: Net spend must remain completely unchanged
+    assert.equal(getNetSpendPaise(updatedTx1), 100000)
+
+    // Meera settles in full (100000)
+    const fullMeera = applyFullSettlement(updatedTx1, 'p-meera')
+    const updatedTx2: Transaction = {
+      ...updatedTx1,
+      splits: fullMeera.splits,
+      reimbursementStatus: fullMeera.reimbursementStatus,
+    }
+
+    assert.equal(getRepaidPaise(updatedTx2), 140000)
+    assert.equal(getPendingRecoverablePaise(updatedTx2), 60000)
+    assert.equal(getReimbursementStatus(updatedTx2), 'partial') // Aarav still owes 60000
+    assert.equal(getNetSpendPaise(updatedTx2), 100000)
+
+    // Aarav settles remaining 60000
+    const settleAarav = applyFullSettlement(updatedTx2, 'p-aarav')
+    const updatedTx3: Transaction = {
+      ...updatedTx2,
+      splits: settleAarav.splits,
+      reimbursementStatus: settleAarav.reimbursementStatus,
+    }
+
+    assert.equal(getRepaidPaise(updatedTx3), 200000)
+    assert.equal(getPendingRecoverablePaise(updatedTx3), 0)
+    assert.equal(getReimbursementStatus(updatedTx3), 'settled')
+    assert.equal(getNetSpendPaise(updatedTx3), 100000)
+  })
+
+  it('10. settle all action settles all participants on a transaction in one go', () => {
+    // Settle all participants on sharedTx
+    const result = applyFullSettlement(sharedTx)
+    const settledTx: Transaction = {
+      ...sharedTx,
+      splits: result.splits,
+      reimbursementStatus: result.reimbursementStatus,
+    }
+
+    assert.equal(result.settledPaise, 200000)
+    assert.equal(getPendingRecoverablePaise(settledTx), 0)
+    assert.equal(getRepaidPaise(settledTx), 200000)
+    assert.equal(getReimbursementStatus(settledTx), 'settled')
+    assert.equal(getNetSpendPaise(settledTx), 100000)
+  })
+
+  it('11. URL filter pending_dues accurately isolates only pending or partial reimbursables', () => {
+    const list: Transaction[] = [
+      personalTx, // none
+      sharedTx, // pending
+      fullyRecoverableTx, // pending
+      {
+        ...sharedTx,
+        id: 'tx-settled',
+        splits: sharedTx.splits?.map(s => ({ ...s, repaidPaise: s.amountPaise })) ?? [],
+        reimbursementStatus: 'settled',
+      },
+    ]
+
+    const pendingDuesOnly = list.filter(tx => {
+      const status = getReimbursementStatus(tx)
+      return status === 'pending' || status === 'partial'
+    })
+
+    assert.equal(pendingDuesOnly.length, 2)
+    assert.deepEqual(pendingDuesOnly.map(t => t.id), ['tx-2', 'tx-3'])
   })
 })

@@ -53,7 +53,7 @@ export function PendingRecoverablesCard({ data }: PendingRecoverablesCardProps) 
         </div>
 
         <button
-          onClick={() => navigate('/app/transactions')}
+          onClick={() => navigate('/app/transactions?filter=pending_dues')}
           className="flex items-center gap-1 text-xs font-medium text-[var(--primary)] hover:underline"
         >
           View ledger

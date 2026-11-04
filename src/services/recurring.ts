@@ -108,3 +108,11 @@ function ordinal(n: number): string {
   const v = n % 100
   return n + (s[(v - 20) % 10] ?? s[v] ?? s[0])
 }
+
+// ── Re-export Pure Recurring Accounting Helpers ──────────────────────────────
+export {
+  calculateNormalizedMonthlyCommitmentPaise,
+  calculateRecurringTransactionsNetSpend,
+  calculateRecurringTransactionsGrossOutflow,
+  calculateRecurringRecoverablesSummary,
+} from '@/utils/recurringMath'

@@ -9,6 +9,7 @@ import { useAuth } from '@/hooks/useAuth'
 import {
   getRecurringItems, addRecurringItem, updateRecurringItem,
   deleteRecurringItem, formatFrequency,
+  calculateNormalizedMonthlyCommitmentPaise,
 } from '@/services/recurring'
 import { getCategories, getPaymentAccounts } from '@/services/transactions'
 import { formatINR } from '@/utils/format'
@@ -85,13 +86,19 @@ export function RecurringPage() {
 
   const active = items.filter(i => i.isActive)
   const paused = items.filter(i => !i.isActive)
+  const monthlyCommitmentPaise = calculateNormalizedMonthlyCommitmentPaise(active)
 
   return (
     <div className="flex flex-col gap-5 pb-20 md:pb-6">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-bold text-[var(--text-primary)]">Recurring</h1>
-          <p className="text-sm text-[var(--text-muted)]">{active.length} active</p>
+          <p className="text-sm text-[var(--text-muted)]">
+            {active.length} active
+            {active.length > 0 && (
+              <> · ~{formatINR(monthlyCommitmentPaise)} / mo committed</>
+            )}
+          </p>
         </div>
         <button
           onClick={() => { setEditItem(null); setDrawerOpen(true) }}

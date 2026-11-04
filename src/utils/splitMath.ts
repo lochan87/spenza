@@ -62,7 +62,8 @@ function deduplicateParticipants(
  *    (either via `tx.recoverablePaise > 0` or legacy `tx.type === 'reimbursable'`),
  *    synthesizes a single fallback `SplitShare` using `tx.personId` (or "Unassigned").
  */
-export function getNormalizedSplits(tx: SplitAwareTransaction): SplitShare[] {
+export function getNormalizedSplits(tx?: SplitAwareTransaction | null): SplitShare[] {
+  if (!tx) return []
   const gross = toNonNegativeIntPaise(tx.amountPaise)
   if (gross === 0) return []
 
@@ -83,19 +84,26 @@ export function getNormalizedSplits(tx: SplitAwareTransaction): SplitShare[] {
 
       const existing = byPerson.get(personId)
       if (existing) {
-        existing.amountPaise += shareAmount
-        existing.repaidPaise = Math.min(
-          existing.amountPaise,
+        const combinedAmount = existing.amountPaise + shareAmount
+        const combinedRepaid = Math.min(
+          combinedAmount,
           existing.repaidPaise + repaidAmount
         )
-        existing.settledAt = raw.settledAt ?? existing.settledAt ?? null
+        existing.amountPaise = combinedAmount
+        existing.repaidPaise = combinedRepaid
+        // Stale timestamp hygiene: settledAt is valid ONLY when share is fully settled
+        existing.settledAt =
+          combinedRepaid === combinedAmount && combinedAmount > 0
+            ? raw.settledAt ?? existing.settledAt ?? null
+            : null
       } else {
         byPerson.set(personId, {
           personId,
           personName,
           amountPaise: shareAmount,
           repaidPaise: repaidAmount,
-          settledAt: raw.settledAt ?? null,
+          settledAt:
+            repaidAmount === shareAmount && shareAmount > 0 ? raw.settledAt ?? null : null,
         })
       }
       remainingBudget -= shareAmount
@@ -137,7 +145,8 @@ export function getNormalizedSplits(tx: SplitAwareTransaction): SplitShare[] {
  * Always satisfies: `0 <= getRecoverablePaise(tx) <= tx.amountPaise`
  * and `getRecoverablePaise(tx) === sum(getNormalizedSplits(tx).amountPaise)`.
  */
-export function getRecoverablePaise(tx: SplitAwareTransaction): number {
+export function getRecoverablePaise(tx?: SplitAwareTransaction | null): number {
+  if (!tx) return 0
   return getNormalizedSplits(tx).reduce((sum, s) => sum + s.amountPaise, 0)
 }
 
@@ -146,7 +155,8 @@ export function getRecoverablePaise(tx: SplitAwareTransaction): number {
  * Repayments do not alter `getNetSpendPaise(tx)`.
  * Always satisfies: `getNetSpendPaise(tx) + getRecoverablePaise(tx) === toNonNegativeIntPaise(tx.amountPaise)`.
  */
-export function getNetSpendPaise(tx: SplitAwareTransaction): number {
+export function getNetSpendPaise(tx?: SplitAwareTransaction | null): number {
+  if (!tx) return 0
   const gross = toNonNegativeIntPaise(tx.amountPaise)
   return gross - getRecoverablePaise(tx)
 }
@@ -155,7 +165,8 @@ export function getNetSpendPaise(tx: SplitAwareTransaction): number {
  * Total integer paise repaid so far across all split shares.
  * Always satisfies: `0 <= getRepaidPaise(tx) <= getRecoverablePaise(tx)`.
  */
-export function getRepaidPaise(tx: SplitAwareTransaction): number {
+export function getRepaidPaise(tx?: SplitAwareTransaction | null): number {
+  if (!tx) return 0
   return getNormalizedSplits(tx).reduce((sum, s) => sum + s.repaidPaise, 0)
 }
 
@@ -163,7 +174,8 @@ export function getRepaidPaise(tx: SplitAwareTransaction): number {
  * Outstanding integer paise still owed to the user on this transaction.
  * Always satisfies: `getRepaidPaise(tx) + getPendingRecoverablePaise(tx) === getRecoverablePaise(tx)`.
  */
-export function getPendingRecoverablePaise(tx: SplitAwareTransaction): number {
+export function getPendingRecoverablePaise(tx?: SplitAwareTransaction | null): number {
+  if (!tx) return 0
   return getRecoverablePaise(tx) - getRepaidPaise(tx)
 }
 
@@ -175,7 +187,8 @@ export function getPendingRecoverablePaise(tx: SplitAwareTransaction): number {
  * - `'partial'`: `0 < repaidPaise < recoverablePaise` (at least 1 paise remains unpaid)
  * - `'settled'`: `recoverablePaise > 0` and every split share has `repaidPaise === amountPaise`
  */
-export function getReimbursementStatus(tx: SplitAwareTransaction): ReimbursementStatus {
+export function getReimbursementStatus(tx?: SplitAwareTransaction | null): ReimbursementStatus {
+  if (!tx) return 'none'
   const splits = getNormalizedSplits(tx)
   const recoverable = splits.reduce((sum, s) => sum + s.amountPaise, 0)
   if (recoverable <= 0 || splits.length === 0) return 'none'
@@ -205,7 +218,8 @@ export function allocateEqualSplitPaise(
   totalPaise: number,
   participants: ReadonlyArray<SplitParticipantInput>,
   includeSelf = true,
-  existingRepaidByPerson?: ReadonlyMap<string, number>
+  existingRepaidByPerson?: ReadonlyMap<string, number>,
+  existingSettledAtByPerson?: ReadonlyMap<string, any>
 ): SplitAllocationResult {
   const gross = toNonNegativeIntPaise(totalPaise)
   const validParticipants = deduplicateParticipants(participants)
@@ -221,7 +235,13 @@ export function allocateEqualSplitPaise(
   }
 
   if (!includeSelf) {
-    return allocateCustomMyShareSplitPaise(gross, 0, validParticipants, existingRepaidByPerson)
+    return allocateCustomMyShareSplitPaise(
+      gross,
+      0,
+      validParticipants,
+      existingRepaidByPerson,
+      existingSettledAtByPerson
+    )
   }
 
   const totalPeopleCount = k + 1
@@ -242,13 +262,15 @@ export function allocateEqualSplitPaise(
     const personName = p.personName.trim() || UNASSIGNED_PERSON_NAME
     const prevRepaid = existingRepaidByPerson?.get(personId) ?? 0
     const repaidPaise = Math.min(perFriendPaise, toNonNegativeIntPaise(prevRepaid))
+    const isSettled = repaidPaise === perFriendPaise && perFriendPaise > 0
+    const settledAt = isSettled ? (existingSettledAtByPerson?.get(personId) ?? null) : null
 
     return {
       personId,
       personName,
       amountPaise: perFriendPaise,
       repaidPaise,
-      settledAt: null,
+      settledAt,
     }
   })
 
@@ -276,7 +298,8 @@ export function allocateCustomMyShareSplitPaise(
   totalPaise: number,
   mySharePaise: number,
   participants: ReadonlyArray<SplitParticipantInput>,
-  existingRepaidByPerson?: ReadonlyMap<string, number>
+  existingRepaidByPerson?: ReadonlyMap<string, number>,
+  existingSettledAtByPerson?: ReadonlyMap<string, any>
 ): SplitAllocationResult {
   const gross = toNonNegativeIntPaise(totalPaise)
   const clampedMyShare = Math.min(gross, toNonNegativeIntPaise(mySharePaise))
@@ -306,13 +329,15 @@ export function allocateCustomMyShareSplitPaise(
     const personName = p.personName.trim() || UNASSIGNED_PERSON_NAME
     const prevRepaid = existingRepaidByPerson?.get(personId) ?? 0
     const repaidPaise = Math.min(shareAmount, toNonNegativeIntPaise(prevRepaid))
+    const isSettled = repaidPaise === shareAmount && shareAmount > 0
+    const settledAt = isSettled ? (existingSettledAtByPerson?.get(personId) ?? null) : null
 
     splits.push({
       personId,
       personName,
       amountPaise: shareAmount,
       repaidPaise,
-      settledAt: null,
+      settledAt,
     })
   }
 
@@ -494,5 +519,179 @@ export function applyFullSettlement(
     settledPaise: totalSettled,
   }
 }
+
+// ─── Query & Verification Helpers ─────────────────────────────────────────────
+
+/**
+ * Check if a transaction has split or recoverable components.
+ */
+export function isSplitOrRecoverable(tx?: SplitAwareTransaction | null): boolean {
+  if (!tx) return false
+  return getRecoverablePaise(tx) > 0 || tx.type === 'reimbursable'
+}
+
+/**
+ * Retrieve the split share belonging to a person on a transaction.
+ * Supports ID-based matching and name-based fallback (for unassigned legacy splits).
+ */
+export function getPersonShare(
+  tx?: SplitAwareTransaction | null,
+  personId?: string | null
+): SplitShare | undefined {
+  if (!tx || !personId) return undefined
+  const pid = personId.trim()
+  if (!pid) return undefined
+  const splits = getNormalizedSplits(tx)
+  return splits.find(
+    s =>
+      s.personId === pid ||
+      (s.personId === UNASSIGNED_PERSON_ID && s.personName.toLowerCase() === pid.toLowerCase())
+  )
+}
+
+/**
+ * Recoverable amount in integer paise allocated to a specific person on a transaction.
+ */
+export function getPersonSharePaise(
+  tx?: SplitAwareTransaction | null,
+  personId?: string | null
+): number {
+  return getPersonShare(tx, personId)?.amountPaise ?? 0
+}
+
+/**
+ * Amount in integer paise already repaid by a specific person on a transaction.
+ */
+export function getPersonRepaidPaise(
+  tx?: SplitAwareTransaction | null,
+  personId?: string | null
+): number {
+  return getPersonShare(tx, personId)?.repaidPaise ?? 0
+}
+
+/**
+ * Outstanding amount in integer paise still owed by a specific person on a transaction.
+ */
+export function getPersonOutstandingPaise(
+  tx?: SplitAwareTransaction | null,
+  personId?: string | null
+): number {
+  const share = getPersonShare(tx, personId)
+  if (!share) return 0
+  return Math.max(0, share.amountPaise - share.repaidPaise)
+}
+
+export interface FinancialInvariantsReport {
+  isValid: boolean
+  grossPaise: number
+  netSpendPaise: number
+  recoverablePaise: number
+  repaidPaise: number
+  outstandingPaise: number
+  reimbursementStatus: ReimbursementStatus
+  errors: string[]
+}
+
+/**
+ * Perform a rigorous audit of all mathematical and financial invariants on a transaction.
+ *
+ * Invariants checked:
+ * 1. Gross = Net Spend + Recoverable (`gross === netSpend + recoverable`)
+ * 2. Recoverable = Repaid + Outstanding (`recoverable === repaid + outstanding`)
+ * 3. Bounded values: `0 <= netSpend <= gross`, `0 <= recoverable <= gross`, `0 <= repaid <= recoverable`, `0 <= outstanding <= recoverable`
+ * 4. Split share integrity:
+ *    - `sum(splits.map(s => s.amountPaise)) === recoverable`
+ *    - `sum(splits.map(s => s.repaidPaise)) === repaid`
+ *    - For each split share: `0 <= s.repaidPaise <= s.amountPaise`
+ *    - Settled timestamp hygiene: `s.repaidPaise < s.amountPaise => s.settledAt === null`
+ * 5. Deterministic status derivation matches `getReimbursementStatus(tx)`
+ */
+export function validateFinancialInvariants(
+  tx?: SplitAwareTransaction | null
+): FinancialInvariantsReport {
+  const errors: string[] = []
+  if (!tx) {
+    return {
+      isValid: true,
+      grossPaise: 0,
+      netSpendPaise: 0,
+      recoverablePaise: 0,
+      repaidPaise: 0,
+      outstandingPaise: 0,
+      reimbursementStatus: 'none',
+      errors: [],
+    }
+  }
+
+  const gross = toNonNegativeIntPaise(tx.amountPaise)
+  const netSpend = getNetSpendPaise(tx)
+  const recoverable = getRecoverablePaise(tx)
+  const repaid = getRepaidPaise(tx)
+  const outstanding = getPendingRecoverablePaise(tx)
+  const status = getReimbursementStatus(tx)
+  const splits = getNormalizedSplits(tx)
+
+  // 1. Gross = Net Spend + Recoverable
+  if (gross !== netSpend + recoverable) {
+    errors.push(`Invariant violated: gross (${gross}) !== netSpend (${netSpend}) + recoverable (${recoverable})`)
+  }
+
+  // 2. Recoverable = Repaid + Outstanding
+  if (recoverable !== repaid + outstanding) {
+    errors.push(`Invariant violated: recoverable (${recoverable}) !== repaid (${repaid}) + outstanding (${outstanding})`)
+  }
+
+  // 3. Clamping bounds
+  if (netSpend < 0 || netSpend > gross) {
+    errors.push(`Out of bounds: netSpend (${netSpend}) must be between 0 and gross (${gross})`)
+  }
+  if (recoverable < 0 || recoverable > gross) {
+    errors.push(`Out of bounds: recoverable (${recoverable}) must be between 0 and gross (${gross})`)
+  }
+  if (repaid < 0 || repaid > recoverable) {
+    errors.push(`Out of bounds: repaid (${repaid}) must be between 0 and recoverable (${recoverable})`)
+  }
+  if (outstanding < 0 || outstanding > recoverable) {
+    errors.push(`Out of bounds: outstanding (${outstanding}) must be between 0 and recoverable (${recoverable})`)
+  }
+
+  // 4. Split share integrity
+  const sumSplitAmount = splits.reduce((s, item) => s + item.amountPaise, 0)
+  const sumSplitRepaid = splits.reduce((s, item) => s + item.repaidPaise, 0)
+
+  if (sumSplitAmount !== recoverable) {
+    errors.push(`Split sum mismatch: sum(splits.amountPaise) (${sumSplitAmount}) !== recoverable (${recoverable})`)
+  }
+  if (sumSplitRepaid !== repaid) {
+    errors.push(`Split sum mismatch: sum(splits.repaidPaise) (${sumSplitRepaid}) !== repaid (${repaid})`)
+  }
+
+  for (const s of splits) {
+    if (s.amountPaise < 0 || !Number.isInteger(s.amountPaise)) {
+      errors.push(`Participant "${s.personName}" has invalid amountPaise: ${s.amountPaise}`)
+    }
+    if (s.repaidPaise < 0 || !Number.isInteger(s.repaidPaise)) {
+      errors.push(`Participant "${s.personName}" has invalid repaidPaise: ${s.repaidPaise}`)
+    }
+    if (s.repaidPaise > s.amountPaise) {
+      errors.push(`Participant "${s.personName}" is overpaid: repaid ${s.repaidPaise} > amount ${s.amountPaise}`)
+    }
+    if (s.repaidPaise < s.amountPaise && s.settledAt != null) {
+      errors.push(`Participant "${s.personName}" is unsettled (${s.repaidPaise}/${s.amountPaise}) but has settledAt: ${s.settledAt}`)
+    }
+  }
+
+  return {
+    isValid: errors.length === 0,
+    grossPaise: gross,
+    netSpendPaise: netSpend,
+    recoverablePaise: recoverable,
+    repaidPaise: repaid,
+    outstandingPaise: outstanding,
+    reimbursementStatus: status,
+    errors,
+  }
+}
+
 
 

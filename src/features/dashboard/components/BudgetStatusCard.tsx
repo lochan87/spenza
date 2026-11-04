@@ -6,7 +6,7 @@ import { getCurrentBudget } from '@/services/budgets'
 import { formatINR, formatINRCompact } from '@/utils/format'
 import { getCategoryMeta } from '@/utils/categoryColors'
 import { getBudgetColor } from '@/utils/tripBuckets'
-import { getNetSpendPaise } from '@/utils/splitMath'
+import { deriveBudgetStatus } from '@/utils/budgetMath'
 import type { DashboardData } from '@/features/dashboard/dashboardData'
 import type { Budget, Category } from '@/types'
 
@@ -29,33 +29,14 @@ export function BudgetStatusCard({ data, categories }: BudgetStatusCardProps) {
 
   if (!budget) return null
 
-  const { thisMonthTxns, thisMonthTotal } = data
+  const { thisMonthTxns } = data
+  const { overall, categoryRows, alertCategories } = deriveBudgetStatus(
+    budget,
+    thisMonthTxns,
+    categories
+  )
 
-  // Compute per-category actuals using net personal spend
-  const catActuals = new Map<string, number>()
-  for (const tx of thisMonthTxns) {
-    catActuals.set(tx.categoryId, (catActuals.get(tx.categoryId) ?? 0) + getNetSpendPaise(tx))
-  }
-
-  // Overall progress
-  const overallPct = budget.totalBudgetPaise
-    ? (thisMonthTotal / budget.totalBudgetPaise) * 100
-    : null
-
-  // Category budgets with actuals — only show cats that have a budget set
-  const catBudgetRows = Object.entries(budget.categoryBudgets)
-    .map(([catId, budgetPaise]) => {
-      const cat = categories.find(c => c.id === catId)
-      const actualPaise = catActuals.get(catId) ?? 0
-      const pct = budgetPaise > 0 ? (actualPaise / budgetPaise) * 100 : 0
-      return { catId, cat, budgetPaise, actualPaise, pct }
-    })
-    .filter(r => r.budgetPaise > 0)
-    .sort((a, b) => b.pct - a.pct)
-
-  const overLimit = catBudgetRows.filter(r => r.pct >= 90)
-
-  if (!budget.totalBudgetPaise && catBudgetRows.length === 0) return null
+  if (!overall.totalBudgetPaise && categoryRows.length === 0) return null
 
   return (
     <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-sm)]">
@@ -75,20 +56,27 @@ export function BudgetStatusCard({ data, categories }: BudgetStatusCardProps) {
       </div>
 
       {/* Overall progress */}
-      {overallPct !== null && budget.totalBudgetPaise && (
+      {overall.pct !== null && overall.totalBudgetPaise !== null && (
         <div className="mb-4">
           <div className="mb-1 flex items-center justify-between text-xs">
             <span className="text-[var(--text-muted)]">Overall</span>
-            <span className="font-medium" style={{ color: getBudgetColor(overallPct) }}>
-              {formatINRCompact(thisMonthTotal)} / {formatINRCompact(budget.totalBudgetPaise)} · {overallPct.toFixed(0)}%
-            </span>
+            <div className="flex items-center gap-1.5 font-medium" style={{ color: getBudgetColor(overall.pct) }}>
+              <span>
+                {formatINRCompact(overall.actualPaise)} / {formatINRCompact(overall.totalBudgetPaise)} · {overall.pct.toFixed(0)}%
+              </span>
+              {overall.remainingPaise !== null && (
+                <span className="text-[10px] text-[var(--text-subtle)]">
+                  ({overall.remainingPaise >= 0 ? `${formatINRCompact(overall.remainingPaise)} left` : `${formatINRCompact(Math.abs(overall.remainingPaise))} over`})
+                </span>
+              )}
+            </div>
           </div>
           <div className="h-2 w-full rounded-full bg-[var(--surface-2)]">
             <div
               className="h-full rounded-full transition-all"
               style={{
-                width: `${Math.min(100, overallPct)}%`,
-                backgroundColor: getBudgetColor(overallPct),
+                width: `${Math.min(100, overall.pct)}%`,
+                backgroundColor: getBudgetColor(overall.pct),
               }}
             />
           </div>
@@ -96,28 +84,31 @@ export function BudgetStatusCard({ data, categories }: BudgetStatusCardProps) {
       )}
 
       {/* Alert categories (≥ 90%) */}
-      {overLimit.length > 0 && (
+      {alertCategories.length > 0 && (
         <div className="mb-3 rounded-xl bg-[var(--warning-muted)] px-3 py-2">
           <p className="text-xs font-medium text-[var(--warning)]">
-            ⚠ {overLimit.map(r => r.cat?.name ?? 'Unknown').join(', ')} over 90%
+            ⚠ {alertCategories.map(r => r.categoryName).join(', ')} over 90%
           </p>
         </div>
       )}
 
       {/* Per-category rows */}
       <div className="flex flex-col gap-2.5">
-        {catBudgetRows.slice(0, 5).map(({ catId, cat, budgetPaise, actualPaise, pct }) => {
-          const meta = getCategoryMeta(cat?.name ?? 'Other')
+        {categoryRows.slice(0, 5).map(({ categoryId, categoryName, budgetPaise, actualPaise, remainingPaise, pct }) => {
+          const meta = getCategoryMeta(categoryName)
           return (
-            <div key={catId}>
+            <div key={categoryId}>
               <div className="mb-1 flex items-center justify-between text-xs">
                 <div className="flex items-center gap-1.5">
                   <span className="text-sm">{meta.emoji}</span>
-                  <span className="font-medium text-[var(--text-primary)]">{cat?.name ?? 'Other'}</span>
+                  <span className="font-medium text-[var(--text-primary)]">{categoryName}</span>
                 </div>
-                <span className="text-[var(--text-muted)]">
-                  {formatINR(actualPaise)} / {formatINR(budgetPaise)}
-                </span>
+                <div className="flex items-center gap-1.5 text-[var(--text-muted)]">
+                  <span>{formatINR(actualPaise)} / {formatINR(budgetPaise)}</span>
+                  <span className="text-[10px] text-[var(--text-subtle)]">
+                    · {remainingPaise >= 0 ? `${formatINRCompact(remainingPaise)} left` : `${formatINRCompact(Math.abs(remainingPaise))} over`}
+                  </span>
+                </div>
               </div>
               <div className="flex items-center gap-2">
                 <div className="flex-1 h-1.5 rounded-full bg-[var(--surface-2)]">

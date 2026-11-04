@@ -5,6 +5,8 @@ import { format, subMonths } from 'date-fns'
 import { db } from '@/firebase/config'
 import type { Budget } from '@/types'
 
+export * from '@/utils/budgetMath'
+
 const budgetRef = (uid: string, month: string) =>
   doc(db, 'users', uid, 'budgets', month)
 

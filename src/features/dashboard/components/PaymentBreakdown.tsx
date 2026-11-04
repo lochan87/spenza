@@ -7,6 +7,7 @@ interface PaymentBreakdownProps {
   paymentModeTotals: PaymentModeTotal[]
   accountTotals: AccountTotal[]
   totalThisMonth: number
+  totalGrossOutflow?: number
 }
 
 interface CustomTooltipProps {
@@ -30,6 +31,7 @@ export function PaymentBreakdown({
   paymentModeTotals,
   accountTotals,
   totalThisMonth,
+  totalGrossOutflow,
 }: PaymentBreakdownProps) {
 
   if (paymentModeTotals.length === 0) {
@@ -40,6 +42,11 @@ export function PaymentBreakdown({
       </div>
     )
   }
+
+  // Base for gross percentage calculations (defaults to gross outflow if provided, else sum of modes or total)
+  const baseGross = totalGrossOutflow ?? (
+    paymentModeTotals.reduce((s, m) => s + m.totalPaise, 0) || totalThisMonth
+  )
 
   // Chart data
   const chartData = paymentModeTotals.map(m => ({
@@ -83,7 +90,7 @@ export function PaymentBreakdown({
         <div className="flex-1 flex flex-col gap-1.5">
           {paymentModeTotals.map(({ mode, totalPaise }) => {
             const meta = getPaymentMeta(mode)
-            const pct = totalThisMonth > 0 ? (totalPaise / totalThisMonth) * 100 : 0
+            const pct = baseGross > 0 ? (totalPaise / baseGross) * 100 : 0
             return (
               <div key={mode} className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2 min-w-0">
@@ -114,7 +121,7 @@ export function PaymentBreakdown({
           <div className="flex flex-col gap-2">
             {accountTotals.map(({ accountId, accountName, accountType, totalPaise }) => {
               const meta = getAccountTypeMeta(accountType)
-              const pct = totalThisMonth > 0 ? (totalPaise / totalThisMonth) * 100 : 0
+              const pct = baseGross > 0 ? (totalPaise / baseGross) * 100 : 0
               return (
                 <div key={accountId} className="flex items-center gap-2">
                   <div

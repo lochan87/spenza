@@ -37,7 +37,14 @@ export function SummaryHeader({ data }: SummaryHeaderProps) {
       <p className="text-4xl font-extrabold tracking-tight text-[var(--text-primary)]">
         {formatINR(thisMonthTotal)}
       </p>
-      <p className="mt-0.5 text-sm text-[var(--text-muted)]">spent this month</p>
+      <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1">
+        <p className="text-sm text-[var(--text-muted)]">spent this month</p>
+        {data.thisMonthGrossOutflow > thisMonthTotal && (
+          <span className="text-xs text-[var(--text-subtle)]">
+            · {formatINR(data.thisMonthGrossOutflow)} total outflow
+          </span>
+        )}
+      </div>
 
       {/* % change vs last month */}
       <div className="mt-3 flex items-center gap-2">

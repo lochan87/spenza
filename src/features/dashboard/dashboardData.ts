@@ -4,8 +4,14 @@ import {
 import {
   startOfMonth, endOfMonth, subMonths, format,
 } from 'date-fns'
-import { db } from '@/firebase/config'
-import type { Transaction, PaymentAccount, Category } from '@/types'
+import type { Transaction, PaymentAccount, Category } from '../../types/index.ts'
+import {
+  getNetSpendPaise,
+  getRecoverablePaise,
+  getRepaidPaise,
+  getPendingRecoverablePaise,
+  toNonNegativeIntPaise,
+} from '../../utils/splitMath.ts'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -48,14 +54,15 @@ export interface DashboardData {
   topCategories: CategoryTotal[]
   /** Top 5 single transactions by amount this month */
   biggestExpenses: Transaction[]
-  /** Spend by payment mode this month */
+  /** Spend by payment mode this month (gross outflow) */
   paymentModeTotals: PaymentModeTotal[]
-  /** Spend by specific account (UPI/Card/Bank only) this month */
+  /** Spend by specific account (UPI/Card/Bank only) this month (gross outflow) */
   accountTotals: AccountTotal[]
 
   // Derived scalars
   thisMonthTotal: number
   lastMonthTotal: number
+  thisMonthGrossOutflow: number
   /** pct change relative to last month (null if last month = 0) */
   pctChange: number | null
   txnCount: number
@@ -72,6 +79,14 @@ export interface DashboardData {
   tripTotal: number
   giftEventTotal: number
   reimbursableTotal: number
+
+  // Recoverables & pending dues
+  thisMonthRecoverableTotal: number
+  thisMonthRepaidTotal: number
+  thisMonthPendingDuesTotal: number
+  allTimeRecoverableTotal: number
+  allTimeRepaidTotal: number
+  allTimePendingDuesTotal: number
 
   /** Micro transactions (≤ ₹100) */
   microCount: number
@@ -92,6 +107,7 @@ export interface DashboardData {
 export async function fetchDashboardTransactions(
   uid: string
 ): Promise<Transaction[]> {
+  const { db } = await import('../../firebase/config.ts')
   const now = new Date()
   const sixMonthsAgo = startOfMonth(subMonths(now, 5))
 
@@ -134,9 +150,11 @@ export function deriveDashboardData(
   const thisMonthTxns = allTxns.filter(tx => isInRange(tx.date, monthStart, monthEnd))
   const lastMonthTxns = allTxns.filter(tx => isInRange(tx.date, lastMonthStart, lastMonthEnd))
 
-  // ── Scalars ──────────────────────────────────────────────────────────────────
-  const thisMonthTotal = thisMonthTxns.reduce((s, t) => s + t.amountPaise, 0)
-  const lastMonthTotal = lastMonthTxns.reduce((s, t) => s + t.amountPaise, 0)
+  // ── Scalars (Net personal spend) ──────────────────────────────────────────────
+  const thisMonthTotal = thisMonthTxns.reduce((s, t) => s + getNetSpendPaise(t), 0)
+  const lastMonthTotal = lastMonthTxns.reduce((s, t) => s + getNetSpendPaise(t), 0)
+  const thisMonthGrossOutflow = thisMonthTxns.reduce((s, t) => s + toNonNegativeIntPaise(t.amountPaise), 0)
+
   const pctChange = lastMonthTotal === 0
     ? null
     : ((thisMonthTotal - lastMonthTotal) / lastMonthTotal) * 100
@@ -145,9 +163,18 @@ export function deriveDashboardData(
   const dayOfMonth = now.getDate()
   const avgPerDay = dayOfMonth > 0 ? thisMonthTotal / dayOfMonth : 0
 
-  // ── Type breakdown ────────────────────────────────────────────────────────────
+  // ── Recoverables & Pending Dues ──────────────────────────────────────────────
+  const thisMonthRecoverableTotal = thisMonthTxns.reduce((s, t) => s + getRecoverablePaise(t), 0)
+  const thisMonthRepaidTotal = thisMonthTxns.reduce((s, t) => s + getRepaidPaise(t), 0)
+  const thisMonthPendingDuesTotal = thisMonthTxns.reduce((s, t) => s + getPendingRecoverablePaise(t), 0)
+
+  const allTimeRecoverableTotal = allTxns.reduce((s, t) => s + getRecoverablePaise(t), 0)
+  const allTimeRepaidTotal = allTxns.reduce((s, t) => s + getRepaidPaise(t), 0)
+  const allTimePendingDuesTotal = allTxns.reduce((s, t) => s + getPendingRecoverablePaise(t), 0)
+
+  // ── Type breakdown (Net personal spend) ───────────────────────────────────────
   const sumType = (type: string) =>
-    thisMonthTxns.filter(t => t.type === type).reduce((s, t) => s + t.amountPaise, 0)
+    thisMonthTxns.filter(t => t.type === type).reduce((s, t) => s + getNetSpendPaise(t), 0)
 
   const everydayTotal = sumType('everyday')
   const recurringTotal = sumType('recurring')
@@ -158,10 +185,13 @@ export function deriveDashboardData(
   // "Normal spend" = everyday + recurring ONLY
   const normalSpendTotal = everydayTotal + recurringTotal
 
-  // ── Top categories ────────────────────────────────────────────────────────────
+  // ── Top categories (Net personal spend) ───────────────────────────────────────
   const catMap = new Map<string, number>()
   for (const tx of thisMonthTxns) {
-    catMap.set(tx.categoryId, (catMap.get(tx.categoryId) ?? 0) + tx.amountPaise)
+    const net = getNetSpendPaise(tx)
+    if (net > 0) {
+      catMap.set(tx.categoryId, (catMap.get(tx.categoryId) ?? 0) + net)
+    }
   }
   const topCategories: CategoryTotal[] = [...catMap.entries()]
     .sort((a, b) => b[1] - a[1])
@@ -175,32 +205,42 @@ export function deriveDashboardData(
   const topCategoryId = topCat?.categoryId ?? ''
   const topCategoryName = topCat?.name ?? '—'
 
-  // ── Biggest expenses ──────────────────────────────────────────────────────────
+  // ── Biggest expenses (Sorted by net personal spend, then gross amount) ────────
   const biggestExpenses = [...thisMonthTxns]
-    .sort((a, b) => b.amountPaise - a.amountPaise)
+    .sort((a, b) => {
+      const netB = getNetSpendPaise(b)
+      const netA = getNetSpendPaise(a)
+      if (netB !== netA) return netB - netA
+      return toNonNegativeIntPaise(b.amountPaise) - toNonNegativeIntPaise(a.amountPaise)
+    })
     .slice(0, 5)
 
-  // ── Micro transactions (≤ ₹100 = ≤ 10000 paise) ──────────────────────────────
-  const microTxns = thisMonthTxns.filter(t => t.amountPaise <= 10_000)
+  // ── Micro transactions (≤ ₹100 = ≤ 10000 paise net personal spend) ────────────
+  const microTxns = thisMonthTxns.filter(t => {
+    const net = getNetSpendPaise(t)
+    return net > 0 && net <= 10_000
+  })
   const microCount = microTxns.length
-  const microTotal = microTxns.reduce((s, t) => s + t.amountPaise, 0)
+  const microTotal = microTxns.reduce((s, t) => s + getNetSpendPaise(t), 0)
   const microAvg = microCount > 0 ? microTotal / microCount : 0
 
-  // ── Payment mode breakdown ────────────────────────────────────────────────────
+  // ── Payment mode breakdown (GROSS OUTFLOW: reflects actual money leaving wallets/accounts) ──
   const modeMap = new Map<string, number>()
   for (const tx of thisMonthTxns) {
-    modeMap.set(tx.paymentMode, (modeMap.get(tx.paymentMode) ?? 0) + tx.amountPaise)
+    const gross = toNonNegativeIntPaise(tx.amountPaise)
+    modeMap.set(tx.paymentMode, (modeMap.get(tx.paymentMode) ?? 0) + gross)
   }
   const paymentModeTotals: PaymentModeTotal[] = [...modeMap.entries()]
     .sort((a, b) => b[1] - a[1])
     .map(([mode, totalPaise]) => ({ mode, totalPaise }))
 
-  // ── Account breakdown (UPI/Bank Transfer/Card ONLY, per spec) ─────────────────
+  // ── Account breakdown (GROSS OUTFLOW: UPI/Bank Transfer/Card ONLY, per spec) ──
   const ACCOUNT_MODES = new Set(['UPI', 'Bank Transfer', 'Card'])
   const accMap = new Map<string, number>()
   for (const tx of thisMonthTxns) {
     if (!ACCOUNT_MODES.has(tx.paymentMode) || !tx.paymentAccountId) continue
-    accMap.set(tx.paymentAccountId, (accMap.get(tx.paymentAccountId) ?? 0) + tx.amountPaise)
+    const gross = toNonNegativeIntPaise(tx.amountPaise)
+    accMap.set(tx.paymentAccountId, (accMap.get(tx.paymentAccountId) ?? 0) + gross)
   }
   const accountTotals: AccountTotal[] = [...accMap.entries()]
     .sort((a, b) => b[1] - a[1])
@@ -214,7 +254,7 @@ export function deriveDashboardData(
       }
     })
 
-  // ── 6-month trend ─────────────────────────────────────────────────────────────
+  // ── 6-month trend (Net personal spend) ─────────────────────────────────────────
   const monthTotalsRaw = new Map<string, number>()
   // Pre-populate all 6 months with 0 (so months with no spend still appear)
   for (let i = 5; i >= 0; i--) {
@@ -226,7 +266,7 @@ export function deriveDashboardData(
     const d = toDate(tx.date)
     const key = format(d, 'yyyy-MM')
     if (monthTotalsRaw.has(key)) {
-      monthTotalsRaw.set(key, (monthTotalsRaw.get(key) ?? 0) + tx.amountPaise)
+      monthTotalsRaw.set(key, (monthTotalsRaw.get(key) ?? 0) + getNetSpendPaise(tx))
     }
   }
 
@@ -253,6 +293,7 @@ export function deriveDashboardData(
     accountTotals,
     thisMonthTotal,
     lastMonthTotal,
+    thisMonthGrossOutflow,
     pctChange,
     txnCount,
     avgPerDay,
@@ -265,6 +306,12 @@ export function deriveDashboardData(
     tripTotal,
     giftEventTotal,
     reimbursableTotal,
+    thisMonthRecoverableTotal,
+    thisMonthRepaidTotal,
+    thisMonthPendingDuesTotal,
+    allTimeRecoverableTotal,
+    allTimeRepaidTotal,
+    allTimePendingDuesTotal,
     microCount,
     microTotal,
     microAvg,

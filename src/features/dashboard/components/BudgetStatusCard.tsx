@@ -6,6 +6,7 @@ import { getCurrentBudget } from '@/services/budgets'
 import { formatINR, formatINRCompact } from '@/utils/format'
 import { getCategoryMeta } from '@/utils/categoryColors'
 import { getBudgetColor } from '@/utils/tripBuckets'
+import { getNetSpendPaise } from '@/utils/splitMath'
 import type { DashboardData } from '@/features/dashboard/dashboardData'
 import type { Budget, Category } from '@/types'
 
@@ -30,10 +31,10 @@ export function BudgetStatusCard({ data, categories }: BudgetStatusCardProps) {
 
   const { thisMonthTxns, thisMonthTotal } = data
 
-  // Compute per-category actuals
+  // Compute per-category actuals using net personal spend
   const catActuals = new Map<string, number>()
   for (const tx of thisMonthTxns) {
-    catActuals.set(tx.categoryId, (catActuals.get(tx.categoryId) ?? 0) + tx.amountPaise)
+    catActuals.set(tx.categoryId, (catActuals.get(tx.categoryId) ?? 0) + getNetSpendPaise(tx))
   }
 
   // Overall progress

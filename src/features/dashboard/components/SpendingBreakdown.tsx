@@ -120,6 +120,23 @@ export function SpendingBreakdown({ data }: SpendingBreakdownProps) {
           {formatINR(normalSpendTotal)}
         </p>
       </div>
+
+      {/* Recoverables callout */}
+      {data.thisMonthRecoverableTotal > 0 && (
+        <div className="mt-2.5 flex items-center justify-between rounded-xl border border-[var(--border)] bg-[var(--surface-2)] px-4 py-2.5">
+          <div>
+            <p className="text-xs font-medium text-[var(--text-primary)]">
+              Fronted for others this month
+            </p>
+            <p className="text-[10px] text-[var(--text-subtle)]">
+              Recoverable shares excluded from personal spend
+            </p>
+          </div>
+          <p className="text-sm font-bold text-[var(--text-muted)]">
+            {formatINR(data.thisMonthRecoverableTotal)}
+          </p>
+        </div>
+      )}
     </div>
   )
 }

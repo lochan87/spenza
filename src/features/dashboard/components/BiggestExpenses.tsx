@@ -4,6 +4,7 @@ import type { Timestamp } from 'firebase/firestore'
 import { getCategoryMeta } from '@/utils/categoryColors'
 import { getPaymentMeta } from '@/utils/paymentColors'
 import { formatINR } from '@/utils/format'
+import { getNetSpendPaise, getRecoverablePaise } from '@/utils/splitMath'
 import type { Transaction, Category } from '@/types'
 
 interface BiggestExpensesProps {
@@ -35,6 +36,8 @@ export function BiggestExpenses({ transactions, categories, onEdit }: BiggestExp
           const dateStr = (tx.date as Timestamp)?.toDate
             ? format((tx.date as Timestamp).toDate(), 'd MMM')
             : ''
+          const netPaise = getNetSpendPaise(tx)
+          const recPaise = getRecoverablePaise(tx)
 
           return (
             <div
@@ -64,9 +67,16 @@ export function BiggestExpenses({ transactions, categories, onEdit }: BiggestExp
                 </div>
               </div>
               <div className="flex items-center gap-2">
-                <span className="text-sm font-bold text-[var(--text-primary)]">
-                  {formatINR(tx.amountPaise)}
-                </span>
+                <div className="flex flex-col items-end">
+                  <span className="text-sm font-bold text-[var(--text-primary)]">
+                    {formatINR(netPaise)}
+                  </span>
+                  {recPaise > 0 && (
+                    <span className="text-[10px] text-[var(--text-subtle)]">
+                      Gross {formatINR(tx.amountPaise)}
+                    </span>
+                  )}
+                </div>
                 <button
                   onClick={() => onEdit(tx)}
                   className="flex h-7 w-7 items-center justify-center rounded-lg text-[var(--text-muted)] opacity-0 transition-all group-hover:opacity-100 hover:bg-[var(--surface-2)] hover:text-[var(--primary)]"

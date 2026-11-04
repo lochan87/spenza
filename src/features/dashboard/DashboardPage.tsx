@@ -4,6 +4,7 @@ import { useDashboardData } from './useDashboardData'
 import { DashboardSkeleton } from './components/SkeletonCard'
 import { SummaryHeader } from './components/SummaryHeader'
 import { QuickStatsRow } from './components/QuickStatsRow'
+import { PendingRecoverablesCard } from './components/PendingRecoverablesCard'
 import { SpendingBreakdown } from './components/SpendingBreakdown'
 import { TrendChart } from './components/TrendChart'
 import { TopCategories } from './components/TopCategories'
@@ -88,6 +89,9 @@ export function DashboardPage() {
       {/* Section 2 — Quick Stats Row */}
       <QuickStatsRow data={data} />
 
+      {/* Recoverables & Pending Dues */}
+      <PendingRecoverablesCard data={data} />
+
       {/* Section 3 — Normal Spend Breakdown */}
       <SpendingBreakdown data={data} />
 
@@ -114,6 +118,7 @@ export function DashboardPage() {
           paymentModeTotals={data.paymentModeTotals}
           accountTotals={data.accountTotals}
           totalThisMonth={data.thisMonthTotal}
+          totalGrossOutflow={data.thisMonthGrossOutflow}
         />
       </div>
 

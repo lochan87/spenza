@@ -325,7 +325,7 @@ export function resolveTripRowDates(
 // ─── Column auto-detection ────────────────────────────────────────────────────
 
 const DESC_CANDIDATES = ['expense', 'description', 'item', 'particulars', 'details', 'name', 'title', 'narration']
-const AMT_CANDIDATES  = ['amount', 'amt', 'cost', 'price', 'value', 'spend', 'rupees', 'rs', '₹', 'paid']
+const AMT_CANDIDATES  = ['gross amount', 'net amount', 'amount', 'amt', 'cost', 'price', 'value', 'spend', 'rupees', 'rs', '₹', 'paid']
 const DATE_CANDIDATES = ['date', 'dt', 'day', 'when']
 
 function isSyntheticEmptyHeader(h: string): boolean {

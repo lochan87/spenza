@@ -31,6 +31,16 @@ export interface RepaymentSafetyCheck {
 }
 
 /**
+ * Auto-selects the recommended split preset based on selected friends count.
+ */
+export function getRecommendedPreset(participantCount: number): SplitPreset {
+  if (participantCount <= 1) return 'equal_2'
+  if (participantCount === 2) return 'equal_3'
+  if (participantCount === 3) return 'equal_4'
+  return 'equal_all'
+}
+
+/**
  * Determine the initial sharing mode, participants, and preset when loading an expense.
  */
 export function getInitialSharingState(tx: Transaction | null | undefined): {

@@ -22,6 +22,7 @@ import {
   computeFormSplits,
   getInitialSharingState,
   validateRepaymentSafety,
+  getRecommendedPreset,
   type SharingMode,
   type SplitPreset,
   type ParticipantInput,
@@ -337,7 +338,11 @@ export function AddExpenseForm({
         p => p.id === person.id || p.name.trim().toLowerCase() === person.name.trim().toLowerCase()
       )
       if (isDup) return prev
-      return [...prev, person]
+      const next = [...prev, person]
+      setSplitPreset(current =>
+        current === 'custom_my_share' ? current : getRecommendedPreset(next.length)
+      )
+      return next
     })
     setPersonActionError(null)
   }, [])
@@ -354,7 +359,13 @@ export function AddExpenseForm({
       }
     }
     setPersonActionError(null)
-    setSelectedPeople(prev => prev.filter(p => p.id !== personId))
+    setSelectedPeople(prev => {
+      const next = prev.filter(p => p.id !== personId)
+      setSplitPreset(current =>
+        current === 'custom_my_share' ? current : getRecommendedPreset(next.length)
+      )
+      return next
+    })
   }, [isEditing, editTransaction])
 
   async function handleCreatePersonInline(nameToCreate: string) {

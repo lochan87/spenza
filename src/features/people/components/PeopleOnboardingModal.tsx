@@ -53,9 +53,19 @@ export function PeopleOnboardingModal({ uid, onComplete }: PeopleOnboardingModal
     setLoading(true)
     setError(null)
     try {
-      if (!skip && names.length > 0) {
+      // Include any name typed in the input field that wasn't explicitly added via "+ Add"
+      const pendingInput = currentInput.trim()
+      let finalNames = [...names]
+      if (!skip && pendingInput) {
+        const isDup = finalNames.some(n => n.toLowerCase() === pendingInput.toLowerCase())
+        if (!isDup) {
+          finalNames.push(pendingInput)
+        }
+      }
+
+      if (!skip && finalNames.length > 0) {
         // Save each person
-        await Promise.all(names.map(name => addPerson(uid, name)))
+        await Promise.all(finalNames.map(name => addPerson(uid, name)))
       }
 
       // Mark onboarding as complete in Firestore and cache in localStorage
@@ -224,3 +234,4 @@ export function PeopleOnboardingModal({ uid, onComplete }: PeopleOnboardingModal
     </div>
   )
 }
+

@@ -19,7 +19,7 @@ import { RecurringDuePrompt } from '@/features/recurring/RecurringDuePrompt'
 import { useRecurringCheck } from '@/features/recurring/useRecurringCheck'
 import { OfflineBanner } from '@/components/layout/OfflineBanner'
 import { useEffect, useState } from 'react'
-import { runOnboardingSeeds, getUserProfile } from '@/services/seed'
+import { runOnboardingSeeds, shouldPromptPeopleOnboarding } from '@/services/seed'
 import { getCategories } from '@/services/transactions'
 import type { Category } from '@/types'
 
@@ -39,8 +39,8 @@ function AppRoutes() {
             const dismissedLocally =
               localStorage.getItem(`spenza_people_onboarding_${user.uid}`) === 'true'
             if (!dismissedLocally) {
-              const profile = await getUserProfile(user.uid)
-              if (profile && !profile.onboardingComplete && !profile.peopleOnboardingCompleted) {
+              const shouldPrompt = await shouldPromptPeopleOnboarding(user.uid)
+              if (shouldPrompt) {
                 setShowPeopleOnboarding(true)
               }
             }

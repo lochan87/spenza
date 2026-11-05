@@ -4,6 +4,7 @@ import {
   computeFormSplits,
   getInitialSharingState,
   validateRepaymentSafety,
+  getRecommendedPreset,
 } from '../splitFormHelpers.ts'
 import { TransactionSchema } from '../../../utils/schemas.ts'
 import type { Transaction } from '../../../types/index.ts'
@@ -730,5 +731,21 @@ describe('splitExpenseForm — Form calculation, presets, and edit safety', () =
     assert.equal(s5.mySharePaise, 90000)
     assert.equal(s5.recoverablePaise, 0)
     assert.deepEqual(s5.splits, [])
+  })
+
+  it('19. getRecommendedPreset adapts dynamically to selected friends count', () => {
+    // 0 or 1 friend: 2 people total (User + Friend) -> equal_2
+    assert.equal(getRecommendedPreset(0), 'equal_2')
+    assert.equal(getRecommendedPreset(1), 'equal_2')
+
+    // 2 friends: 3 people total (User + 2 Friends) -> equal_3
+    assert.equal(getRecommendedPreset(2), 'equal_3')
+
+    // 3 friends: 4 people total (User + 3 Friends) -> equal_4
+    assert.equal(getRecommendedPreset(3), 'equal_4')
+
+    // 4 or more friends: equal_all
+    assert.equal(getRecommendedPreset(4), 'equal_all')
+    assert.equal(getRecommendedPreset(7), 'equal_all')
   })
 })

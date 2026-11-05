@@ -137,4 +137,89 @@ describe('People & Split Partners — First-Login Onboarding Logic', () => {
     assert.equal(initialGrossOutflowPaise, 0)
     assert.equal(initialPendingDuesPaise, 0)
   })
+
+  it('7. resolves final names by automatically including uncommitted currentInput', () => {
+    const existingQueue = ['Aarav', 'Meera']
+    const uncommittedInput = '  Rohan  '
+
+    function resolveFinalNames(names: string[], currentInput: string): string[] {
+      const pendingInput = currentInput.trim()
+      const finalNames = [...names]
+      if (pendingInput) {
+        const isDup = finalNames.some(n => n.toLowerCase() === pendingInput.toLowerCase())
+        if (!isDup) {
+          finalNames.push(pendingInput)
+        }
+      }
+      return finalNames
+    }
+
+    // 1. With non-empty uncommitted input
+    const withUncommitted = resolveFinalNames(existingQueue, uncommittedInput)
+    assert.deepEqual(withUncommitted, ['Aarav', 'Meera', 'Rohan'])
+
+    // 2. With whitespace or duplicate input
+    const withDuplicate = resolveFinalNames(existingQueue, 'aarav')
+    assert.deepEqual(withDuplicate, ['Aarav', 'Meera'])
+
+    // 3. With empty input
+    const withEmpty = resolveFinalNames(existingQueue, '   ')
+    assert.deepEqual(withEmpty, ['Aarav', 'Meera'])
+  })
+
+  it('8. bypasses onboarding for existing active users with transactions or friends', () => {
+    function evaluateUserOnboarding(params: {
+      profile: UserProfile | null
+      txCount: number
+      peopleCount: number
+    }): { showModal: boolean; markCompleted: boolean } {
+      const { profile, txCount, peopleCount } = params
+      if (!profile || profile.onboardingComplete || profile.peopleOnboardingCompleted) {
+        return { showModal: false, markCompleted: false }
+      }
+      if (txCount > 0 || peopleCount > 0) {
+        return { showModal: false, markCompleted: true }
+      }
+      return { showModal: true, markCompleted: false }
+    }
+
+    const legacyProfile: UserProfile = {
+      uid: 'user-legacy-789',
+      displayName: 'Existing User',
+      email: 'existing@example.com',
+      photoURL: null,
+      defaultPaymentAccountId: null,
+      onboardingComplete: false,
+      createdAt: dummyTimestamp,
+      updatedAt: dummyTimestamp,
+    }
+
+    // Existing user with 15 transactions
+    const resExisting = evaluateUserOnboarding({
+      profile: legacyProfile,
+      txCount: 15,
+      peopleCount: 0,
+    })
+    assert.equal(resExisting.showModal, false)
+    assert.equal(resExisting.markCompleted, true)
+
+    // Existing user with 2 friends
+    const resFriends = evaluateUserOnboarding({
+      profile: legacyProfile,
+      txCount: 0,
+      peopleCount: 2,
+    })
+    assert.equal(resFriends.showModal, false)
+    assert.equal(resFriends.markCompleted, true)
+
+    // Truly brand new user (0 txns, 0 friends)
+    const resBrandNew = evaluateUserOnboarding({
+      profile: legacyProfile,
+      txCount: 0,
+      peopleCount: 0,
+    })
+    assert.equal(resBrandNew.showModal, true)
+    assert.equal(resBrandNew.markCompleted, false)
+  })
 })
+

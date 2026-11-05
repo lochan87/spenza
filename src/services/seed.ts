@@ -5,6 +5,8 @@ import {
   collection,
   getDocs,
   serverTimestamp,
+  query,
+  limit,
 } from 'firebase/firestore'
 import { db } from '@/firebase/config'
 import type { Category, PaymentAccount, UserProfile } from '@/types'
@@ -164,6 +166,39 @@ export async function completeUserOnboarding(uid: string): Promise<void> {
     },
     { merge: true }
   )
+}
+
+/**
+ * Determines whether a user should be prompted with the first-login split partner onboarding modal.
+ * If the user has already completed onboarding, returns false.
+ * If the user is an existing account with historical transactions or people, automatically marks
+ * onboarding as complete and returns false, preventing false prompts for existing users.
+ */
+export async function shouldPromptPeopleOnboarding(uid: string): Promise<boolean> {
+  const profile = await getUserProfile(uid)
+  if (!profile || profile.onboardingComplete || profile.peopleOnboardingCompleted) {
+    return false
+  }
+
+  // Check if this is an existing active user with transactions or contacts
+  const txRef = collection(db, 'users', uid, 'transactions')
+  const peopleRef = collection(db, 'users', uid, 'people')
+
+  try {
+    const [txSnap, peopleSnap] = await Promise.all([
+      getDocs(query(txRef, limit(1))),
+      getDocs(query(peopleRef, limit(1))),
+    ])
+    if (!txSnap.empty || !peopleSnap.empty) {
+      // Existing user: mark complete so they never see the onboarding modal
+      await completeUserOnboarding(uid).catch(() => {})
+      return false
+    }
+  } catch (err) {
+    console.warn('[Spenza Seed] Could not check existing user history:', err)
+  }
+
+  return true
 }
 
 /**

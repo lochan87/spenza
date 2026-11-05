@@ -16,7 +16,6 @@ import {
   getPaymentAccounts,
 } from '@/services/transactions'
 import { getTrips } from '@/services/trips'
-import { deduplicateTripSummaryTransactions } from '@/services/importExcel'
 import { getCategoryMeta } from '@/utils/categoryColors'
 import { getPaymentMeta, getAccountTypeMeta } from '@/utils/paymentColors'
 import { formatINR, formatTxAmount } from '@/utils/format'
@@ -1120,7 +1119,7 @@ export function TransactionsPage() {
     if (!user) return
     setLoading(true)
     try {
-      await deduplicateTripSummaryTransactions(user.uid).catch(() => 0)
+      // Loading the ledger must never clean up or delete persisted transactions.
       const [txs, cats, accs, tripList] = await Promise.all([
         getAllTransactions(user.uid),
         getCategories(user.uid),

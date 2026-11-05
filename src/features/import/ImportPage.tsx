@@ -12,7 +12,7 @@ import { getTrips, addTrip } from '@/services/trips'
 import {
   parseWorkbook, parseSheet, detectDuplicates, batchImportTransactions,
   getDateIssue, todayISO, isValidISODate, inferTripNameFromSheet, inferTripDateRange,
-  resolveTripRowDates, deduplicateTripSummaryTransactions,
+  resolveTripRowDates,
   type DetectedSheet, type SheetParseResult, type ParsedRow,
   type DuplicateCandidate, type SheetKind, type ImportProgress,
 } from '@/services/importExcel'
@@ -321,9 +321,7 @@ export function ImportPage() {
         user.uid, allRows, catNameToId, otherCat,
         (p) => setProgress(p)
       )
-      // Also clean up any single-line monthly trip summary row in Firestore that was
-      // imported in a separate session before its detailed Trip sheet was imported.
-      await deduplicateTripSummaryTransactions(user.uid)
+      // Duplicate choices apply only to incoming rows, never to persisted history.
       if (!res.cacheInvalidated) {
         setError('Transactions imported, but failed to refresh the Insights cache automatically.')
       }

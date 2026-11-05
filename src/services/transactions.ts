@@ -10,12 +10,14 @@ import {
   limit,
   startAfter,
   serverTimestamp,
+  runTransaction,
   type DocumentSnapshot,
   type QueryDocumentSnapshot,
 } from 'firebase/firestore'
 import { db } from '@/firebase/config'
 import { invalidateInsightsCache } from '@/services/insights'
 import type { Transaction, PaymentAccount, Category } from '@/types'
+import { prepareExpenseEdit, ExpenseEditError, type ExpenseEdit } from '@/utils/expenseEdit'
 
 const PAGE_SIZE = 30
 
@@ -42,10 +44,23 @@ export async function addTransaction(
 export async function updateTransaction(
   uid: string,
   id: string,
-  data: Partial<Omit<Transaction, 'id' | 'createdAt'>>
+  data: ExpenseEdit,
+  original: Transaction
 ): Promise<void> {
+  if (original.id !== id) throw new ExpenseEditError('Please reopen this expense before editing it.')
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    throw new ExpenseEditError('You are offline. Expense edits require a connection to protect repayments. Reconnect and try again.')
+  }
   const ref = doc(db, 'users', uid, 'transactions', id)
-  await setDoc(ref, { ...data, updatedAt: serverTimestamp() }, { merge: true })
+  await runTransaction(db, async txn => {
+    const snap = await txn.get(ref)
+    if (!snap.exists()) throw new ExpenseEditError('This expense no longer exists. Close the form and refresh your transactions.')
+    const latest = { ...snap.data(), id: snap.id } as Transaction
+    const patch = prepareExpenseEdit(latest, original, data)
+    if (Object.keys(patch).length > 0) {
+      txn.update(ref, { ...patch, updatedAt: serverTimestamp() })
+    }
+  })
   const cacheOk = await invalidateInsightsCache(uid)
   if (!cacheOk) {
     console.warn('[Spenza Transactions] Updated transaction, but failed to invalidate insights cache.')

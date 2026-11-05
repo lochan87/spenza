@@ -16,6 +16,7 @@ import { getPaymentMeta, getAccountTypeMeta } from '@/utils/paymentColors'
 import { suggestCategory } from '@/utils/categoryKeywords'
 import { getNormalizedSplits } from '@/utils/splitMath'
 import { TransactionSchema } from '@/utils/schemas'
+import { expenseEditErrorMessage } from '@/utils/expenseEdit'
 import { DatePicker } from '@/components/ui/DatePicker'
 import { ThemedSelect } from '@/components/ui/ThemedSelect'
 import {
@@ -73,6 +74,7 @@ export function AddExpenseForm({
 
   const [paymentAccounts, setPaymentAccounts] = useState<PaymentAccount[]>([])
   const [submitting, setSubmitting] = useState(false)
+  const [submitError, setSubmitError] = useState<string | null>(null)
   const [showNotes, setShowNotes] = useState(false)
   const [showPerson, setShowPerson] = useState(false)
   const [descSuggestions, setDescSuggestions] = useState<string[]>([])
@@ -434,13 +436,16 @@ export function AddExpenseForm({
     }
 
     setSubmitting(true)
+    setSubmitError(null)
     try {
       const payload: Record<string, any> = {
         amountPaise: data.amountPaise,
         description: data.description,
         categoryId: data.categoryId,
         type: data.type as TransactionType,
-        date: Timestamp.fromDate(new Date(data.date)),
+        date: editTransaction && data.date === format(editTransaction.date.toDate(), 'yyyy-MM-dd')
+          ? editTransaction.date
+          : Timestamp.fromDate(new Date(data.date)),
         paymentMode: data.paymentMode as PaymentMode,
         paymentAccountId: data.paymentAccountId,
         tripId: data.tripId ?? null,
@@ -463,7 +468,7 @@ export function AddExpenseForm({
       }
 
       if (isEditing && editTransaction) {
-        await updateTransaction(user.uid, editTransaction.id, payload)
+        await updateTransaction(user.uid, editTransaction.id, payload, editTransaction)
         showSuccessToast('Expense updated ✓')
       } else {
         await addTransaction(user.uid, payload as any)
@@ -496,6 +501,7 @@ export function AddExpenseForm({
       }
     } catch (err) {
       console.error('[Spenza] Submit error:', err)
+      setSubmitError(isEditing ? expenseEditErrorMessage(err) : 'Could not save this expense. Please try again.')
     } finally {
       setSubmitting(false)
     }
@@ -529,6 +535,11 @@ export function AddExpenseForm({
         onSubmit={handleSubmit(onSubmit)}
         className="flex flex-1 flex-col gap-5 overflow-y-auto p-5 scrollbar-thin"
       >
+        {submitError && (
+          <div role="alert" className="rounded-xl border border-[var(--danger)] bg-[var(--danger-muted)] p-3 text-sm text-[var(--danger)]">
+            {submitError}
+          </div>
+        )}
         {/* Amount */}
         <div>
           <label className="mb-1.5 block text-xs font-medium text-[var(--text-muted)]">

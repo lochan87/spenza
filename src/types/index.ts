@@ -80,6 +80,10 @@ export interface Transaction {
   /** 'excel' for SheetJS-imported rows. Undefined for manually entered transactions. */
   importSource?: 'excel' | null
 
+  /** Optional identity for atomically confirmed recurring occurrences; absent on legacy expenses. */
+  recurringItemId?: string
+  recurringOccurrenceDate?: Timestamp
+
   createdAt: Timestamp
   updatedAt: Timestamp
 }

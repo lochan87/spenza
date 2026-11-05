@@ -8,7 +8,7 @@ import { z } from 'zod'
 import { useAuth } from '@/hooks/useAuth'
 import {
   getRecurringItems, addRecurringItem, updateRecurringItem,
-  deleteRecurringItem, formatFrequency,
+  deleteRecurringItem, formatFrequency, recurringSaveErrorMessage,
   calculateNormalizedMonthlyCommitmentPaise,
 } from '@/services/recurring'
 import { getCategories, getPaymentAccounts } from '@/services/transactions'
@@ -231,6 +231,7 @@ function RecurringForm({
   uid: string
 }) {
   const [submitting, setSubmitting] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
 
   const { register, handleSubmit, watch, setValue, formState: { errors } } = useForm<RecurringForm>({
     resolver: zodResolver(RecurringSchema) as any,
@@ -259,8 +260,10 @@ function RecurringForm({
 
   const onSubmit = async (data: RecurringForm) => {
     setSubmitting(true)
+    setSaveError(null)
     try {
-      const nextDue = Timestamp.fromDate(new Date(data.nextDueDateStr))
+      const nextDue = editItem && data.nextDueDateStr === format(editItem.nextDueDate.toDate(), 'yyyy-MM-dd')
+        ? editItem.nextDueDate : Timestamp.fromDate(new Date(data.nextDueDateStr))
       const payload = {
         description: data.description,
         amountPaise: Math.round(data.amountRupees * 100),
@@ -276,13 +279,14 @@ function RecurringForm({
         isActive: editItem?.isActive ?? true,
       }
       if (editItem) {
-        await updateRecurringItem(uid, editItem.id, payload)
+        await updateRecurringItem(uid, editItem.id, payload, editItem)
       } else {
         await addRecurringItem(uid, payload)
       }
       onSuccess()
     } catch (err) {
       console.error('[Spenza] Recurring save error:', err)
+      setSaveError(recurringSaveErrorMessage(err))
     } finally {
       setSubmitting(false)
     }
@@ -300,6 +304,7 @@ function RecurringForm({
       </div>
 
       <form onSubmit={handleSubmit(onSubmit)} className="flex flex-1 flex-col gap-4 overflow-y-auto p-5">
+        {saveError && <p role="alert" className="text-sm text-[var(--danger)]">{saveError}</p>}
         {/* Description */}
         <div>
           <label className="mb-1.5 block text-xs font-medium text-[var(--text-muted)]">Description *</label>

@@ -1,9 +1,10 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { format } from 'date-fns'
 import { Timestamp } from 'firebase/firestore'
 import { Bell, Check, X, ChevronDown, ChevronUp, Loader2 } from 'lucide-react'
 import { getCategoryMeta } from '@/utils/categoryColors'
 import type { RecurringItem, Category } from '@/types'
+import { recurringConfirmationErrorMessage, recurringOccurrenceId } from '@/services/recurring'
 
 interface RecurringDuePromptProps {
   items: RecurringItem[]
@@ -23,17 +24,26 @@ export function RecurringDuePrompt({
 }: RecurringDuePromptProps) {
   const [expanded, setExpanded] = useState(true)
   const [loadingIds, setLoadingIds] = useState<Set<string>>(new Set())
+  const inFlight = useRef(new Set<string>())
+  const [errors, setErrors] = useState<Record<string, string>>({})
   const [amounts, setAmounts] = useState<Record<string, number>>(
-    Object.fromEntries(items.map(i => [i.id, i.amountPaise]))
+    Object.fromEntries(items.map(i => [recurringOccurrenceId(i), i.amountPaise]))
   )
 
   if (items.length === 0) return null
 
   const handleConfirm = async (item: RecurringItem) => {
+    if (inFlight.current.has(item.id)) return
+    inFlight.current.add(item.id)
+    const occurrence = recurringOccurrenceId(item)
+    setErrors(prev => ({ ...prev, [item.id]: '' }))
     setLoadingIds(prev => new Set([...prev, item.id]))
     try {
-      await onConfirm(item, amounts[item.id] ?? item.amountPaise)
+      await onConfirm(item, amounts[occurrence] ?? item.amountPaise)
+    } catch (error) {
+      setErrors(prev => ({ ...prev, [item.id]: recurringConfirmationErrorMessage(error) }))
     } finally {
+      inFlight.current.delete(item.id)
       setLoadingIds(prev => { const n = new Set(prev); n.delete(item.id); return n })
     }
   }
@@ -55,6 +65,7 @@ export function RecurringDuePrompt({
           <div className="flex items-center gap-2">
             <button
               onClick={e => { e.stopPropagation(); onDismissAll() }}
+              disabled={loadingIds.size > 0}
               className="rounded-lg px-2 py-1 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-2)]"
             >
               Skip All
@@ -71,6 +82,7 @@ export function RecurringDuePrompt({
               const catMeta = getCategoryMeta(cat?.name ?? 'Other')
               const dueDate = (item.nextDueDate as Timestamp).toDate()
               const isLoading = loadingIds.has(item.id)
+              const occurrence = recurringOccurrenceId(item)
 
               return (
                 <div key={item.id} className="px-4 py-3">
@@ -86,6 +98,7 @@ export function RecurringDuePrompt({
                     </div>
                     <button
                       onClick={() => onDismiss(item.id)}
+                      disabled={isLoading}
                       className="flex h-7 w-7 items-center justify-center rounded-lg text-[var(--text-muted)] hover:bg-[var(--surface-2)]"
                     >
                       <X className="h-3.5 w-3.5" />
@@ -100,10 +113,11 @@ export function RecurringDuePrompt({
                         type="number"
                         min="0"
                         step="1"
-                        value={(amounts[item.id] ?? item.amountPaise) / 100}
+                        disabled={isLoading}
+                        value={(amounts[occurrence] ?? item.amountPaise) / 100}
                         onChange={e => setAmounts(prev => ({
                           ...prev,
-                          [item.id]: Math.round(Number(e.target.value) * 100),
+                          [occurrence]: Math.round(Number(e.target.value) * 100),
                         }))}
                         className="w-full rounded-lg border border-[var(--border)] bg-[var(--surface-2)] pl-7 pr-3 py-2 text-sm font-semibold text-[var(--text-primary)] outline-none focus:border-[var(--primary)]"
                       />
@@ -119,6 +133,7 @@ export function RecurringDuePrompt({
                       Log it
                     </button>
                   </div>
+                  {errors[item.id] && <p role="alert" className="mt-2 text-xs text-[var(--danger)]">{errors[item.id]}</p>}
                 </div>
               )
             })}

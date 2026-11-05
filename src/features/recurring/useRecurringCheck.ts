@@ -1,10 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useAuth } from '@/hooks/useAuth'
-import { getOverdueRecurring } from '@/services/recurring'
-import { addTransaction } from '@/services/transactions'
-import { invalidateInsightsCache } from '@/services/insights'
-import { computeNextDueDate, updateRecurringItem } from '@/services/recurring'
-import { Timestamp } from 'firebase/firestore'
+import { getOverdueRecurring, confirmRecurringOccurrence, RecurringConfirmationError } from '@/services/recurring'
 import type { RecurringItem } from '@/types'
 
 export interface OverduePromptItem {
@@ -46,42 +42,12 @@ export function useRecurringCheck(): UseRecurringCheckReturn {
   }, [])
 
   const confirm = useCallback(async (item: RecurringItem, amountPaise: number) => {
-    if (!user) return
-
-    // 1. Create the actual transaction (type: 'recurring')
-    await addTransaction(user.uid, {
-      amountPaise,
-      description: item.description,
-      categoryId: item.categoryId,
-      type: 'recurring',
-      date: Timestamp.fromDate(item.nextDueDate.toDate()),
-      paymentMode: item.paymentMode,
-      paymentAccountId: item.paymentAccountId,
-      tripId: null,
-      personId: null,
-      tags: [],
-      notes: `Auto-logged from recurring: ${item.description}`,
-      receiptUrl: null,
-    })
-
-    // 2. Advance nextDueDate to next cycle
-    const nextDate = computeNextDueDate(
-      item.nextDueDate.toDate(),
-      item.frequency,
-      item.dayOfMonth,
-      item.dayOfWeek
-    )
-    await updateRecurringItem(user.uid, item.id, {
-      nextDueDate: Timestamp.fromDate(nextDate),
-      lastGeneratedDate: Timestamp.now(),
-    })
-    const cacheOk = await invalidateInsightsCache(user.uid)
-    if (!cacheOk) {
-      console.warn('[Spenza Recurring] Confirmed recurring item, but failed to invalidate insights cache.')
-    }
-
-    // 3. Remove from prompts
-    setOverdueItems(prev => prev.filter(i => i.id !== item.id))
+    if (!user) throw new RecurringConfirmationError('Sign in before confirming a recurring expense.')
+    const result = await confirmRecurringOccurrence(user.uid, item, amountPaise)
+    const next = result.recurringItem
+    // Advance one occurrence at a time, leaving any remaining overdue cycles visible.
+    setOverdueItems(prev => prev.flatMap(i => i.id !== item.id ? [i] :
+      next?.isActive && next.nextDueDate.toMillis() <= Date.now() ? [next] : []))
   }, [user])
 
   return { overdueItems, dismiss, confirm, dismissAll }

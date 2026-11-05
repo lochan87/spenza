@@ -16,6 +16,7 @@ import {
   Lightbulb,
   Upload,
   Settings,
+  Users,
   ChevronDown,
   MoreHorizontal,
    type LucideIcon,
@@ -56,6 +57,7 @@ const PRIMARY_NAV_ITEMS: NavItem[] = [
 
 /** Secondary destinations — grouped under "More" ordered by realistic frequency of use */
 const SECONDARY_NAV_ITEMS: NavItem[] = [
+  { href: '/app/people', icon: Users, label: 'Friends & Splits', exact: false },
   { href: '/app/recurring', icon: RepeatIcon, label: 'Recurring', exact: false },
   { href: '/app/trips', icon: Map, label: 'Trips', exact: false },
   { href: '/app/categories', icon: Tag, label: 'Categories', exact: false },

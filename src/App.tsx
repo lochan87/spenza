@@ -12,6 +12,7 @@ import { RecurringPage } from '@/features/recurring/RecurringPage'
 import { BudgetPage } from '@/features/budgets/BudgetPage'
 import { InsightsPage } from '@/features/insights/InsightsPage'
 import { ImportPage } from '@/features/import/ImportPage'
+import { PeoplePage } from '@/features/people/PeoplePage'
 import { SettingsPage } from '@/features/settings/SettingsPage'
 import { RecurringDuePrompt } from '@/features/recurring/RecurringDuePrompt'
 import { useRecurringCheck } from '@/features/recurring/useRecurringCheck'
@@ -56,6 +57,7 @@ function AppRoutes() {
         <Route path="/app"                 element={wrap(<DashboardPage />)} />
         <Route path="/app/transactions"    element={wrap(<TransactionsPage />)} />
         <Route path="/app/categories"      element={wrap(<CategoriesPage />)} />
+        <Route path="/app/people"          element={wrap(<PeoplePage />)} />
         <Route path="/app/trips"           element={wrap(<TripsPage />)} />
         <Route path="/app/trips/:tripId"   element={wrap(<TripDetailPage />)} />
         <Route path="/app/recurring"       element={wrap(<RecurringPage />)} />

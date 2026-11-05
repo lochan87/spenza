@@ -137,9 +137,12 @@ export function PendingRecoverablesCard({ data }: PendingRecoverablesCardProps) 
             <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
               Who Owes You ({peopleWithDues.length})
             </span>
-            <span className="text-[10px] text-[var(--text-subtle)]">
-              Click to view bills
-            </span>
+            <button
+              onClick={() => navigate('/app/people')}
+              className="text-[11px] font-medium text-[var(--primary)] hover:underline"
+            >
+              Friends & Split Book →
+            </button>
           </div>
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
             {peopleWithDues.slice(0, 4).map(p => (

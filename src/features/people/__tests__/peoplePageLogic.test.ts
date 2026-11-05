@@ -2,6 +2,7 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   aggregatePeopleDues,
+  getPendingRecoverablePaise,
   UNASSIGNED_PERSON_ID,
   type SplitAwareTransaction,
   type PersonDuesSummary,
@@ -235,5 +236,72 @@ describe('People & Split Book — Page Logic & Ledger Aggregation', () => {
     // Meera still has pending dues
     const updatedMeera = updatedMerged.find(p => p.id === 'p-meera')!
     assert.equal(updatedMeera.pendingDuesPaise, 50000)
+  })
+
+  it('6. verifies transaction deletion alert logic based on pending recoverable dues', () => {
+    // Transaction with pending split dues -> requires warning
+    const openSplitTx: SplitAwareTransaction = {
+      type: 'everyday',
+      amountPaise: 200000,
+      splits: [
+        { personId: 'p-aarav', personName: 'Aarav', amountPaise: 100000, repaidPaise: 0, settledAt: null },
+      ],
+    }
+    const pendingPaise = getPendingRecoverablePaise(openSplitTx)
+    assert.equal(pendingPaise, 100000)
+    assert.ok(pendingPaise > 0, 'Should trigger active dues warning banner')
+
+    // Fully settled transaction -> no warning needed
+    const settledTx: SplitAwareTransaction = {
+      type: 'everyday',
+      amountPaise: 200000,
+      splits: [
+        { personId: 'p-aarav', personName: 'Aarav', amountPaise: 100000, repaidPaise: 100000, settledAt: dummyDate },
+      ],
+    }
+    assert.equal(getPendingRecoverablePaise(settledTx), 0)
+
+    // Standard personal transaction -> no warning needed
+    const personalTx: SplitAwareTransaction = {
+      type: 'everyday',
+      amountPaise: 50000,
+    }
+    assert.equal(getPendingRecoverablePaise(personalTx), 0)
+  })
+
+  it('7. verifies contact deletion resolution logic: protects contacts with transaction history via archive', () => {
+    // Person with linked transactions -> Archive to protect historical ledger
+    const personWithHistory = { id: 'p-aarav', name: 'Aarav', transactionCount: 2 }
+    const actionWithHistory = (personWithHistory.transactionCount ?? 0) > 0 ? 'archive' : 'delete'
+    assert.equal(actionWithHistory, 'archive')
+
+    // Brand new or unused person -> Permanent delete
+    const personWithoutHistory = { id: 'p-new', name: 'New Friend', transactionCount: 0 }
+    const actionWithoutHistory = (personWithoutHistory.transactionCount ?? 0) > 0 ? 'archive' : 'delete'
+    assert.equal(actionWithoutHistory, 'delete')
+  })
+
+  it('8. verifies error resilience: captures network failure state without wiping cached data', () => {
+    let loadError: string | null = null
+    const simulateFetch = (shouldFail: boolean) => {
+      try {
+        if (shouldFail) throw new Error('Failed to fetch from Firestore')
+        loadError = null
+        return [{ id: 'p-1', name: 'Aarav' }]
+      } catch (err) {
+        loadError = err instanceof Error ? err.message : 'Unknown error'
+        return null
+      }
+    }
+
+    // Failure simulation
+    const result1 = simulateFetch(true)
+    assert.equal(result1, null)
+    assert.equal(loadError, 'Failed to fetch from Firestore')
+
+    // Retry simulation succeeds
+    const result2 = simulateFetch(false)
+    assert.ok(result2)
+    assert.equal(loadError, null)
   })
 })

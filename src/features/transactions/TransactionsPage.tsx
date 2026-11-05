@@ -5,7 +5,7 @@ import { Timestamp } from 'firebase/firestore'
 import {
   Plus, Trash2, Pencil, Loader2, Receipt, Search, X,
   ChevronDown, ChevronUp, ExternalLink, Layers, RotateCcw,
-  Users, Check,
+  Users, Check, AlertTriangle,
 } from 'lucide-react'
 
 import { useAuth } from '@/hooks/useAuth'
@@ -642,14 +642,30 @@ function DeleteConfirm({
   onConfirm: () => void
   onCancel: () => void
 }) {
+  const pendingRecoverablePaise = getPendingRecoverablePaise(tx)
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onCancel} />
       <div className="relative z-10 w-full max-w-sm rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6 shadow-[var(--shadow-xl)]">
         <h3 className="mb-2 text-base font-semibold text-[var(--text-primary)]">Delete expense?</h3>
-        <p className="mb-5 text-sm text-[var(--text-muted)]">
+        <p className="mb-4 text-sm text-[var(--text-muted)]">
           “{tx.description}” — {formatTxAmount(tx.amountPaise)} will be permanently deleted.
         </p>
+
+        {pendingRecoverablePaise > 0 && (
+          <div className="mb-4 rounded-xl border border-[var(--warning)]/30 bg-[var(--warning-muted)] p-3 text-xs text-[var(--text-secondary)]">
+            <div className="mb-1 flex items-center gap-1.5 font-semibold text-[var(--warning)]">
+              <AlertTriangle className="h-4 w-4 shrink-0" />
+              <span>Active Split Dues ({formatTxAmount(pendingRecoverablePaise)})</span>
+            </div>
+            <p className="leading-relaxed">
+              Friends currently owe you <strong>{formatTxAmount(pendingRecoverablePaise)}</strong> on this bill. Deleting
+              this expense will permanently erase these dues from your Split Book ledger.
+            </p>
+          </div>
+        )}
+
         <div className="flex gap-3">
           <button
             onClick={onCancel}

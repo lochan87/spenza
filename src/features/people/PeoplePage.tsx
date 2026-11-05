@@ -15,6 +15,8 @@ import {
   Clock,
   CheckCircle2,
   AlertCircle,
+  AlertTriangle,
+  RotateCcw,
 } from 'lucide-react'
 
 import { useAuth } from '@/hooks/useAuth'
@@ -35,6 +37,7 @@ import {
 } from '@/utils/splitMath'
 import { formatINR } from '@/utils/format'
 import type { Person, Transaction } from '@/types'
+import { DeletePersonModal } from './components/DeletePersonModal'
 
 // ─── Settle Person Confirmation Modal ─────────────────────────────────────────
 
@@ -260,6 +263,7 @@ export function PeoplePage() {
   const [people, setPeople] = useState<Person[]>([])
   const [transactions, setTransactions] = useState<Transaction[]>([])
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
 
   const [searchQuery, setSearchQuery] = useState('')
   const [activeTab, setActiveTab] = useState<'dues' | 'all' | 'archived'>('dues')
@@ -267,6 +271,7 @@ export function PeoplePage() {
   const [addModalOpen, setAddModalOpen] = useState(false)
   const [editingPerson, setEditingPerson] = useState<Person | null>(null)
   const [settleTarget, setSettleTarget] = useState<PersonDuesSummary | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<MergedPersonItem | null>(null)
   const [toast, setToast] = useState<string | null>(null)
 
   const showToast = useCallback((msg: string) => {
@@ -277,6 +282,7 @@ export function PeoplePage() {
   const loadAll = useCallback(async () => {
     if (!user) return
     setLoading(true)
+    setLoadError(null)
     try {
       const [peopleList, txnsList] = await Promise.all([
         getPeople(user.uid, true),
@@ -284,8 +290,13 @@ export function PeoplePage() {
       ])
       setPeople(peopleList)
       setTransactions(txnsList)
-    } catch (err) {
+    } catch (err: unknown) {
       console.error('[Spenza] Error loading people & split ledger:', err)
+      setLoadError(
+        err instanceof Error
+          ? err.message
+          : 'Failed to sync split ledger. Please check your network connection.'
+      )
     } finally {
       setLoading(false)
     }
@@ -420,28 +431,24 @@ export function PeoplePage() {
     showToast(newArchived ? `Archived ${p.name}` : `Restored ${p.name} ✓`)
   }
 
-  async function handleDeletePerson(p: MergedPersonItem) {
-    if (!user) return
-    if (p.isSynthetic) return
-    const confirmDelete = window.confirm(
-      p.transactionCount > 0
-        ? `"${p.name}" has ${p.transactionCount} transaction(s). They will be archived instead of deleted to protect historical records. Proceed?`
-        : `Delete "${p.name}" permanently?`
-    )
-    if (!confirmDelete) return
+  function handleDeletePerson(p: MergedPersonItem) {
+    if (p.isSynthetic) {
+      showToast('Cannot delete unlinked participant')
+      return
+    }
+    setDeleteTarget(p)
+  }
 
-    try {
-      const res = await deletePerson(user.uid, p.id)
-      if (res.deleted) {
-        setPeople(prev => prev.filter(item => item.id !== p.id))
-        showToast(`Deleted ${p.name} permanently`)
-      } else if (res.archived) {
-        setPeople(prev => prev.map(item => (item.id === p.id ? { ...item, isArchived: true } : item)))
-        showToast(`Archived ${p.name} (has transaction history)`)
-      }
-    } catch (err: any) {
-      console.error('[Spenza] Delete person error:', err)
-      showToast(err?.message || 'Failed to delete person')
+  async function handleConfirmDelete() {
+    if (!user || !deleteTarget) return
+    const target = deleteTarget
+    const res = await deletePerson(user.uid, target.id)
+    if (res.deleted) {
+      setPeople(prev => prev.filter(item => item.id !== target.id))
+      showToast(`Deleted ${target.name} permanently`)
+    } else if (res.archived) {
+      setPeople(prev => prev.map(item => (item.id === target.id ? { ...item, isArchived: true } : item)))
+      showToast(`Archived ${target.name} (has transaction history)`)
     }
   }
 
@@ -490,6 +497,27 @@ export function PeoplePage() {
           <span>Add Friend</span>
         </button>
       </div>
+
+      {/* Network / Load Error Banner */}
+      {loadError && (
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 rounded-2xl border border-[var(--danger)]/30 bg-[var(--danger-muted)] p-4 animate-in fade-in-50 duration-150">
+          <div className="flex items-start sm:items-center gap-2.5">
+            <AlertTriangle className="mt-0.5 sm:mt-0 h-4 w-4 shrink-0 text-[var(--danger)]" />
+            <div>
+              <p className="text-xs font-semibold text-[var(--danger)]">Failed to sync split ledger</p>
+              <p className="text-xs text-[var(--text-muted)]">{loadError}</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={loadAll}
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-xl bg-[var(--danger)] px-3.5 py-1.5 text-xs font-semibold text-white shadow-xs hover:opacity-90 transition-opacity active:scale-98"
+          >
+            <RotateCcw className="h-3.5 w-3.5" />
+            <span>Retry</span>
+          </button>
+        </div>
+      )}
 
       {/* Top 3 Stat Cards */}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
@@ -839,6 +867,15 @@ export function PeoplePage() {
           person={editingPerson}
           onClose={() => setEditingPerson(null)}
           onSave={handleUpdatePerson}
+        />
+      )}
+
+      {/* Delete Person Modal */}
+      {deleteTarget && (
+        <DeletePersonModal
+          person={deleteTarget}
+          onClose={() => setDeleteTarget(null)}
+          onConfirm={handleConfirmDelete}
         />
       )}
 

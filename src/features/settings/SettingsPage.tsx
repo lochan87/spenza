@@ -51,6 +51,7 @@ import {
 } from '@/services/people'
 import { getAccountTypeMeta } from '@/utils/paymentColors'
 import type { Category, PaymentAccount, Person } from '@/types'
+import { DeletePersonModal } from '@/features/people/components/DeletePersonModal'
 
 // ─── Account row ──────────────────────────────────────────────────────────────
 
@@ -203,6 +204,7 @@ export function SettingsPage() {
   const [newPersonName, setNewPersonName] = useState('')
   const [editingPersonId, setEditingPersonId] = useState<string | null>(null)
   const [showArchivedPeople, setShowArchivedPeople] = useState(false)
+  const [personToDelete, setPersonToDelete] = useState<Person | null>(null)
 
   // Data management counts & states
   const [totalTxCount, setTotalTxCount] = useState<number | null>(null)
@@ -748,15 +750,7 @@ export function SettingsPage() {
                     </button>
                     <button
                       type="button"
-                      onClick={async () => {
-                        if (!user) return
-                        const ok = window.confirm(
-                          `Remove "${p.name}"? If they have bill history, they will be archived instead.`
-                        )
-                        if (!ok) return
-                        await deletePerson(user.uid, p.id)
-                        reloadData()
-                      }}
+                      onClick={() => setPersonToDelete(p)}
                       title="Delete friend"
                       aria-label="Delete friend"
                       className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--text-muted)] hover:bg-[var(--surface-2)] hover:text-[var(--danger)] transition-colors"
@@ -1096,6 +1090,19 @@ export function SettingsPage() {
           </div>
         </div>
       </section>
+
+      {/* Delete / Archive Person Modal */}
+      {personToDelete && (
+        <DeletePersonModal
+          person={personToDelete}
+          onClose={() => setPersonToDelete(null)}
+          onConfirm={async () => {
+            if (!user) return
+            await deletePerson(user.uid, personToDelete.id)
+            await reloadData()
+          }}
+        />
+      )}
     </div>
   )
 }

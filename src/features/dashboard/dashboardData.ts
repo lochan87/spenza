@@ -11,6 +11,8 @@ import {
   getRepaidPaise,
   getPendingRecoverablePaise,
   toNonNegativeIntPaise,
+  aggregatePeopleDues,
+  type PersonDuesSummary,
 } from '../../utils/splitMath.ts'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -87,6 +89,7 @@ export interface DashboardData {
   allTimeRecoverableTotal: number
   allTimeRepaidTotal: number
   allTimePendingDuesTotal: number
+  peopleDues: PersonDuesSummary[]
 
   /** Micro transactions (≤ ₹100) */
   microCount: number
@@ -171,6 +174,7 @@ export function deriveDashboardData(
   const allTimeRecoverableTotal = allTxns.reduce((s, t) => s + getRecoverablePaise(t), 0)
   const allTimeRepaidTotal = allTxns.reduce((s, t) => s + getRepaidPaise(t), 0)
   const allTimePendingDuesTotal = allTxns.reduce((s, t) => s + getPendingRecoverablePaise(t), 0)
+  const peopleDues = aggregatePeopleDues(allTxns)
 
   // ── Type breakdown (Net personal spend) ───────────────────────────────────────
   const sumType = (type: string) =>
@@ -312,6 +316,7 @@ export function deriveDashboardData(
     allTimeRecoverableTotal,
     allTimeRepaidTotal,
     allTimePendingDuesTotal,
+    peopleDues,
     microCount,
     microTotal,
     microAvg,

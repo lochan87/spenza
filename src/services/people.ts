@@ -18,7 +18,9 @@ import {
   applyRepayment,
   applyFullSettlement,
   getRecoverablePaise,
+  getNormalizedSplits,
   toNonNegativeIntPaise,
+  UNASSIGNED_PERSON_ID,
 } from '@/utils/splitMath'
 import type { Person, Transaction } from '@/types'
 
@@ -350,4 +352,53 @@ export async function settleAllTransactionSplits(
     await invalidateInsightsCache(cleanUid)
   }
   return result
+}
+
+/**
+ * Settle all outstanding dues for a specific person across all transactions.
+ * Safely iterates through every transaction where `personId` has an unsettled split share
+ * and settles it atomically using `settleSplitShare`.
+ */
+export async function settlePersonAllDues(
+  uid: string,
+  personId: string
+): Promise<{ settledCount: number; totalSettledPaise: number; updatedTxns: Transaction[] }> {
+  const cleanUid = validateUid(uid)
+  const cleanPersonId = validatePersonId(personId)
+
+  const txRefColl = collection(db, 'users', cleanUid, 'transactions')
+  const snap = await getDocs(txRefColl)
+
+  const matchingDocs = snap.docs.filter(d => {
+    const data = d.data() as Transaction
+    const splits = getNormalizedSplits(data)
+    const share = splits.find(
+      s =>
+        s.personId === cleanPersonId ||
+        (s.personId === UNASSIGNED_PERSON_ID &&
+          s.personName.toLowerCase() === cleanPersonId.toLowerCase())
+    )
+    return share && share.amountPaise > share.repaidPaise
+  })
+
+  if (matchingDocs.length === 0) {
+    return { settledCount: 0, totalSettledPaise: 0, updatedTxns: [] }
+  }
+
+  let totalSettled = 0
+  const updatedTxns: Transaction[] = []
+
+  for (const docSnap of matchingDocs) {
+    const res = await settleSplitShare(cleanUid, docSnap.id, cleanPersonId)
+    if (res.settledPaise > 0) {
+      totalSettled += res.settledPaise
+      updatedTxns.push(res.tx)
+    }
+  }
+
+  return {
+    settledCount: updatedTxns.length,
+    totalSettledPaise: totalSettled,
+    updatedTxns,
+  }
 }

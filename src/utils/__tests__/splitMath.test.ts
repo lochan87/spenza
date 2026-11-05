@@ -15,6 +15,7 @@ import {
   getPersonRepaidPaise,
   getPersonOutstandingPaise,
   validateFinancialInvariants,
+  aggregatePeopleDues,
   UNASSIGNED_PERSON_ID,
   UNASSIGNED_PERSON_NAME,
   type SplitAwareTransaction,
@@ -386,6 +387,66 @@ describe('splitMath — core accounting helpers & invariants', () => {
     assert.equal(repD.netSpendPaise, 0)
     assert.equal(repD.recoverablePaise, 5000)
     assert.equal(repD.outstandingPaise, 5000)
+  })
+
+  it('13. aggregatePeopleDues aggregates balances per person across multiple transactions', () => {
+    const tx1: SplitAwareTransaction = {
+      amountPaise: 30000,
+      type: 'everyday',
+      splits: [
+        { personId: 'p1', personName: 'Aarav', amountPaise: 10000, repaidPaise: 2000, settledAt: null },
+        { personId: 'p2', personName: 'Meera', amountPaise: 10000, repaidPaise: 10000, settledAt: null },
+      ],
+    }
+    const tx2: SplitAwareTransaction = {
+      amountPaise: 50000,
+      type: 'trip',
+      splits: [
+        { personId: 'p1', personName: 'Aarav', amountPaise: 25000, repaidPaise: 5000, settledAt: null },
+        { personId: 'p3', personName: 'Kabir', amountPaise: 15000, repaidPaise: 0, settledAt: null },
+      ],
+    }
+    const tx3: SplitAwareTransaction = {
+      amountPaise: 5000,
+      type: 'reimbursable',
+      personId: 'Rohan',
+    }
+
+    const summary = aggregatePeopleDues([tx1, tx2, tx3])
+    assert.equal(summary.length, 4)
+
+    // Aarav: owes 10000 + 25000 = 35000, repaid 2000 + 5000 = 7000, pending 28000 across 2 bills
+    const aarav = summary.find(p => p.personId === 'p1')
+    assert.ok(aarav)
+    assert.equal(aarav.totalOwedPaise, 35000)
+    assert.equal(aarav.totalRepaidPaise, 7000)
+    assert.equal(aarav.pendingDuesPaise, 28000)
+    assert.equal(aarav.transactionCount, 2)
+    assert.equal(aarav.unsettledTxnCount, 2)
+
+    // Kabir: owes 15000, repaid 0, pending 15000 across 1 bill
+    const kabir = summary.find(p => p.personId === 'p3')
+    assert.ok(kabir)
+    assert.equal(kabir.pendingDuesPaise, 15000)
+    assert.equal(kabir.unsettledTxnCount, 1)
+
+    // Rohan (legacy reimbursable fallback): owes 5000, pending 5000 across 1 bill
+    const rohan = summary.find(p => p.personName === 'Rohan')
+    assert.ok(rohan)
+    assert.equal(rohan.pendingDuesPaise, 5000)
+    assert.equal(rohan.unsettledTxnCount, 1)
+
+    // Meera: owes 10000, repaid 10000, pending 0 across 1 bill
+    const meera = summary.find(p => p.personId === 'p2')
+    assert.ok(meera)
+    assert.equal(meera.pendingDuesPaise, 0)
+    assert.equal(meera.unsettledTxnCount, 0)
+
+    // Check sort: Aarav (28000) -> Kabir (15000) -> Rohan (5000) -> Meera (0)
+    assert.equal(summary[0].personName, 'Aarav')
+    assert.equal(summary[1].personName, 'Kabir')
+    assert.equal(summary[2].personName, 'Rohan')
+    assert.equal(summary[3].personName, 'Meera')
   })
 })
 

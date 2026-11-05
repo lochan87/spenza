@@ -347,4 +347,63 @@ describe('People & Repayments — Service Logic & Invariants', () => {
       assert.equal(finalCommittedTx.reimbursementStatus, 'partial')
     })
   })
+
+  // ── 11. Person-centric multi-transaction settlement simulation ─────────────
+  describe('11. Person-centric multi-transaction settlement', () => {
+    it('settles all transactions for a specific person while preserving other splits and net spend', () => {
+      const tx1 = createSampleTransaction({ id: 'tx-1' }) // Aarav owes 100000, Meera owes 100000
+      const tx2 = createSampleTransaction({
+        id: 'tx-2',
+        amountPaise: 400000,
+        splits: [
+          { personId: 'person-aarav', personName: 'Aarav', amountPaise: 150000, repaidPaise: 50000, settledAt: null },
+          { personId: 'person-kabir', personName: 'Kabir', amountPaise: 150000, repaidPaise: 0, settledAt: null },
+        ],
+      }) // Aarav owes 100000, Kabir owes 150000
+
+      const allUserTxns = [tx1, tx2]
+      const targetPersonId = 'person-aarav'
+
+      // Find transactions where Aarav owes money
+      const unsettledForAarav = allUserTxns.filter(t => {
+        const share = t.splits?.find(s => s.personId === targetPersonId)
+        return share && share.amountPaise > share.repaidPaise
+      })
+      assert.equal(unsettledForAarav.length, 2)
+
+      // Simulate settlePersonAllDues
+      let totalSettled = 0
+      const updatedList: Transaction[] = []
+
+      for (const t of unsettledForAarav) {
+        const update = applyFullSettlement(t, targetPersonId)
+        totalSettled += update.settledPaise
+        updatedList.push({
+          ...t,
+          splits: update.splits,
+          reimbursementStatus: update.reimbursementStatus,
+        })
+      }
+
+      // Assertions
+      assert.equal(totalSettled, 200000) // 100000 from tx1 + 100000 remaining from tx2
+      assert.equal(updatedList.length, 2)
+
+      // Tx1: Aarav is fully repaid (100000), Meera still owes 100000
+      const tx1Aarav = updatedList[0].splits!.find(s => s.personId === 'person-aarav')!
+      const tx1Meera = updatedList[0].splits!.find(s => s.personId === 'person-meera')!
+      assert.equal(tx1Aarav.repaidPaise, 100000)
+      assert.equal(tx1Meera.repaidPaise, 0)
+      assert.equal(updatedList[0].reimbursementStatus, 'partial')
+      assert.equal(getNetSpendPaise(updatedList[0]), 100000)
+
+      // Tx2: Aarav is fully repaid (150000), Kabir still owes 150000
+      const tx2Aarav = updatedList[1].splits!.find(s => s.personId === 'person-aarav')!
+      const tx2Kabir = updatedList[1].splits!.find(s => s.personId === 'person-kabir')!
+      assert.equal(tx2Aarav.repaidPaise, 150000)
+      assert.equal(tx2Kabir.repaidPaise, 0)
+      assert.equal(updatedList[1].reimbursementStatus, 'partial')
+      assert.equal(getNetSpendPaise(updatedList[1]), 100000)
+    })
+  })
 })

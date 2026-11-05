@@ -28,6 +28,9 @@ import {
   getReimbursementStatus,
   getNormalizedSplits,
   isSplitOrRecoverable,
+  aggregatePeopleDues,
+  UNASSIGNED_PERSON_ID,
+  type PersonDuesSummary,
 } from '@/utils/splitMath'
 import { ThemedSelect } from '@/components/ui/ThemedSelect'
 import { AddExpenseForm } from './AddExpenseForm'
@@ -36,6 +39,7 @@ import {
   recordSplitRepayment,
   settleSplitShare,
   settleAllTransactionSplits,
+  settlePersonAllDues,
 } from '@/services/people'
 import type {
   Transaction,
@@ -926,6 +930,125 @@ function SettleAllModal({ tx, onClose, onSuccess }: SettleAllModalProps) {
   )
 }
 
+// ─── Settle Person All Dues Modal ─────────────────────────────────────────────
+
+interface SettlePersonModalProps {
+  person: PersonDuesSummary
+  transactions: Transaction[]
+  onClose: () => void
+  onSuccess: (updatedTxns: Transaction[], settledCount: number, totalSettledPaise: number) => void
+}
+
+function SettlePersonModal({
+  person,
+  transactions,
+  onClose,
+  onSuccess,
+}: SettlePersonModalProps) {
+  const { user } = useAuth()
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const personTxns = transactions.filter(tx => {
+    const splits = getNormalizedSplits(tx)
+    const share = splits.find(
+      s =>
+        s.personId === person.personId ||
+        (s.personId === UNASSIGNED_PERSON_ID &&
+          s.personName.toLowerCase() === person.personName.toLowerCase())
+    )
+    return share && share.amountPaise > share.repaidPaise
+  })
+
+  async function handleConfirm() {
+    if (!user) return
+    setLoading(true)
+    setError(null)
+    try {
+      const res = await settlePersonAllDues(user.uid, person.personId)
+      onSuccess(res.updatedTxns, res.settledCount, res.totalSettledPaise)
+    } catch (err: any) {
+      console.error('[Spenza] Settle person error:', err)
+      setError(err?.message || 'Failed to settle all dues for this person')
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative z-10 w-full max-w-sm rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6 shadow-[var(--shadow-xl)]">
+        <div className="mb-3 flex items-center gap-2.5">
+          <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-[var(--success-muted)] text-[var(--success)]">
+            <Check className="h-4 w-4" />
+          </div>
+          <div>
+            <h3 className="text-base font-bold text-[var(--text-primary)]">
+              Settle All with {person.personName}?
+            </h3>
+            <p className="text-xs text-[var(--text-muted)]">
+              {person.unsettledTxnCount} unsettled {person.unsettledTxnCount === 1 ? 'bill' : 'bills'}
+            </p>
+          </div>
+        </div>
+
+        <p className="mb-3 text-xs text-[var(--text-secondary)]">
+          Mark all outstanding shares for <strong>{person.personName}</strong> as fully settled:
+        </p>
+
+        <div className="mb-4 max-h-48 overflow-y-auto space-y-1.5 rounded-xl border border-[var(--border)] bg-[var(--surface-2)] p-3 text-xs">
+          {personTxns.map(tx => {
+            const splits = getNormalizedSplits(tx)
+            const share = splits.find(
+              s =>
+                s.personId === person.personId ||
+                (s.personId === UNASSIGNED_PERSON_ID &&
+                  s.personName.toLowerCase() === person.personName.toLowerCase())
+            )
+            const due = share ? share.amountPaise - share.repaidPaise : 0
+            return (
+              <div key={tx.id} className="flex items-center justify-between py-0.5">
+                <span className="truncate max-w-[190px] font-medium text-[var(--text-primary)]">
+                  {tx.description}
+                </span>
+                <span className="font-bold text-[var(--warning)]">{formatINR(due)}</span>
+              </div>
+            )
+          })}
+          <div className="border-t border-[var(--border)] pt-1.5 flex items-center justify-between font-bold text-[var(--text-primary)]">
+            <span>Total to Settle</span>
+            <span className="text-[var(--success)]">{formatINR(person.pendingDuesPaise)}</span>
+          </div>
+        </div>
+
+        {error && (
+          <p className="mb-3 text-xs font-medium text-[var(--danger)]">{error}</p>
+        )}
+
+        <div className="flex gap-2.5">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={loading}
+            className="flex-1 rounded-xl border border-[var(--border)] py-2.5 text-sm font-medium text-[var(--text-muted)] hover:bg-[var(--surface-2)] transition-colors disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={handleConfirm}
+            disabled={loading}
+            className="flex-1 flex items-center justify-center gap-1.5 rounded-xl bg-[var(--success)] py-2.5 text-sm font-semibold text-white hover:opacity-90 transition-opacity disabled:opacity-50"
+          >
+            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+            Confirm Settle All
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ─── Main page ────────────────────────────────────────────────────────────────
 
 export function TransactionsPage() {
@@ -945,6 +1068,8 @@ export function TransactionsPage() {
   const [selectedCategoryId, setSelectedCategoryId] = useState<string>('all')
   const initialFilter = searchParams.get('filter') || searchParams.get('type') || 'all'
   const [selectedTypeFilter, setSelectedTypeFilter] = useState<string>(initialFilter)
+  const initialPerson = searchParams.get('person') || searchParams.get('personId') || null
+  const [selectedPersonFilter, setSelectedPersonFilter] = useState<string | null>(initialPerson)
   const [selectedModeFilter, setSelectedModeFilter] = useState<string>('all')
   const [collapseTrips, setCollapseTrips] = useState(true)
   const [expandedTripIds, setExpandedTripIds] = useState<Record<string, boolean>>({})
@@ -956,6 +1081,7 @@ export function TransactionsPage() {
   const [deleteTx, setDeleteTx] = useState<Transaction | null>(null)
   const [repaymentTarget, setRepaymentTarget] = useState<{ tx: Transaction; share: SplitShare } | null>(null)
   const [settleAllTarget, setSettleAllTarget] = useState<Transaction | null>(null)
+  const [settlePersonTarget, setSettlePersonTarget] = useState<PersonDuesSummary | null>(null)
   const [toast, setToast] = useState<string | null>(null)
 
   const showToast = useCallback((msg: string) => {
@@ -967,6 +1093,10 @@ export function TransactionsPage() {
     const filterParam = searchParams.get('filter') || searchParams.get('type')
     if (filterParam) {
       setSelectedTypeFilter(filterParam)
+    }
+    const personParam = searchParams.get('person') || searchParams.get('personId')
+    if (personParam) {
+      setSelectedPersonFilter(personParam)
     }
   }, [searchParams])
 
@@ -997,7 +1127,7 @@ export function TransactionsPage() {
   // Reset pagination window whenever filters change
   useEffect(() => {
     setVisibleGroupCount(VISIBLE_GROUPS_STEP)
-  }, [searchQuery, selectedMonth, selectedCategoryId, selectedTypeFilter, selectedModeFilter, collapseTrips])
+  }, [searchQuery, selectedMonth, selectedCategoryId, selectedTypeFilter, selectedPersonFilter, selectedModeFilter, collapseTrips])
 
   const handleSuccess = useCallback(() => {
     // Close drawer automatically after editing an existing transaction
@@ -1037,6 +1167,28 @@ export function TransactionsPage() {
     showToast(`All dues settled (${formatINR(settledPaise)}) ✓`)
     loadAll()
   }, [showToast, loadAll])
+
+  const handleSettlePersonSuccess = useCallback(
+    (updatedTxns: Transaction[], settledCount: number, totalSettledPaise: number) => {
+      const pName = settlePersonTarget?.personName || 'friend'
+      setSettlePersonTarget(null)
+      const updatedMap = new Map(updatedTxns.map(t => [t.id, t]))
+      setTransactions(prev => prev.map(t => updatedMap.get(t.id) || t))
+      showToast(
+        `Settled all dues with ${pName} (${formatINR(totalSettledPaise)} across ${settledCount} ${
+          settledCount === 1 ? 'bill' : 'bills'
+        }) ✓`
+      )
+      loadAll()
+    },
+    [settlePersonTarget, showToast, loadAll]
+  )
+
+  const peopleDues = useMemo(() => aggregatePeopleDues(transactions), [transactions])
+  const unsettledPeople = useMemo(
+    () => peopleDues.filter(p => p.pendingDuesPaise > 0),
+    [peopleDues]
+  )
 
   const catMap = useMemo(() => new Map(categories.map(c => [c.id, c])), [categories])
   const accMap = useMemo(() => new Map(accounts.map(a => [a.id, a])), [accounts])
@@ -1089,6 +1241,17 @@ export function TransactionsPage() {
           return false
         }
       }
+      if (selectedPersonFilter) {
+        const pLower = selectedPersonFilter.toLowerCase()
+        const splits = getNormalizedSplits(tx)
+        const match =
+          splits.some(
+            s =>
+              s.personName.toLowerCase() === pLower ||
+              s.personId.toLowerCase() === pLower
+          ) || (tx.personId && tx.personId.toLowerCase() === pLower)
+        if (!match) return false
+      }
       if (selectedModeFilter !== 'all' && tx.paymentMode !== selectedModeFilter) {
         return false
       }
@@ -1119,6 +1282,7 @@ export function TransactionsPage() {
     selectedMonth,
     selectedCategoryId,
     selectedTypeFilter,
+    selectedPersonFilter,
     selectedModeFilter,
     searchQuery,
     catMap,
@@ -1131,6 +1295,7 @@ export function TransactionsPage() {
     selectedMonth !== 'all' ||
     selectedCategoryId !== 'all' ||
     selectedTypeFilter !== 'all' ||
+    selectedPersonFilter !== null ||
     selectedModeFilter !== 'all'
 
   const resetFilters = () => {
@@ -1138,6 +1303,7 @@ export function TransactionsPage() {
     setSelectedMonth('all')
     setSelectedCategoryId('all')
     setSelectedTypeFilter('all')
+    setSelectedPersonFilter(null)
     setSelectedModeFilter('all')
   }
 
@@ -1332,6 +1498,82 @@ export function TransactionsPage() {
               ]}
             />
           </div>
+
+          {/* Row 3: Friend Dues Pills when pending dues exist */}
+          {unsettledPeople.length > 0 && (
+            <div className="flex items-center gap-1.5 overflow-x-auto pt-1 pb-0.5">
+              <span className="shrink-0 text-[11px] font-medium text-[var(--text-subtle)] mr-0.5">
+                Friends with dues:
+              </span>
+              <button
+                type="button"
+                onClick={() => setSelectedPersonFilter(null)}
+                className={`shrink-0 rounded-full px-2.5 py-1 text-[11px] font-semibold transition-all ${
+                  selectedPersonFilter === null
+                    ? 'bg-[var(--primary)] text-white shadow-xs'
+                    : 'bg-[var(--surface-2)] text-[var(--text-secondary)] hover:bg-[var(--surface-3)]'
+                }`}
+              >
+                All Friends
+              </button>
+              {unsettledPeople.map(p => {
+                const isSelected =
+                  selectedPersonFilter?.toLowerCase() === p.personName.toLowerCase() ||
+                  selectedPersonFilter === p.personId
+                return (
+                  <button
+                    key={p.personId}
+                    type="button"
+                    onClick={() =>
+                      setSelectedPersonFilter(isSelected ? null : p.personName)
+                    }
+                    className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold transition-all ${
+                      isSelected
+                        ? 'bg-[var(--warning)] text-white shadow-xs'
+                        : 'bg-[var(--surface-2)] text-[var(--text-secondary)] hover:bg-[var(--surface-3)]'
+                    }`}
+                  >
+                    <span>{p.personName}</span>
+                    <span
+                      className={`rounded-full px-1.5 py-0.2 text-[9px] ${
+                        isSelected
+                          ? 'bg-black/20 text-white'
+                          : 'bg-[var(--warning-muted)] text-[var(--warning)]'
+                      }`}
+                    >
+                      {formatINR(p.pendingDuesPaise)}
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
+          )}
+
+          {/* Person settlement banner when a person is filtered */}
+          {selectedPersonFilter && (() => {
+            const p = unsettledPeople.find(
+              u =>
+                u.personName.toLowerCase() === selectedPersonFilter.toLowerCase() ||
+                u.personId === selectedPersonFilter
+            )
+            if (!p || p.pendingDuesPaise <= 0) return null
+            return (
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--warning)]/40 bg-[var(--warning-muted)] px-3.5 py-2.5 text-xs">
+                <div className="flex items-center gap-2">
+                  <span className="font-semibold text-[var(--warning)]">
+                    {p.personName} owes {formatINR(p.pendingDuesPaise)} across {p.unsettledTxnCount} {p.unsettledTxnCount === 1 ? 'bill' : 'bills'}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSettlePersonTarget(p)}
+                  className="inline-flex items-center gap-1 rounded-lg bg-[var(--warning)] px-2.5 py-1 text-xs font-bold text-white hover:opacity-95 active:scale-95 transition-all shadow-xs"
+                >
+                  <Check className="h-3.5 w-3.5" /> Settle All with {p.personName}
+                </button>
+              </div>
+            )
+          })()}
         </div>
       )}
 
@@ -1499,6 +1741,16 @@ export function TransactionsPage() {
           tx={settleAllTarget}
           onClose={() => setSettleAllTarget(null)}
           onSuccess={handleSettleAllSuccess}
+        />
+      )}
+
+      {/* Settle Person All Dues Modal */}
+      {settlePersonTarget && (
+        <SettlePersonModal
+          person={settlePersonTarget}
+          transactions={transactions}
+          onClose={() => setSettlePersonTarget(null)}
+          onSuccess={handleSettlePersonSuccess}
         />
       )}
 

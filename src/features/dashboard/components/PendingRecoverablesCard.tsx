@@ -13,7 +13,10 @@ export function PendingRecoverablesCard({ data }: PendingRecoverablesCardProps) 
     allTimePendingDuesTotal,
     thisMonthRecoverableTotal,
     thisMonthRepaidTotal,
+    peopleDues,
   } = data
+
+  const peopleWithDues = (peopleDues || []).filter(p => p.pendingDuesPaise > 0)
 
   // Hide card if there are no pending dues and nothing was fronted or repaid this month
   if (
@@ -126,6 +129,63 @@ export function PendingRecoverablesCard({ data }: PendingRecoverablesCardProps) 
           </p>
         </div>
       </div>
+
+      {/* People breakdown */}
+      {peopleWithDues.length > 0 && (
+        <div className="mt-4 border-t border-[var(--border)] pt-3.5">
+          <div className="mb-2.5 flex items-center justify-between">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+              Who Owes You ({peopleWithDues.length})
+            </span>
+            <span className="text-[10px] text-[var(--text-subtle)]">
+              Click to view bills
+            </span>
+          </div>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            {peopleWithDues.slice(0, 4).map(p => (
+              <div
+                key={p.personId}
+                onClick={() =>
+                  navigate(
+                    `/app/transactions?filter=pending_dues&person=${encodeURIComponent(
+                      p.personName
+                    )}`
+                  )
+                }
+                className="flex cursor-pointer items-center justify-between rounded-xl border border-[var(--border)] bg-[var(--surface-2)]/60 px-3 py-2 transition-all hover:bg-[var(--surface-2)] active:scale-[0.99]"
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-[var(--warning-muted)] text-[10px] font-bold text-[var(--warning)]">
+                    {p.personName.charAt(0).toUpperCase()}
+                  </div>
+                  <div className="truncate">
+                    <span className="text-xs font-semibold text-[var(--text-primary)] truncate">
+                      {p.personName}
+                    </span>
+                    <span className="ml-1 text-[10px] text-[var(--text-subtle)]">
+                      · {p.unsettledTxnCount} {p.unsettledTxnCount === 1 ? 'bill' : 'bills'}
+                    </span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-1 shrink-0">
+                  <span className="text-xs font-bold text-[var(--warning)]">
+                    {formatINR(p.pendingDuesPaise)}
+                  </span>
+                  <ChevronRight className="h-3 w-3 text-[var(--text-subtle)]" />
+                </div>
+              </div>
+            ))}
+          </div>
+          {peopleWithDues.length > 4 && (
+            <button
+              onClick={() => navigate('/app/transactions?filter=pending_dues')}
+              className="mt-2 text-[11px] font-medium text-[var(--primary)] hover:underline"
+            >
+              + {peopleWithDues.length - 4} more people with pending dues
+            </button>
+          )}
+        </div>
+      )}
     </div>
   )
 }

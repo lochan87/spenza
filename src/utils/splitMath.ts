@@ -581,6 +581,64 @@ export function getPersonOutstandingPaise(
   return Math.max(0, share.amountPaise - share.repaidPaise)
 }
 
+export interface PersonDuesSummary {
+  personId: string
+  personName: string
+  totalOwedPaise: number
+  totalRepaidPaise: number
+  pendingDuesPaise: number
+  transactionCount: number
+  unsettledTxnCount: number
+}
+
+/**
+ * Aggregates recoverable amounts, repayments, and outstanding dues per person across a list of transactions.
+ * Sorted descending by pending dues amount (people who owe the most appear first).
+ */
+export function aggregatePeopleDues(
+  transactions: ReadonlyArray<SplitAwareTransaction | null | undefined>
+): PersonDuesSummary[] {
+  const byPerson = new Map<string, PersonDuesSummary>()
+
+  for (const tx of transactions) {
+    if (!tx) continue
+    const splits = getNormalizedSplits(tx)
+    for (const s of splits) {
+      const pid = s.personId?.trim() || UNASSIGNED_PERSON_ID
+      const pname =
+        s.personName?.trim() ||
+        (pid === UNASSIGNED_PERSON_ID ? UNASSIGNED_PERSON_NAME : pid)
+      const pending = Math.max(0, s.amountPaise - s.repaidPaise)
+
+      const existing = byPerson.get(pid)
+      if (existing) {
+        existing.totalOwedPaise += s.amountPaise
+        existing.totalRepaidPaise += s.repaidPaise
+        existing.pendingDuesPaise += pending
+        existing.transactionCount += 1
+        if (pending > 0) existing.unsettledTxnCount += 1
+      } else {
+        byPerson.set(pid, {
+          personId: pid,
+          personName: pname,
+          totalOwedPaise: s.amountPaise,
+          totalRepaidPaise: s.repaidPaise,
+          pendingDuesPaise: pending,
+          transactionCount: 1,
+          unsettledTxnCount: pending > 0 ? 1 : 0,
+        })
+      }
+    }
+  }
+
+  return [...byPerson.values()].sort((a, b) => {
+    if (b.pendingDuesPaise !== a.pendingDuesPaise) {
+      return b.pendingDuesPaise - a.pendingDuesPaise
+    }
+    return a.personName.localeCompare(b.personName)
+  })
+}
+
 export interface FinancialInvariantsReport {
   isValid: boolean
   grossPaise: number

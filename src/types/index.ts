@@ -354,6 +354,7 @@ export interface UserProfile {
   photoURL: string | null
   defaultPaymentAccountId: string | null
   onboardingComplete: boolean
+  peopleOnboardingCompleted?: boolean
   createdAt: Timestamp
   updatedAt: Timestamp
 }

@@ -7,7 +7,7 @@ import {
   serverTimestamp,
 } from 'firebase/firestore'
 import { db } from '@/firebase/config'
-import type { Category, PaymentAccount } from '@/types'
+import type { Category, PaymentAccount, UserProfile } from '@/types'
 
 // ─── Default Categories ───────────────────────────────────────────────────────
 
@@ -138,6 +138,32 @@ export async function seedUserProfile(uid: string, displayName: string | null, e
   })
 
   console.log('[Spenza Seed] ✅ User profile created')
+}
+
+/**
+ * Fetch the user's profile document.
+ */
+export async function getUserProfile(uid: string): Promise<UserProfile | null> {
+  const profileRef = doc(db, 'users', uid, 'profile', 'data')
+  const snap = await getDoc(profileRef)
+  if (!snap.exists()) return null
+  return snap.data() as UserProfile
+}
+
+/**
+ * Mark onboarding and first-login split partner onboarding as complete.
+ */
+export async function completeUserOnboarding(uid: string): Promise<void> {
+  const profileRef = doc(db, 'users', uid, 'profile', 'data')
+  await setDoc(
+    profileRef,
+    {
+      onboardingComplete: true,
+      peopleOnboardingCompleted: true,
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  )
 }
 
 /**

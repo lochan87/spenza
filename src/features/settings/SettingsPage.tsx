@@ -21,6 +21,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   User as UserIcon,
+  Users,
 } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
 import { useTheme } from '@/hooks/useTheme'
@@ -41,8 +42,15 @@ import {
   getLiveTransactionCount,
   invalidateInsightsCache,
 } from '@/services/insights'
+import {
+  getPeople,
+  addPerson,
+  updatePerson,
+  archivePerson,
+  deletePerson,
+} from '@/services/people'
 import { getAccountTypeMeta } from '@/utils/paymentColors'
-import type { Category, PaymentAccount } from '@/types'
+import type { Category, PaymentAccount, Person } from '@/types'
 
 // ─── Account row ──────────────────────────────────────────────────────────────
 
@@ -189,6 +197,13 @@ export function SettingsPage() {
   const [newAccType, setNewAccType] = useState<'Bank' | 'UPI' | 'Card' | 'Wallet'>('Bank')
   const [showArchived, setShowArchived] = useState(false)
 
+  // Friends & Split partners
+  const [people, setPeople] = useState<Person[]>([])
+  const [addingPerson, setAddingPerson] = useState(false)
+  const [newPersonName, setNewPersonName] = useState('')
+  const [editingPersonId, setEditingPersonId] = useState<string | null>(null)
+  const [showArchivedPeople, setShowArchivedPeople] = useState(false)
+
   // Data management counts & states
   const [totalTxCount, setTotalTxCount] = useState<number | null>(null)
   const [importedTxCount, setImportedTxCount] = useState<number | null>(null)
@@ -205,16 +220,18 @@ export function SettingsPage() {
 
   const reloadData = useCallback(async () => {
     if (!user) return
-    const [accs, cats, totalCount, importedCount] = await Promise.all([
+    const [accs, cats, totalCount, importedCount, peopleList] = await Promise.all([
       getPaymentAccounts(user.uid),
       getCategories(user.uid),
       getLiveTransactionCount(user.uid),
       getImportedTransactionsCount(user.uid),
+      getPeople(user.uid, true),
     ])
     setAccounts(accs)
     setCategories(cats)
     setTotalTxCount(totalCount)
     setImportedTxCount(importedCount)
+    setPeople(peopleList)
   }, [user])
 
   useEffect(() => {
@@ -231,6 +248,15 @@ export function SettingsPage() {
     ? sortedAccs
     : sortedAccs.filter(a => !a.isArchived)
   const archivedAccCount = sortedAccs.filter(a => a.isArchived).length
+
+  const sortedPeople = [...people].sort((a, b) => {
+    if (a.isArchived !== b.isArchived) return a.isArchived ? 1 : -1
+    return a.name.localeCompare(b.name)
+  })
+  const visiblePeople = showArchivedPeople
+    ? sortedPeople
+    : sortedPeople.filter(p => !p.isArchived)
+  const archivedPeopleCount = sortedPeople.filter(p => p.isArchived).length
 
   const handleSetDefaultAccount = async (target: PaymentAccount) => {
     if (!user) return
@@ -560,7 +586,204 @@ export function SettingsPage() {
         )}
       </section>
 
-      {/* ── SECTION 2: DATA MANAGEMENT ── */}
+      {/* ── SECTION 2: FRIENDS & SPLIT PARTNERS ── */}
+      <section className="flex flex-col gap-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Users className="h-4 w-4 text-[var(--primary)]" />
+            <h2 className="text-base font-semibold text-[var(--text-primary)]">
+              Friends & Split Partners
+            </h2>
+          </div>
+          <Link
+            to="/app/people"
+            className="flex items-center gap-1 text-xs font-semibold text-[var(--primary)] hover:underline"
+          >
+            Open Split Book →
+          </Link>
+        </div>
+
+        <p className="text-xs text-[var(--text-muted)]">
+          Manage people you frequently split bills with. Added friends appear in your split bill picker and Split Book.
+        </p>
+
+        {/* Add Friend inline form / button */}
+        {addingPerson ? (
+          <div className="rounded-2xl border border-[var(--primary)] bg-[var(--surface)] p-4 shadow-sm">
+            <p className="mb-3 text-sm font-semibold text-[var(--text-primary)]">
+              Add Friend / Split Partner
+            </p>
+            <div className="flex flex-col gap-3">
+              <input
+                type="text"
+                autoFocus
+                placeholder="Friend name (e.g. Aarav, Meera, Roommate)"
+                value={newPersonName}
+                onChange={e => setNewPersonName(e.target.value)}
+                onKeyDown={async e => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    if (!newPersonName.trim() || !user) return
+                    await addPerson(user.uid, newPersonName.trim())
+                    setNewPersonName('')
+                    setAddingPerson(false)
+                    reloadData()
+                  }
+                }}
+                className="w-full rounded-xl border border-[var(--border)] bg-[var(--surface-2)] px-3 py-2 text-sm text-[var(--text-primary)] placeholder-[var(--text-subtle)] focus:border-[var(--primary)] focus:outline-none"
+              />
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  disabled={!newPersonName.trim()}
+                  onClick={async () => {
+                    if (!newPersonName.trim() || !user) return
+                    await addPerson(user.uid, newPersonName.trim())
+                    setNewPersonName('')
+                    setAddingPerson(false)
+                    reloadData()
+                  }}
+                  className="rounded-lg bg-[var(--primary)] px-4 py-2 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-40"
+                >
+                  Save Friend
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAddingPerson(false)
+                    setNewPersonName('')
+                  }}
+                  className="rounded-lg border border-[var(--border)] px-3 py-2 text-sm text-[var(--text-muted)]"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <button
+            id="add-person-btn"
+            type="button"
+            onClick={() => setAddingPerson(true)}
+            className="flex items-center gap-2 rounded-xl border border-dashed border-[var(--border)] px-4 py-3 text-sm text-[var(--text-muted)] transition-all hover:border-[var(--border-strong)] hover:text-[var(--text-primary)]"
+          >
+            <Plus className="h-4 w-4" />
+            Add friend or split partner
+          </button>
+        )}
+
+        {/* Friends list */}
+        <div className="flex flex-col gap-2">
+          {visiblePeople.length === 0 ? (
+            <p className="rounded-xl border border-dashed border-[var(--border)] p-4 text-center text-xs text-[var(--text-subtle)]">
+              No split partners added yet. Add friends here so you can split bills with them in one tap.
+            </p>
+          ) : (
+            visiblePeople.map(p =>
+              editingPersonId === p.id ? (
+                <div
+                  key={p.id}
+                  className="rounded-xl border border-[var(--primary)] bg-[var(--surface)] p-3"
+                >
+                  <InlineEditField
+                    label="Friend name"
+                    value={p.name}
+                    onSave={async name => {
+                      if (!name.trim() || !user) return
+                      await updatePerson(user.uid, p.id, { name: name.trim() })
+                      setEditingPersonId(null)
+                      reloadData()
+                    }}
+                    onCancel={() => setEditingPersonId(null)}
+                  />
+                </div>
+              ) : (
+                <div
+                  key={p.id}
+                  className="flex items-center gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3 transition-all hover:border-[var(--border-strong)]"
+                >
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[var(--surface-3)] text-xs font-bold text-[var(--text-primary)]">
+                    {p.name.charAt(0).toUpperCase()}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p
+                      className={`truncate text-sm font-medium ${
+                        p.isArchived
+                          ? 'text-[var(--text-subtle)] line-through'
+                          : 'text-[var(--text-primary)]'
+                      }`}
+                    >
+                      {p.name}
+                    </p>
+                    {p.isArchived && (
+                      <p className="text-xs text-[var(--text-subtle)]">Archived</p>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => setEditingPersonId(p.id)}
+                      title="Rename friend"
+                      aria-label="Rename friend"
+                      className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--text-muted)] hover:bg-[var(--surface-2)] hover:text-[var(--primary)] transition-colors"
+                    >
+                      <Pencil className="h-4 w-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        if (!user) return
+                        await archivePerson(user.uid, p.id, !p.isArchived)
+                        reloadData()
+                      }}
+                      title={p.isArchived ? 'Restore friend' : 'Archive friend'}
+                      aria-label={p.isArchived ? 'Restore friend' : 'Archive friend'}
+                      className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--text-muted)] hover:bg-[var(--surface-2)] hover:text-[var(--warning)] transition-colors"
+                    >
+                      {p.isArchived ? (
+                        <ArchiveRestore className="h-4 w-4" />
+                      ) : (
+                        <Archive className="h-4 w-4" />
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        if (!user) return
+                        const ok = window.confirm(
+                          `Remove "${p.name}"? If they have bill history, they will be archived instead.`
+                        )
+                        if (!ok) return
+                        await deletePerson(user.uid, p.id)
+                        reloadData()
+                      }}
+                      title="Delete friend"
+                      aria-label="Delete friend"
+                      className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--text-muted)] hover:bg-[var(--surface-2)] hover:text-[var(--danger)] transition-colors"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  </div>
+                </div>
+              )
+            )
+          )}
+        </div>
+
+        {archivedPeopleCount > 0 && (
+          <button
+            type="button"
+            onClick={() => setShowArchivedPeople(v => !v)}
+            className="self-start text-sm text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
+          >
+            {showArchivedPeople
+              ? `Hide ${archivedPeopleCount} archived`
+              : `Show ${archivedPeopleCount} archived`}
+          </button>
+        )}
+      </section>
+
+      {/* ── SECTION 3: DATA MANAGEMENT ── */}
       <section className="flex flex-col gap-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -788,7 +1011,7 @@ export function SettingsPage() {
         </div>
       </section>
 
-      {/* ── SECTION 3: APPEARANCE & ACCOUNT ── */}
+      {/* ── SECTION 4: APPEARANCE & ACCOUNT ── */}
       <section className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         {/* Theme Preference */}
         <div className="flex flex-col justify-between gap-3 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4">

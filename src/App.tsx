@@ -13,12 +13,13 @@ import { BudgetPage } from '@/features/budgets/BudgetPage'
 import { InsightsPage } from '@/features/insights/InsightsPage'
 import { ImportPage } from '@/features/import/ImportPage'
 import { PeoplePage } from '@/features/people/PeoplePage'
+import { PeopleOnboardingModal } from '@/features/people/components/PeopleOnboardingModal'
 import { SettingsPage } from '@/features/settings/SettingsPage'
 import { RecurringDuePrompt } from '@/features/recurring/RecurringDuePrompt'
 import { useRecurringCheck } from '@/features/recurring/useRecurringCheck'
 import { OfflineBanner } from '@/components/layout/OfflineBanner'
 import { useEffect, useState } from 'react'
-import { runOnboardingSeeds } from '@/services/seed'
+import { runOnboardingSeeds, getUserProfile } from '@/services/seed'
 import { getCategories } from '@/services/transactions'
 import type { Category } from '@/types'
 
@@ -28,12 +29,27 @@ import type { Category } from '@/types'
 function AppRoutes() {
   const { user } = useAuth()
   const [categories, setCategories] = useState<Category[]>([])
+  const [showPeopleOnboarding, setShowPeopleOnboarding] = useState(false)
 
   useEffect(() => {
     if (user) {
-      runOnboardingSeeds(user.uid, user.displayName, user.email, user.photoURL).catch(
-        err => console.error('[Spenza] Seed error:', err)
-      )
+      runOnboardingSeeds(user.uid, user.displayName, user.email, user.photoURL)
+        .then(async () => {
+          try {
+            const dismissedLocally =
+              localStorage.getItem(`spenza_people_onboarding_${user.uid}`) === 'true'
+            if (!dismissedLocally) {
+              const profile = await getUserProfile(user.uid)
+              if (profile && !profile.onboardingComplete && !profile.peopleOnboardingCompleted) {
+                setShowPeopleOnboarding(true)
+              }
+            }
+          } catch (e) {
+            console.error('[Spenza] Onboarding check error:', e)
+          }
+        })
+        .catch(err => console.error('[Spenza] Seed error:', err))
+
       getCategories(user.uid).then(setCategories).catch(console.error)
     }
   }, [user])
@@ -78,6 +94,14 @@ function AppRoutes() {
           onConfirm={confirm}
           onDismiss={dismiss}
           onDismissAll={dismissAll}
+        />
+      )}
+
+      {/* First-login people split partners onboarding prompt */}
+      {showPeopleOnboarding && user && (
+        <PeopleOnboardingModal
+          uid={user.uid}
+          onComplete={() => setShowPeopleOnboarding(false)}
         />
       )}
 

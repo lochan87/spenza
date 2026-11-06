@@ -1,4 +1,5 @@
 {
+  "functions": [{ "source": "functions", "codebase": "imports", "runtime": "nodejs22", "predeploy": ["npm --prefix functions run build"] }],
   "firestore": {
     "rules": "firestore.rules",
     "indexes": "firestore.indexes.json"

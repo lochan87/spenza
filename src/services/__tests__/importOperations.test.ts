@@ -6,13 +6,14 @@ import ts from 'typescript'
 import XLSX from 'xlsx'
 import { Timestamp } from 'firebase/firestore'
 import * as importPlan from '../../utils/importPlan.ts'
+import { executeTrustedImport } from '../../../functions/src/importExecutor.ts'
 import type { ParsedRow } from '../importExcel.ts'
 const basePath = 'users/test-user'
 type StoredDoc = Record<string, any>
 interface Write { type: 'set' | 'update' | 'delete'; ref: string; data?: StoredDoc }
 // Actual service functions; an optimistic, staged transaction double. No Firebase
 // configuration is loaded, and no network or production writes are possible.
-function createHarness(options: { failOnPath?: string; loseResponseOn?: string; failRead?: boolean } = {}) {
+function createHarness(options: { failOnPath?: string; loseResponseOn?: string; failRead?: boolean; callableError?: string; beforeTransaction?: () => void } = {}) {
   const docs = new Map<string, StoredDoc>()
   const versions = new Map<string, number>()
   const nav = { onLine: true }
@@ -33,6 +34,7 @@ function createHarness(options: { failOnPath?: string; loseResponseOn?: string; 
     getDocFromServer: async (ref: string) => { if (options.failRead) throw new Error('Network unavailable'); return { exists: () => docs.has(ref), data: () => docs.get(ref) } },
     serverTimestamp: () => Timestamp.now(),
     runTransaction: async (_db: unknown, callback: (txn: any) => Promise<unknown>) => {
+      options.beforeTransaction?.()
       for (let attempt = 1; attempt <= 5; attempt++) {
         attempts++
         const readVersions = new Map<string, number>()
@@ -113,6 +115,22 @@ function createHarness(options: { failOnPath?: string; loseResponseOn?: string; 
     },
   }
 
+  // Adapter shares the optimistic store with the actual callable core. This is
+  // an in-memory concurrency simulation, not a security-rules emulator.
+  const ref = (path: string): any => ({ path, get: async () => ({ exists: docs.has(path), data: () => docs.get(path) }),
+    collection: (name: string) => ({ doc: (key: string) => ref(`${path}/${name}/${key}`) }) })
+  const admin = { doc: ref, runTransaction: (callback: (txn: any) => Promise<unknown>) => sdk.runTransaction({}, txn => {
+    const adapter: any = {
+      get: async (r: any) => { const snap = await txn.get(r.path); return { exists: snap.exists(), data: snap.data } },
+      getAll: (...refs: any[]) => Promise.all(refs.map(r => adapter.get(r))),
+      create: (r: any, data: StoredDoc) => { if (docs.has(r.path)) throw new Error('Create collision'); txn.set(r.path, data) },
+      delete: (r: any) => txn.delete(r.path),
+    }
+    return callback(adapter)
+  }) } as unknown as Parameters<typeof executeTrustedImport>[0]
+  const invoke = (uid = 'test-user', input: unknown = { operationId: fingerprint }) => executeTrustedImport(admin, uid, input)
+  docs.set(`${basePath}/categories/other`, { name: 'Other' })
+  docs.set(`${basePath}/categories/reviewed-category`, { name: 'Reviewed' })
   const source = readFileSync(new URL('../importOperations.ts', import.meta.url), 'utf8')
   const compiled = ts.transpileModule(source, {
     compilerOptions: { target: ts.ScriptTarget.ES2023, module: ts.ModuleKind.CommonJS },
@@ -121,8 +139,12 @@ function createHarness(options: { failOnPath?: string; loseResponseOn?: string; 
   runInNewContext(compiled, {
     exports: serviceExports,
     navigator: nav,
-    console, TextEncoder, Date,
+    console, TextEncoder, Date, Error,
     require: (name: string) => {
+      if (name === 'firebase/functions') return { getFunctions: () => ({}), httpsCallable: () => async (input: unknown) => {
+        if (options.callableError) throw Object.assign(new Error('Callable failed'), { code: options.callableError })
+        return { data: await invoke('test-user', input) }
+      } }
       if (name === 'firebase/firestore') return sdk
       if (name === '@/firebase/config') return { db: {} }
       if (name === '@/utils/importPlan') return importPlan
@@ -133,7 +155,7 @@ function createHarness(options: { failOnPath?: string; loseResponseOn?: string; 
 
   return {
     service: serviceExports as typeof import('../importOperations.ts'),
-    options, nav,
+    options, nav, invoke,
     docs,
     setOnline: (value: boolean) => { nav.onLine = value },
     attempts: () => attempts,
@@ -151,7 +173,7 @@ function createHarness(options: { failOnPath?: string; loseResponseOn?: string; 
 }
 
 const fingerprint = 'a'.repeat(64)
-const receiptPath = (index: number) => `${basePath}/importOperations/${fingerprint}/receipts/${index}`
+const receiptPath = (index: number) => `${basePath}/importOperations/${fingerprint}/trustedV2Receipts/${index}`
 function rows(count: number): ParsedRow[] {
   return Array.from({ length: count }, (_, i) => ({ rowId: `January::${i}`, description: 'Identical lunch', amountPaise: 12345,
     dateStr: '2026-01-01', rawDate: '01/01/2026', rawAmount: '123.45', dateIssue: null, suggestedCategoryName: null,
@@ -194,6 +216,7 @@ describe('Durable imports: actual service against optimistic persistence double'
     const h = createHarness()
     await prepare(h)
     h.options.loseResponseOn = receiptPath(0)
+    await assert.rejects(h.service.executeImport('test-user', fingerprint, fingerprint), /remain unconfirmed/)
     const result = await h.service.executeImport('test-user', fingerprint, fingerprint)
     assert.equal(result.complete, true)
     assert.equal(result.alreadyCommitted, 2)
@@ -247,7 +270,7 @@ describe('Durable imports: actual service against optimistic persistence double'
   })
   it('creates trips with their first chunk, preserves metadata and reuses after partial failure', async () => {
     const h = createHarness()
-    const tripId = await importPlan.importRecordId(fingerprint, 'trip', 'Goa')
+    const tripId = await importPlan.importRecordId(fingerprint, 'trip', 'January')
     const input = rows(23).map(r => ({ ...r, isTripRow: true, tripId }))
     const draft = { name: 'Goa', startMillis: 1700000000000, endMillis: 1700000000000 }
     await prepare(h, 23, fingerprint, input, { [tripId]: draft })
@@ -263,7 +286,7 @@ describe('Durable imports: actual service against optimistic persistence double'
   })
   it('does not recreate a deleted imported trip for remaining chunks', async () => {
     const h = createHarness()
-    const tripId = await importPlan.importRecordId(fingerprint, 'trip', 'Goa')
+    const tripId = await importPlan.importRecordId(fingerprint, 'trip', 'January')
     await prepare(h, 23, fingerprint, rows(23).map(r => ({ ...r, isTripRow: true, tripId })), { [tripId]: { name: 'Goa', startMillis: 1, endMillis: 2 } })
     h.options.failOnPath = receiptPath(1)
     await assert.rejects(h.service.executeImport('test-user', fingerprint, fingerprint))
@@ -325,6 +348,99 @@ describe('Durable imports: actual service against optimistic persistence double'
   })
 })
 
+
+describe('Trusted v2 execution boundary', () => {
+  it('rejects unauthenticated, cross-user and supplied UID calls', async () => {
+    const h = createHarness()
+    await prepare(h)
+    await assert.rejects(h.invoke(''), /Sign in/)
+    await assert.rejects(h.invoke('stranger'), /not found/)
+    await assert.rejects(h.invoke('test-user', { operationId: fingerprint, uid: 'stranger' }), /only an operation/)
+    assert.equal(expenses(h).length, 0)
+  })
+  it('blocks v1 operations even with valid-looking legacy receipts', async () => {
+    const h = createHarness()
+    await prepare(h)
+    const path = `${basePath}/importOperations/${fingerprint}`
+    h.directWrite(path, { ...h.read(path), version: 1 })
+    h.directWrite(`${path}/receipts/0`, { hash: h.read(path)!.hashes[0], count: 2 })
+    await assert.rejects(h.invoke(), /reconciliation/)
+    await assert.rejects(h.service.executeImport('test-user', fingerprint, fingerprint), /reconciliation/)
+    assert.equal(expenses(h).length, 0)
+  })
+  it('ignores forged legacy receipts and rejects forged legacy trip provenance', async () => {
+    const h = createHarness()
+    const tripId = await importPlan.importRecordId(fingerprint, 'trip', 'January')
+    await prepare(h, 2, fingerprint, rows(2).map(r => ({ ...r, tripId, isTripRow: true })), { [tripId]: { name: 'Goa', startMillis: 1, endMillis: 2 } })
+    const path = `${basePath}/importOperations/${fingerprint}`
+    h.directWrite(`${path}/receipts/0`, { hash: h.read(path)!.hashes[0], count: 2 })
+    h.directWrite(`${path}/tripReceipts/${tripId}`, { tripId, operationId: fingerprint })
+    h.directWrite(`${basePath}/trips/${tripId}`, { importOperationId: fingerprint })
+    await assert.rejects(h.invoke(), /collision/)
+    assert.equal(expenses(h).length, 0)
+    h.docs.delete(`${basePath}/trips/${tripId}`)
+    assert.equal((await h.invoke()).imported, 2)
+  })
+  it('validates the entire plan before writing the first chunk', async () => {
+    const h = createHarness()
+    await prepare(h, 23)
+    const path = `${basePath}/importOperations/${fingerprint}/chunks/1`
+    h.directWrite(path, { ...h.read(path), payload: '{}' })
+    await assert.rejects(h.invoke())
+    assert.equal(expenses(h).length, 0)
+  })
+  it('rejects missing category references without financial writes', async () => {
+    const h = createHarness()
+    await prepare(h)
+    h.docs.delete(`${basePath}/categories/other`)
+    await assert.rejects(h.invoke(), /category/)
+    assert.equal(expenses(h).length, 0)
+  })
+  it('rejects malicious financial fields even with recomputed valid hashes', async () => {
+    for (const patch of [{ amountPaise: 1.5 }, { amountPaise: -1 }, { amountPaise: Number.MAX_SAFE_INTEGER + 1 },
+      { paymentMode: 'Card', paymentAccountId: 'foreign-account' }, { splits: [{ repaidPaise: 500 }] }, { transactionId: 'manual' },
+      { newTrip: { name: 'Forged', startMillis: 1, endMillis: 2 }, tripId: `import-v1-trip-${'f'.repeat(64)}` }]) {
+      const h = createHarness()
+      const plan = await prepare(h)
+      const chunk = { ...plan.chunks[0], rows: [{ ...plan.chunks[0].rows[0], ...patch }, plan.chunks[0].rows[1]] }
+      const hash = await importPlan.sha256(JSON.stringify(chunk))
+      const path = `${basePath}/importOperations/${fingerprint}`
+      h.directWrite(path, { ...h.read(path), hashes: [hash] })
+      h.directWrite(`${path}/chunks/0`, { index: 0, hash, payload: JSON.stringify(chunk) })
+      await assert.rejects(h.invoke())
+      assert.equal(expenses(h).length, 0)
+    }
+  })
+  it('rejects a frozen header changed between validation and commit', async () => {
+    const h = createHarness()
+    await prepare(h)
+    const path = `${basePath}/importOperations/${fingerprint}`
+    h.options.beforeTransaction = () => h.directWrite(path, { ...h.read(path), fileName: 'mutated.csv' })
+    await assert.rejects(h.invoke(), /Frozen plan changed/)
+    assert.equal(expenses(h).length, 0)
+    assert.equal(h.read(receiptPath(0)), undefined)
+  })
+  it('rejects inconsistent trusted receipts instead of inferring completion', async () => {
+    const h = createHarness()
+    await prepare(h)
+    h.directWrite(receiptPath(0), { hash: 'forged', count: 2 })
+    await assert.rejects(h.invoke(), /Invalid trusted receipt/)
+    assert.equal(expenses(h).length, 0)
+  })
+  it('can confirm completed imports after their original references were deleted', async () => {
+    const h = createHarness()
+    await prepare(h)
+    await h.invoke()
+    h.docs.delete(`${basePath}/categories/other`)
+    assert.equal((await h.invoke()).complete, true)
+  })
+  for (const code of ['functions/unauthenticated', 'functions/permission-denied', 'functions/unavailable', 'functions/not-found']) it(`handles ${code} without client fallback`, async () => {
+    const h = createHarness({ callableError: code })
+    await prepare(h)
+    await assert.rejects(h.service.executeImport('test-user', fingerprint, fingerprint), (e: any) => !e.result.complete && e.result.unresolved === 2)
+    assert.equal(expenses(h).length, 0)
+  })
+})
 
 describe('Spreadsheet import parsing and normalization', () => {
   const service: Record<string, any> = {}

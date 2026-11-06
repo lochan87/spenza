@@ -12,7 +12,11 @@ const tripDraftSchema = z.object({
 }).strict().refine(t => t.endMillis >= t.startMillis && Number.isFinite(new Date(t.startMillis).getTime()) && Number.isFinite(new Date(t.endMillis).getTime()))
 export type ImportTripDraft = z.infer<typeof tripDraftSchema>
 const rowSchema = z.object({
-  sourceRowId: z.string().min(1).max(500), transactionId: id,
+  sourceRowId: z.string().min(1).max(500).refine(value => {
+    const separator = value.lastIndexOf('::')
+    const index = value.slice(separator + 2)
+    return separator > 0 && /^(0|[1-9]\d*)$/.test(index) && Number.isSafeInteger(Number(index))
+  }), transactionId: id,
   amountPaise: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
   description: z.string().min(1).max(200), categoryId: id, dateMillis: z.number().int(),
   tripId: id.nullable(), newTrip: tripDraftSchema.nullable(),
@@ -26,12 +30,12 @@ const rowSchema = z.object({
 })
 export type FrozenImportRow = z.infer<typeof rowSchema>
 export const chunkSchema = z.object({
-  version: z.literal(1), operationId: operationIdSchema, fingerprint: hash,
+  version: z.literal(2), operationId: operationIdSchema, fingerprint: hash,
   index: z.number().int().min(0).max(IMPORT_MAX_CHUNKS - 1), rows: z.array(rowSchema).min(1).max(IMPORT_CHUNK_ROWS),
 }).strict()
 export type ImportChunk = z.infer<typeof chunkSchema>
 export const headerSchema = z.object({
-  version: z.literal(1), ownerUid: z.string().min(1), operationId: operationIdSchema, fingerprint: hash,
+  version: z.union([z.literal(1), z.literal(2)]), ownerUid: z.string().min(1), operationId: operationIdSchema, fingerprint: hash,
   fileName: z.string().min(1).max(250), hashes: z.array(hash).min(1).max(IMPORT_MAX_CHUNKS),
   total: z.number().int().min(1).max(IMPORT_MAX_CHUNKS * IMPORT_CHUNK_ROWS),
   skipped: z.number().int().min(0).max(1000000), ready: z.boolean(),
@@ -53,6 +57,7 @@ export async function importRecordId(operationId: string, kind: 'row' | 'trip', 
 }
 export async function validatePlan(plan: ImportPlan, uid: string, fingerprint: string): Promise<ImportPlan> {
   const header = headerSchema.parse(plan.header)
+  if (header.version !== 2) throw new Error('Previous import requires reconciliation. No transactions have been changed.')
   if (header.ownerUid !== uid || header.fingerprint !== fingerprint || !(header.operationId === fingerprint || header.operationId.startsWith(fingerprint + '-'))) throw new Error('Import owner or source does not match.')
   if (plan.chunks.length !== header.hashes.length) throw new Error('Saved import plan is incomplete. No rows were changed.')
   const seen = new Set<string>()
@@ -69,7 +74,8 @@ export async function validatePlan(plan: ImportPlan, uid: string, fingerprint: s
         const draft = JSON.stringify(row.newTrip)
         if (trips.has(row.tripId) && trips.get(row.tripId) !== draft) throw new Error('Conflicting trip choices.')
         trips.set(row.tripId, draft)
-        if (row.newTrip && !/^import-v1-trip-[a-f0-9]{64}$/.test(row.tripId)) throw new Error('Invalid imported trip identity.')
+        const separator = row.sourceRowId.lastIndexOf('::')
+        if (row.newTrip && (separator < 1 || row.tripId !== await importRecordId(header.operationId, 'trip', row.sourceRowId.slice(0, separator)))) throw new Error('Invalid imported trip identity.')
       }
     }
     chunks.push(chunk)

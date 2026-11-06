@@ -422,10 +422,10 @@ export function ImportPage() {
       {step === 'resume' && (
         <div className="flex flex-col gap-3 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4">
           <h2 className="font-semibold text-[var(--text-primary)]">Previous imports of this source</h2>
-          <p className="text-sm text-[var(--text-muted)]">Resume uses the saved selections, corrected dates and trip choices. Completed rows will not be imported again.</p>
+          <p className="text-sm text-[var(--text-muted)]">Resume uses the saved selections, corrected dates and trip choices. Completed rows will not be imported again. Legacy imports require reconciliation; starting a new import is not a safe retry for them.</p>
           {savedOperations.map(op => (
-            <button key={op.operationId} onClick={() => handleResume(op.operationId)} className="rounded-xl border border-[var(--border)] p-3 text-left text-sm text-[var(--primary)]">
-              Resume / check results: {op.fileName} · {op.total} selected · {op.skipped} skipped · {op.ready ? 'Reviewed plan saved' : 'Preparation incomplete'} · {op.operationId.slice(-8)}
+            <button key={op.operationId} disabled={op.version === 1} onClick={() => handleResume(op.operationId)} className="rounded-xl border border-[var(--border)] p-3 text-left text-sm text-[var(--primary)]">
+              {op.version === 1 ? 'Reconciliation required (legacy import; execution blocked)' : 'Resume / check results'}: {op.fileName} · {op.total} selected · {op.skipped} skipped · {op.ready ? 'Reviewed plan saved' : 'Preparation incomplete'} · {op.operationId.slice(-8)}
             </button>
           ))}
           <button onClick={() => { setOperationId(newImportOperation(fingerprint, true)); pendingPlan.current = null; setHasFrozenPlan(false); setResult(null); setError(null); setStep('detect') }} className="rounded-xl border border-[var(--warning)] p-3 text-sm text-[var(--text-primary)]">

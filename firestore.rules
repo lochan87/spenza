@@ -62,7 +62,7 @@ service cloud.firestore {
       match /importOperations/{operationId} {
         function validHeader(d) {
           return d.keys().hasOnly(['version', 'ownerUid', 'operationId', 'fingerprint', 'fileName', 'hashes', 'total', 'skipped', 'ready'])
-            && d.version == 1 && d.ownerUid == uid && d.operationId == operationId
+            && d.version == 2 && d.ownerUid == uid && d.operationId == operationId
             && operationId.matches('^[a-f0-9]{64}(-[a-f0-9-]{36})?$')
             && d.fingerprint is string && d.fingerprint.matches('^[a-f0-9]{64}$')
             && operationId.matches('^' + d.fingerprint + '(-[a-f0-9-]{36})?$')
@@ -82,7 +82,7 @@ service cloud.firestore {
         match /chunks/{chunkId} {
           function header() { return get(/databases/$(database)/documents/users/$(uid)/importOperations/$(operationId)).data; }
           allow read: if isOwner(uid);
-          allow create: if isOwner(uid) && header().ready == false
+          allow create: if isOwner(uid) && header().version == 2 && header().ready == false
             && request.resource.data.keys().hasOnly(['index', 'hash', 'payload'])
             && request.resource.data.index is int && request.resource.data.index >= 0
             && request.resource.data.index < header().hashes.size()
@@ -92,24 +92,22 @@ service cloud.firestore {
             && request.resource.data.payload is string && request.resource.data.payload.size() <= 90000;
           allow update, delete: if false;
         }
+        // Legacy proof is untrusted; all completion proof is server-owned.
         match /receipts/{chunkId} {
-          function header() { return get(/databases/$(database)/documents/users/$(uid)/importOperations/$(operationId)).data; }
-          function chunk() { return get(/databases/$(database)/documents/users/$(uid)/importOperations/$(operationId)/chunks/$(chunkId)).data; }
           allow read: if isOwner(uid);
-          allow create: if isOwner(uid) && header().ready == true
-            && request.resource.data.keys().hasOnly(['hash', 'count', 'committedAt'])
-            && request.resource.data.hash == chunk().hash
-            && request.resource.data.count is int && request.resource.data.count > 0 && request.resource.data.count <= 20
-            && request.resource.data.committedAt == request.time;
-          allow update, delete: if false;
+          allow write: if false;
         }
         match /tripReceipts/{tripId} {
           allow read: if isOwner(uid);
-          allow create: if isOwner(uid)
-            && request.resource.data.keys().hasOnly(['tripId', 'operationId'])
-            && request.resource.data.tripId == tripId && request.resource.data.operationId == operationId
-            && tripId.matches('^import-v1-trip-[a-f0-9]{64}$');
-          allow update, delete: if false;
+          allow write: if false;
+        }
+        match /trustedV2Receipts/{chunkId} {
+          allow read: if isOwner(uid);
+          allow write: if false;
+        }
+        match /trustedV2Trips/{tripId} {
+          allow read: if isOwner(uid);
+          allow write: if false;
         }
       }
 

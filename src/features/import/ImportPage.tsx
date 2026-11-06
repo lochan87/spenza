@@ -8,15 +8,16 @@ import {
 } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
 import { getCategories } from '@/services/transactions'
-import { getTrips, addTrip } from '@/services/trips'
+import { getTrips } from '@/services/trips'
 import {
-  parseWorkbook, parseSheet, detectDuplicates, batchImportTransactions,
+  parseWorkbook, parseSheet, detectDuplicates,
   getDateIssue, todayISO, isValidISODate, inferTripNameFromSheet, inferTripDateRange,
   resolveTripRowDates,
   type DetectedSheet, type SheetParseResult, type ParsedRow,
   type DuplicateCandidate, type SheetKind, type ImportProgress,
 } from '@/services/importExcel'
-import { TRIP_ACCENT_COLOR } from '@/utils/tripBuckets'
+import { sha256, newImportOperation, importRecordId, type ImportHeader, type ImportPlan, type ImportTripDraft } from '@/utils/importPlan'
+import { findImportOperations, buildImportPlan, saveImportPlan, executeImport, ImportExecutionError, type ImportResult } from '@/services/importOperations'
 import { formatINR } from '@/utils/format'
 import { DatePicker } from '@/components/ui/DatePicker'
 import { ThemedSelect } from '@/components/ui/ThemedSelect'
@@ -24,7 +25,7 @@ import type { Category, Trip } from '@/types'
 
 // ─── Step enum ────────────────────────────────────────────────────────────────
 
-type Step = 'upload' | 'detect' | 'preview' | 'categories' | 'duplicates' | 'confirm' | 'importing' | 'done'
+type Step = 'resume' | 'upload' | 'detect' | 'preview' | 'categories' | 'duplicates' | 'confirm' | 'importing' | 'done'
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
@@ -50,7 +51,13 @@ export function ImportPage() {
   const [duplicates, setDuplicates] = useState<DuplicateCandidate[]>([])
   const [dupResolutions, setDupResolutions] = useState<Record<number, 'monthly' | 'trip'>>({})
   const [progress, setProgress] = useState<ImportProgress | null>(null)
-  const [result, setResult] = useState<{ imported: number; skipped: number; tripsCreated: number } | null>(null)
+  const [result, setResult] = useState<ImportResult | null>(null)
+  const [fingerprint, setFingerprint] = useState('')
+  const [operationId, setOperationId] = useState('')
+  const [savedOperations, setSavedOperations] = useState<ImportHeader[]>([])
+  const inFlight = useRef(false)
+  const pendingPlan = useRef<ImportPlan | null>(null)
+  const [hasFrozenPlan, setHasFrozenPlan] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [expandedSheet, setExpandedSheet] = useState<string | null>(null)
   const [parsing, setParsing] = useState(false)
@@ -134,6 +141,8 @@ export function ImportPage() {
   // ── Step 1: File upload ──────────────────────────────────────────────────────
 
   const handleFile = useCallback(async (file: File) => {
+    if (inFlight.current) return
+    inFlight.current = true
     setError(null)
     setFileName(file.name)
     try {
@@ -141,7 +150,15 @@ export function ImportPage() {
       const { sheets, workbook } = parseWorkbook(buffer, file.name)
       setWorkbook(workbook)
       setDetectedSheets(sheets)
-      setStep('detect')
+      const source = await sha256(buffer)
+      if (!user) throw new Error('Sign in before importing.')
+      const previous = await findImportOperations(user.uid, source)
+      setFingerprint(source)
+      setOperationId(newImportOperation(source))
+      setSavedOperations(previous)
+      pendingPlan.current = null
+      setHasFrozenPlan(false)
+      setStep(previous.length ? 'resume' : 'detect')
 
       // Pre-load categories and trips
       if (user) {
@@ -150,8 +167,11 @@ export function ImportPage() {
         setExistingTrips(trips.filter(t => !t.isArchived))
       }
     } catch (err) {
-      setError('Failed to parse file. Make sure it is a valid .xlsx or .csv file.')
+      setStep('upload')
+      setError('Could not open the file or check previous imports. Check your connection and access. Importing requires the updated import rules; no unsafe fallback will run.')
       console.error('[Spenza Import]', err)
+    } finally {
+      inFlight.current = false
     }
   }, [user])
 
@@ -231,16 +251,23 @@ export function ImportPage() {
   // ── Step 6: Run import ───────────────────────────────────────────────────────
 
   const handleImport = async () => {
-    if (!user) return
+    if (!user || inFlight.current) return
     // Safety net: never write rows with an unresolved date problem
     if (unresolvedRows.length > 0) {
       setError(`${unresolvedRows.length} row${unresolvedRows.length === 1 ? '' : 's'} still need date correction.`)
       setStep('preview')
       return
     }
+    inFlight.current = true
     setStep('importing')
     setError(null)
     try {
+      if (pendingPlan.current) {
+        await saveImportPlan(user.uid, pendingPlan.current)
+        setResult(await executeImport(user.uid, operationId, fingerprint, setProgress))
+        setStep('done')
+        return
+      }
       const catNameToId = new Map(categories.map(c => [c.name, c.id]))
       const otherCat = categories.find(c => c.name === 'Other')?.id ?? categories[0]?.id ?? ''
 
@@ -248,7 +275,7 @@ export function ImportPage() {
       const allRows: ParsedRow[] = []
 
       const resolvedTripIds: Record<string, string | null> = { ...tripIdMap }
-      let tripsCreated = 0
+      const newTrips: Record<string, ImportTripDraft> = {}
 
       for (const result of parseResults) {
         if (excludedTripSheets.has(result.sheet.name)) continue
@@ -278,21 +305,13 @@ export function ImportPage() {
             const meta = getResolvedTripMeta(result)
             tripStartISO = meta.startDate
             tripEndISO = meta.endDate
-            // If this is a trip sheet and the user kept "Create a new trip for this sheet",
-            // create the parent users/{uid}/trips/{tripId} document FIRST so every row in this
-            // sheet references a real Trip document with valid startDate/endDate Timestamps.
-            tripId = await addTrip(user.uid, {
+            tripId = await importRecordId(operationId, 'trip', result.sheet.name)
+            newTrips[tripId] = {
               name: meta.name,
-              startDate: Timestamp.fromDate(new Date(meta.startDate + 'T12:00:00')),
-              endDate: Timestamp.fromDate(new Date(meta.endDate + 'T12:00:00')),
-              coverEmoji: '✈️',
-              coverColor: TRIP_ACCENT_COLOR,
-              budgetPaise: null,
-              isArchived: false,
-              notes: `Imported from Excel sheet "${result.sheet.name}"`,
-            })
+              startMillis: new Date(meta.startDate + 'T12:00:00').getTime(),
+              endMillis: new Date(meta.endDate + 'T12:00:00').getTime(),
+            }
             resolvedTripIds[result.sheet.name] = tripId
-            tripsCreated++
           }
         }
 
@@ -315,23 +334,36 @@ export function ImportPage() {
         }
       }
 
-      setTripIdMap(resolvedTripIds)
-
-      const res = await batchImportTransactions(
-        user.uid, allRows, catNameToId, otherCat,
-        (p) => setProgress(p)
-      )
-      // Duplicate choices apply only to incoming rows, never to persisted history.
-      if (!res.cacheInvalidated) {
-        setError('Transactions imported, but failed to refresh the Insights cache automatically.')
-      }
-      setResult({ ...res, tripsCreated })
+      const plan = await buildImportPlan(user.uid, operationId, fingerprint, fileName,
+        allRows, catNameToId, otherCat, newTrips, allParsedRows.length - allRows.length)
+      pendingPlan.current = plan
+      setHasFrozenPlan(true)
+      await saveImportPlan(user.uid, plan)
+      setResult(await executeImport(user.uid, operationId, fingerprint, setProgress))
       setStep('done')
     } catch (err) {
-      console.error('[Spenza Import]', err)
-      setError('Import failed — please try again.')
+      setResult(err instanceof ImportExecutionError ? err.result : null)
+      setError(err instanceof Error ? err.message : 'Could not verify import. Resume the same operation after reconnecting.')
       setStep('confirm')
+    } finally {
+      inFlight.current = false
     }
+  }
+
+  const handleResume = async (id: string) => {
+    if (!user || inFlight.current) return
+    inFlight.current = true
+    setOperationId(id)
+    setError(null)
+    setStep('importing')
+    try {
+      setResult(await executeImport(user.uid, id, fingerprint, setProgress))
+      setStep('done')
+    } catch (err) {
+      setResult(err instanceof ImportExecutionError ? err.result : null)
+      setError(err instanceof Error ? err.message : 'Unable to verify this import. Reconnect and resume the same operation.')
+      setStep('resume')
+    } finally { inFlight.current = false }
   }
 
   // ─── Render ────────────────────────────────────────────────────────────────
@@ -378,6 +410,29 @@ export function ImportPage() {
           </div>
         ))}
       </div>
+
+      {error && step !== 'upload' && (
+        <div role="alert" className="rounded-xl bg-[var(--danger-muted)] px-4 py-3 text-sm text-[var(--danger)]">{error}</div>
+      )}
+      {result && !result.complete && (
+        <p className="text-sm text-[var(--text-muted)]">
+          Import incomplete: {result.imported} imported · {result.alreadyCommitted} already committed · {result.skipped} skipped · {result.unresolved} unresolved. Resume the same operation safely.
+        </p>
+      )}
+      {step === 'resume' && (
+        <div className="flex flex-col gap-3 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4">
+          <h2 className="font-semibold text-[var(--text-primary)]">Previous imports of this source</h2>
+          <p className="text-sm text-[var(--text-muted)]">Resume uses the saved selections, corrected dates and trip choices. Completed rows will not be imported again.</p>
+          {savedOperations.map(op => (
+            <button key={op.operationId} onClick={() => handleResume(op.operationId)} className="rounded-xl border border-[var(--border)] p-3 text-left text-sm text-[var(--primary)]">
+              Resume / check results: {op.fileName} · {op.total} selected · {op.skipped} skipped · {op.ready ? 'Reviewed plan saved' : 'Preparation incomplete'} · {op.operationId.slice(-8)}
+            </button>
+          ))}
+          <button onClick={() => { setOperationId(newImportOperation(fingerprint, true)); pendingPlan.current = null; setHasFrozenPlan(false); setResult(null); setError(null); setStep('detect') }} className="rounded-xl border border-[var(--warning)] p-3 text-sm text-[var(--text-primary)]">
+            Start a new import — intentionally add these records again
+          </button>
+        </div>
+      )}
 
       {/* ── STEP: UPLOAD ── */}
       {step === 'upload' && (
@@ -828,14 +883,10 @@ export function ImportPage() {
             )}
           </div>
 
-          {error && (
-            <div className="rounded-xl bg-[var(--danger-muted)] px-4 py-3 text-sm text-[var(--danger)]">{error}</div>
-          )}
-
           <button onClick={handleImport}
             className="flex items-center justify-center gap-2 rounded-xl bg-[var(--success)] py-3.5 text-sm font-semibold text-white">
             <CheckCircle2 className="h-4 w-4" />
-            Import {totalRows} Transactions
+            {hasFrozenPlan ? 'Resume saved import safely' : `Import ${totalRows} Transactions`}
           </button>
         </div>
       )}
@@ -872,7 +923,7 @@ export function ImportPage() {
           <div className="text-center">
             <h2 className="text-xl font-bold text-[var(--text-primary)]">Import Complete!</h2>
             <p className="mt-1 text-sm text-[var(--text-muted)]">
-              {result.imported.toLocaleString()} transactions imported
+              {result.imported.toLocaleString()} transactions imported · {result.alreadyCommitted.toLocaleString()} already committed
               {result.tripsCreated > 0 ? ` · ${result.tripsCreated} trip${result.tripsCreated === 1 ? '' : 's'} created` : ''}
               {result.skipped > 0 ? ` · ${result.skipped} skipped` : ''}
             </p>

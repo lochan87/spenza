@@ -79,6 +79,9 @@ export interface Transaction {
   isImported?: boolean
   /** 'excel' for SheetJS-imported rows. Undefined for manually entered transactions. */
   importSource?: 'excel' | null
+  /** Durable manifest provenance; absent on legacy imports. */
+  importOperationId?: string
+  importSourceRowId?: string
 
   /** Optional identity for atomically confirmed recurring occurrences; absent on legacy expenses. */
   recurringItemId?: string
@@ -139,6 +142,8 @@ export interface Budget {
 /** Stored in users/{uid}/trips/{id} */
 export interface Trip {
   id: string
+  /** Set only for a trip created atomically by a durable import. */
+  importOperationId?: string
   name: string
   startDate: Timestamp
   endDate: Timestamp | null

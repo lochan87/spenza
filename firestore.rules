@@ -58,6 +58,61 @@ service cloud.firestore {
         allow read, write: if isOwner(uid);
       }
 
+      // Import plans are immutable after preparation. All paths remain owner-only.
+      match /importOperations/{operationId} {
+        function validHeader(d) {
+          return d.keys().hasOnly(['version', 'ownerUid', 'operationId', 'fingerprint', 'fileName', 'hashes', 'total', 'skipped', 'ready'])
+            && d.version == 1 && d.ownerUid == uid && d.operationId == operationId
+            && operationId.matches('^[a-f0-9]{64}(-[a-f0-9-]{36})?$')
+            && d.fingerprint is string && d.fingerprint.matches('^[a-f0-9]{64}$')
+            && operationId.matches('^' + d.fingerprint + '(-[a-f0-9-]{36})?$')
+            && d.fileName is string && d.fileName.size() > 0 && d.fileName.size() <= 250
+            && d.hashes is list && d.hashes.size() > 0 && d.hashes.size() <= 500
+            && d.total is int && d.total > 0 && d.total <= 10000
+            && d.skipped is int && d.skipped >= 0 && d.skipped <= 1000000
+            && d.ready is bool;
+        }
+        allow read: if isOwner(uid);
+        allow create: if isOwner(uid) && validHeader(request.resource.data) && request.resource.data.ready == false;
+        allow update: if isOwner(uid) && validHeader(request.resource.data)
+          && resource.data.ready == false && request.resource.data.ready == true
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['ready']);
+        allow delete: if false;
+
+        match /chunks/{chunkId} {
+          function header() { return get(/databases/$(database)/documents/users/$(uid)/importOperations/$(operationId)).data; }
+          allow read: if isOwner(uid);
+          allow create: if isOwner(uid) && header().ready == false
+            && request.resource.data.keys().hasOnly(['index', 'hash', 'payload'])
+            && request.resource.data.index is int && request.resource.data.index >= 0
+            && request.resource.data.index < header().hashes.size()
+            && chunkId == string(request.resource.data.index)
+            && request.resource.data.hash == header().hashes[request.resource.data.index]
+            && request.resource.data.hash is string && request.resource.data.hash.matches('^[a-f0-9]{64}$')
+            && request.resource.data.payload is string && request.resource.data.payload.size() <= 90000;
+          allow update, delete: if false;
+        }
+        match /receipts/{chunkId} {
+          function header() { return get(/databases/$(database)/documents/users/$(uid)/importOperations/$(operationId)).data; }
+          function chunk() { return get(/databases/$(database)/documents/users/$(uid)/importOperations/$(operationId)/chunks/$(chunkId)).data; }
+          allow read: if isOwner(uid);
+          allow create: if isOwner(uid) && header().ready == true
+            && request.resource.data.keys().hasOnly(['hash', 'count', 'committedAt'])
+            && request.resource.data.hash == chunk().hash
+            && request.resource.data.count is int && request.resource.data.count > 0 && request.resource.data.count <= 20
+            && request.resource.data.committedAt == request.time;
+          allow update, delete: if false;
+        }
+        match /tripReceipts/{tripId} {
+          allow read: if isOwner(uid);
+          allow create: if isOwner(uid)
+            && request.resource.data.keys().hasOnly(['tripId', 'operationId'])
+            && request.resource.data.tripId == tripId && request.resource.data.operationId == operationId
+            && tripId.matches('^import-v1-trip-[a-f0-9]{64}$');
+          allow update, delete: if false;
+        }
+      }
+
       // ── insights subcollection ────────────────────────────────────────────
       // Stores the cached insights summary document at insights/summary.
       // Added Phase 4 — was missing from initial rules, causing permission errors.

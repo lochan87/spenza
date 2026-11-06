@@ -127,21 +127,25 @@ describe('Transactions and import — non-destructive loading', () => {
       { rowId: 'skip-date', description: 'Unknown date', amountPaise: 5000 },
     ]
     const runImport = readCallback(importPage, 'handleImport', {
+      inFlight: { current: false }, pendingPlan: { current: null }, operationId: 'op', fingerprint: 'source', fileName: 'test.csv',
+      setHasFrozenPlan: () => {}, allParsedRows: incomingRows, ImportExecutionError: class extends Error {},
       user: { uid: 'test-user' }, unresolvedRows: [], categories: [{ id: 'other', name: 'Other' }],
       tripIdMap: {}, catOverrides: {}, dateDecisions: { 'skip-date': 'skip' },
       excludedTripSheets: new Set(), excludedMonthlyRowIds: new Set(['summary']),
       parseResults: [{ sheet: { name: 'November 2026', kind: 'monthly' }, rows: incomingRows }],
       setStep: (step: string) => steps.push(step), setError: (error: unknown) => errors.push(error),
       setTripIdMap: () => {}, setProgress: () => {}, setResult: () => {},
-      batchImportTransactions: async (uid: string, rows: Array<{ rowId: string }>) => {
+      buildImportPlan: async (uid: string, _id: string, _fingerprint: string, _name: string, rows: Array<{ rowId: string }>) => {
         assert.equal(uid, 'test-user')
         imported.push(...rows.map(row => row.rowId))
         return { imported: rows.length, skipped: 0, cacheInvalidated: true }
       },
+      saveImportPlan: async () => {},
+      executeImport: async () => ({ imported: 1, alreadyCommitted: 0, skipped: 2, unresolved: 0, complete: true }),
       deduplicateTripSummaryTransactions: async () => { cleanupCalls++; return 0 },
       console: { error: (...args: unknown[]) => errors.push(args) },
     })
-    await runImport()
+    await Promise.all([runImport(), runImport()]) // synchronous guard blocks a duplicate click
     assert.deepEqual(steps, ['importing', 'done'])
     assert.deepEqual(errors, [null])
     assert.deepEqual(imported, ['keep'])

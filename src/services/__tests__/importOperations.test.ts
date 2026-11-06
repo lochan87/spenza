@@ -1,0 +1,371 @@
+import { describe, it } from 'node:test'
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { runInNewContext } from 'node:vm'
+import ts from 'typescript'
+import XLSX from 'xlsx'
+import { Timestamp } from 'firebase/firestore'
+import * as importPlan from '../../utils/importPlan.ts'
+import type { ParsedRow } from '../importExcel.ts'
+const basePath = 'users/test-user'
+type StoredDoc = Record<string, any>
+interface Write { type: 'set' | 'update' | 'delete'; ref: string; data?: StoredDoc }
+// Actual service functions; an optimistic, staged transaction double. No Firebase
+// configuration is loaded, and no network or production writes are possible.
+function createHarness(options: { failOnPath?: string; loseResponseOn?: string; failRead?: boolean } = {}) {
+  const docs = new Map<string, StoredDoc>()
+  const versions = new Map<string, number>()
+  const nav = { onLine: true }
+  let attempts = 0
+  let appliedWrites = 0
+  let commitQueue: Promise<void> = Promise.resolve()
+
+  const bump = (path: string) => versions.set(path, (versions.get(path) ?? 0) + 1)
+
+  const sdk = {
+    Timestamp,
+    doc: (_db: unknown, ...segments: string[]) => segments.join('/'),
+    collection: (_db: unknown, ...segments: string[]) => ({ path: segments.join('/') }),
+    query: (target: unknown) => target,
+    orderBy: () => undefined,
+    where: () => undefined,
+    getDocsFromServer: async (target: { path: string }) => ({ docs: [...docs].filter(([path]) => path.startsWith(target.path + '/') && path.slice(target.path.length + 1).indexOf('/') < 0).map(([path, data]) => ({ id: path.split('/').pop(), data: () => data })) }),
+    getDocFromServer: async (ref: string) => { if (options.failRead) throw new Error('Network unavailable'); return { exists: () => docs.has(ref), data: () => docs.get(ref) } },
+    serverTimestamp: () => Timestamp.now(),
+    runTransaction: async (_db: unknown, callback: (txn: any) => Promise<unknown>) => {
+      for (let attempt = 1; attempt <= 5; attempt++) {
+        attempts++
+        const readVersions = new Map<string, number>()
+        const writes: Write[] = []
+        let wrote = false
+        const txn = {
+          get: async (ref: string) => {
+            if (wrote) throw new Error('Firestore transactions must complete all reads before writing')
+            readVersions.set(ref, versions.get(ref) ?? 0)
+            const data = docs.get(ref)
+            return {
+              exists: () => data !== undefined,
+              id: ref.split('/').pop(),
+              data: () => (data === undefined ? undefined : { ...data }),
+            }
+          },
+          set: (ref: string, data: StoredDoc) => {
+            wrote = true
+            writes.push({ type: 'set', ref, data })
+          },
+          update: (ref: string, data: StoredDoc) => {
+            wrote = true
+            writes.push({ type: 'update', ref, data })
+          },
+          delete: (ref: string) => {
+            wrote = true
+            writes.push({ type: 'delete', ref })
+          },
+        }
+        const result = await callback(txn)
+
+        // Serialize commits like the Firestore backend and reject the commit if
+        // any document read by this attempt changed in the meantime.
+        const previous = commitQueue
+        let release!: () => void
+        commitQueue = new Promise<void>(resolve => { release = resolve })
+        await previous
+        let conflict = false
+        try {
+          for (const [path, version] of readVersions) {
+            if ((versions.get(path) ?? 0) !== version) {
+              conflict = true
+              break
+            }
+          }
+          if (!conflict) {
+
+            // Stage every mutation, including bookkeeping. Failed attempts publish nothing.
+            const stagedDocs = new Map(docs)
+            const stagedVersions = new Map(versions)
+            for (const write of writes) {
+              if (options.failOnPath === write.ref) throw new Error(`Simulated ${write.type} failure`)
+              if (write.type === 'delete') stagedDocs.delete(write.ref)
+              else {
+                const existing = stagedDocs.get(write.ref)
+                if (write.type === 'update' && !existing) throw new Error('Simulated document not found')
+                stagedDocs.set(write.ref, write.type === 'update' ? { ...existing, ...write.data } : { ...write.data })
+              }
+              stagedVersions.set(write.ref, (stagedVersions.get(write.ref) ?? 0) + 1)
+            }
+            docs.clear()
+            for (const [path, data] of stagedDocs) docs.set(path, data)
+            versions.clear()
+            for (const [path, version] of stagedVersions) versions.set(path, version)
+            appliedWrites += writes.length
+          }
+        } finally {
+          release()
+        }
+        if (conflict) continue
+        if (writes.some(w => w.ref === options.loseResponseOn)) {
+          options.loseResponseOn = undefined
+          throw new Error('Simulated lost response after commit')
+        }
+        return result
+      }
+      throw new Error('Simulated transaction retry limit')
+    },
+  }
+
+  const source = readFileSync(new URL('../importOperations.ts', import.meta.url), 'utf8')
+  const compiled = ts.transpileModule(source, {
+    compilerOptions: { target: ts.ScriptTarget.ES2023, module: ts.ModuleKind.CommonJS },
+  }).outputText
+  const serviceExports: Record<string, unknown> = {}
+  runInNewContext(compiled, {
+    exports: serviceExports,
+    navigator: nav,
+    console, TextEncoder, Date,
+    require: (name: string) => {
+      if (name === 'firebase/firestore') return sdk
+      if (name === '@/firebase/config') return { db: {} }
+      if (name === '@/utils/importPlan') return importPlan
+      if (name === '@/utils/tripBuckets') return { TRIP_ACCENT_COLOR: '#123456' }
+      throw new Error(`Unexpected import: ${name}`)
+    },
+  })
+
+  return {
+    service: serviceExports as typeof import('../importOperations.ts'),
+    options, nav,
+    docs,
+    setOnline: (value: boolean) => { nav.onLine = value },
+    attempts: () => attempts,
+    appliedWrites: () => appliedWrites,
+    versions: () => new Map(versions),
+    read: (path: string) => docs.get(path),
+    directWrite: (path: string, data: StoredDoc) => {
+      docs.set(path, { ...data })
+      bump(path)
+    },
+    transactionPath: (id: string) => `${basePath}/transactions/${id}`,
+    recurringPath: (id: string) => `${basePath}/recurring/${id}`,
+    insightsPath: `${basePath}/insights/summary`,
+  }
+}
+
+const fingerprint = 'a'.repeat(64)
+const receiptPath = (index: number) => `${basePath}/importOperations/${fingerprint}/receipts/${index}`
+function rows(count: number): ParsedRow[] {
+  return Array.from({ length: count }, (_, i) => ({ rowId: `January::${i}`, description: 'Identical lunch', amountPaise: 12345,
+    dateStr: '2026-01-01', rawDate: '01/01/2026', rawAmount: '123.45', dateIssue: null, suggestedCategoryName: null,
+    resolvedCategoryId: null, sheetName: 'January', isTripRow: false, tripId: null }))
+}
+async function prepare(h: ReturnType<typeof createHarness>, count = 2, id = fingerprint, input = rows(count), trips = {}) {
+  const plan = await h.service.buildImportPlan('test-user', id, fingerprint, 'January.csv', input, new Map(), 'other', trips, 3)
+  await h.service.saveImportPlan('test-user', plan)
+  return plan
+}
+const expenses = (h: ReturnType<typeof createHarness>) => [...h.docs].filter(([p]) => p.includes('/transactions/'))
+
+describe('Durable imports: actual service against optimistic persistence double', () => {
+  for (const count of [2, 43]) it(`imports ${count} rows with bounded atomic chunks and accurate counts`, async () => {
+    const h = createHarness()
+    await prepare(h, count)
+    h.directWrite(`${basePath}/insights/summary`, { cached: true })
+    const result = await h.service.executeImport('test-user', fingerprint, fingerprint)
+    assert.equal(result.imported, count)
+    assert.equal(result.skipped, 3)
+    assert.equal(result.complete, true)
+    assert.equal(expenses(h).length, count)
+    assert.equal(h.read(`${basePath}/insights/summary`), undefined)
+    assert.equal(expenses(h)[0][1].paymentAccountId, null)
+    assert.equal(expenses(h)[0][1].amountPaise, 12345)
+  })
+  it('keeps earlier chunks after failure and resumes without repeating them', async () => {
+    const h = createHarness()
+    await prepare(h, 43)
+    h.options.failOnPath = receiptPath(1)
+    await assert.rejects(h.service.executeImport('test-user', fingerprint, fingerprint), (e: any) => e.result.imported === 20 && e.result.unresolved === 23)
+    assert.equal(expenses(h).length, 20)
+    h.options.failOnPath = undefined
+    const result = await h.service.executeImport('test-user', fingerprint, fingerprint)
+    assert.equal(result.imported, 23)
+    assert.equal(result.alreadyCommitted, 20)
+    assert.equal(expenses(h).length, 43)
+  })
+  it('reconciles a lost commit acknowledgment using the server receipt', async () => {
+    const h = createHarness()
+    await prepare(h)
+    h.options.loseResponseOn = receiptPath(0)
+    const result = await h.service.executeImport('test-user', fingerprint, fingerprint)
+    assert.equal(result.complete, true)
+    assert.equal(result.alreadyCommitted, 2)
+    assert.equal(expenses(h).length, 2)
+  })
+  it('serializes two concurrent retries to one set of transactions', async () => {
+    const h = createHarness()
+    await prepare(h, 23)
+    const results = await Promise.all([h.service.executeImport('test-user', fingerprint, fingerprint), h.service.executeImport('test-user', fingerprint, fingerprint)])
+    assert.equal(results.reduce((s, r) => s + r.imported, 0), 23)
+    assert.equal(expenses(h).length, 23)
+  })
+  it('reopens the frozen plan and preserves corrections, categories and selection', async () => {
+    const h = createHarness()
+    const input = rows(3).slice(1)
+    input[0].resolvedCategoryId = 'reviewed-category'
+    input[0].dateStr = '2026-02-02'
+    await prepare(h, 2, fingerprint, input)
+    const loaded = await h.service.loadImportPlan('test-user', fingerprint, fingerprint)
+    assert.equal(loaded.chunks[0].rows[0].sourceRowId, 'January::1')
+    assert.equal(loaded.chunks[0].rows[0].categoryId, 'reviewed-category')
+    assert.equal(loaded.chunks[0].rows[0].dateMillis, new Date('2026-02-02T12:00:00').getTime())
+    await h.service.executeImport('test-user', loaded.header.operationId, loaded.header.fingerprint)
+    assert.equal(expenses(h).length, 2)
+  })
+  it('preserves identical source rows and unrelated manual transactions', async () => {
+    const h = createHarness()
+    h.directWrite(`${basePath}/transactions/manual`, { amountPaise: 12345, description: 'Identical lunch', splits: [{ repaidPaise: 100 }] })
+    await prepare(h)
+    await h.service.executeImport('test-user', fingerprint, fingerprint)
+    assert.equal(expenses(h).length, 3)
+    assert.equal(h.read(`${basePath}/transactions/manual`)!.splits[0].repaidPaise, 100)
+  })
+  it('never recreates a deleted transaction from a completed operation', async () => {
+    const h = createHarness()
+    await prepare(h)
+    await h.service.executeImport('test-user', fingerprint, fingerprint)
+    h.docs.delete(expenses(h)[0][0])
+    const result = await h.service.executeImport('test-user', fingerprint, fingerprint)
+    assert.equal(result.alreadyCommitted, 2)
+    assert.equal(expenses(h).length, 1)
+  })
+  it('allows an explicitly new operation for the same source', async () => {
+    const h = createHarness()
+    await prepare(h)
+    await h.service.executeImport('test-user', fingerprint, fingerprint)
+    const id = importPlan.newImportOperation(fingerprint, true)
+    await prepare(h, 2, id)
+    await h.service.executeImport('test-user', id, fingerprint)
+    assert.equal(expenses(h).length, 4)
+  })
+  it('creates trips with their first chunk, preserves metadata and reuses after partial failure', async () => {
+    const h = createHarness()
+    const tripId = await importPlan.importRecordId(fingerprint, 'trip', 'Goa')
+    const input = rows(23).map(r => ({ ...r, isTripRow: true, tripId }))
+    const draft = { name: 'Goa', startMillis: 1700000000000, endMillis: 1700000000000 }
+    await prepare(h, 23, fingerprint, input, { [tripId]: draft })
+    h.options.failOnPath = receiptPath(1)
+    await assert.rejects(h.service.executeImport('test-user', fingerprint, fingerprint))
+    const tripPath = `${basePath}/trips/${tripId}`
+    h.directWrite(tripPath, { ...h.read(tripPath), name: 'Edited after first chunk' })
+    h.options.failOnPath = undefined
+    await h.service.executeImport('test-user', fingerprint, fingerprint)
+    assert.equal(h.read(tripPath)!.name, 'Edited after first chunk')
+    assert.equal([...h.docs.keys()].filter(p => p.startsWith(`${basePath}/trips/`)).length, 1)
+    assert.ok(expenses(h).every(([, d]) => d.tripId === tripId))
+  })
+  it('does not recreate a deleted imported trip for remaining chunks', async () => {
+    const h = createHarness()
+    const tripId = await importPlan.importRecordId(fingerprint, 'trip', 'Goa')
+    await prepare(h, 23, fingerprint, rows(23).map(r => ({ ...r, isTripRow: true, tripId })), { [tripId]: { name: 'Goa', startMillis: 1, endMillis: 2 } })
+    h.options.failOnPath = receiptPath(1)
+    await assert.rejects(h.service.executeImport('test-user', fingerprint, fingerprint))
+    h.docs.delete(`${basePath}/trips/${tripId}`)
+    h.options.failOnPath = undefined
+    await assert.rejects(h.service.executeImport('test-user', fingerprint, fingerprint), /trip was deleted/)
+    assert.equal(expenses(h).length, 20)
+  })
+  it('rolls back documents, versions and counts if cache invalidation fails', async () => {
+    const h = createHarness()
+    await prepare(h)
+    const docs = new Map(h.docs), versions = h.versions(), writes = h.appliedWrites()
+    h.options.failOnPath = `${basePath}/insights/summary`
+    await assert.rejects(h.service.executeImport('test-user', fingerprint, fingerprint))
+    assert.deepEqual(h.docs, docs)
+    assert.deepEqual(h.versions(), versions)
+    assert.equal(h.appliedWrites(), writes)
+  })
+  it('rejects collisions without overwriting existing transactions', async () => {
+    const h = createHarness()
+    const plan = await prepare(h)
+    const path = `${basePath}/transactions/${plan.chunks[0].rows[0].transactionId}`
+    h.directWrite(path, { manual: true })
+    await assert.rejects(h.service.executeImport('test-user', fingerprint, fingerprint), /conflicts/)
+    assert.deepEqual(h.read(path), { manual: true })
+  })
+  it('rejects missing trip references atomically', async () => {
+    const h = createHarness()
+    await prepare(h, 2, fingerprint, rows(2).map(r => ({ ...r, tripId: 'missing', isTripRow: true })))
+    await assert.rejects(h.service.executeImport('test-user', fingerprint, fingerprint), /trip no longer exists/)
+    assert.equal(expenses(h).length, 0)
+  })
+  it('rejects invalid rows, source binding, duplicate row identities and payment modes', async () => {
+    const h = createHarness()
+    for (const patch of [{ amountPaise: 1.5 }, { amountPaise: -100 }, { dateStr: '2026-02-31' }, { description: '' }]) {
+      await assert.rejects(prepare(h, 1, fingerprint, [{ ...rows(1)[0], ...patch }]))
+    }
+    await assert.rejects(prepare(h, 2, fingerprint, [rows(1)[0], rows(1)[0]]), /source-row/)
+    const plan = await prepare(h)
+    await assert.rejects(importPlan.validatePlan(plan, 'another-user', fingerprint), /owner/)
+    await assert.rejects(h.service.loadImportPlan('test-user', fingerprint, 'b'.repeat(64)), /source/)
+    assert.throws(() => importPlan.chunkSchema.parse({ ...plan.chunks[0], rows: [{ ...plan.chunks[0].rows[0], paymentMode: 'Card', paymentAccountId: null }] }))
+  })
+  it('stops on incomplete, modified or incompatible manifests', async () => {
+    const h = createHarness()
+    await prepare(h)
+    const path = `${basePath}/importOperations/${fingerprint}/chunks/0`
+    const chunk = h.read(path)!
+    h.docs.delete(path)
+    await assert.rejects(h.service.loadImportPlan('test-user', fingerprint, fingerprint), /incomplete/)
+    h.directWrite(path, { ...chunk, payload: chunk.payload.replace('Identical lunch', 'Changed lunch') })
+    await assert.rejects(h.service.executeImport('test-user', fingerprint, fingerprint), /damaged/)
+    assert.equal(expenses(h).length, 0)
+  })
+  it('rejects re-reviewing an existing operation with different choices', async () => {
+    const h = createHarness()
+    await prepare(h)
+    await assert.rejects(prepare(h, 1), /different reviewed plan/)
+  })
+})
+
+
+describe('Spreadsheet import parsing and normalization', () => {
+  const service: Record<string, any> = {}
+  const source = readFileSync(new URL('../importExcel.ts', import.meta.url), 'utf8')
+  runInNewContext(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText, {
+    exports: service, Date, console: { debug: () => {} },
+    require: (name: string) => {
+      if (name === 'xlsx') return XLSX
+      if (name === 'firebase/firestore') return {}
+      if (name === '@/firebase/config') return { db: {} }
+      if (name === '@/utils/categoryKeywords') return { suggestCategory: () => null }
+      if (name === '@/services/insights') return { invalidateInsightsCache: () => { throw new Error('Parsing cannot write') } }
+      throw new Error(name)
+    },
+  })
+  it('normalizes amounts to integer paise and rejects invalid amounts/dates', () => {
+    assert.equal(service.parseAmount('₹1,234.56'), 123456)
+    assert.equal(service.parseAmount(1.005), Math.round(1.005 * 100))
+    for (const invalid of ['12garbage', '', '-3', Infinity, Number.MAX_SAFE_INTEGER]) assert.equal(service.parseAmount(invalid), null)
+    assert.equal(service.parseExcelDate('29/02/2024'), '2024-02-29')
+    assert.equal(service.parseExcelDate('31/02/2026'), null)
+    assert.equal(service.parseExcelDate(46023), '2026-01-01')
+  })
+  it('keeps identical rows separate across a multi-sheet workbook', () => {
+    const workbook = XLSX.utils.book_new()
+    for (const name of ['January', 'February']) XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([
+      ['Description', 'Amount', 'Date'], ['Lunch', 100, '01/01/2026'], ['Lunch', 100, '01/01/2026'],
+    ]), name)
+    const bytes = XLSX.write(workbook, { type: 'array', bookType: 'xlsx' })
+    const parsed = service.parseWorkbook(bytes, 'history.xlsx')
+    const all = parsed.sheets.flatMap((sheet: { name: string }) => service.parseSheet(parsed.workbook, sheet.name, 'monthly').rows)
+    assert.equal(all.length, 4)
+    assert.equal(new Set(all.map((r: ParsedRow) => r.rowId)).size, 4)
+    assert.ok(all.every((r: ParsedRow) => r.amountPaise === 10000))
+  })
+  it('parses CSV and flags invalid dates for review without merging identical rows', () => {
+    const data = new TextEncoder().encode('Description,Amount,Date\nLunch,100,2026-01-01\nLunch,100,2026-01-01\nUnknown,50,nonsense').buffer
+    const parsed = service.parseWorkbook(data, 'January.csv')
+    const result = service.parseSheet(parsed.workbook, 'January', 'monthly')
+    assert.equal(result.rows.length, 3)
+    assert.equal(result.rows[2].dateIssue, 'unparseable')
+    assert.notEqual(result.rows[0].rowId, result.rows[1].rowId)
+  })
+})

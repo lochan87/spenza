@@ -6,7 +6,7 @@
  */
 
 import * as XLSX from 'xlsx'
-import { writeBatch, doc, collection, getDocs, getCountFromServer, query, where, serverTimestamp, Timestamp } from 'firebase/firestore'
+import { writeBatch, collection, getDocs, getCountFromServer, query, where } from 'firebase/firestore'
 import { db } from '@/firebase/config'
 import { suggestCategory } from '@/utils/categoryKeywords'
 import { invalidateInsightsCache } from '@/services/insights'
@@ -162,11 +162,12 @@ export function parseExcelDate(val: unknown): string | null {
 export function parseAmount(val: unknown): number | null {
   if (val === null || val === undefined || val === '') return null
   if (typeof val === 'number') {
-    return isFinite(val) && val > 0 ? Math.round(val * 100) : null
+    const paise = Math.round(val * 100)
+    return Number.isSafeInteger(paise) && paise > 0 ? paise : null
   }
   const str = String(val).replace(/[₹,\s]/g, '').trim()
-  const n = parseFloat(str)
-  return isFinite(n) && n > 0 ? Math.round(n * 100) : null
+  const paise = Math.round(Number(str) * 100)
+  return Number.isSafeInteger(paise) && paise > 0 ? paise : null
 }
 
 // ─── Sheet classification ─────────────────────────────────────────────────────
@@ -693,89 +694,12 @@ export async function deduplicateTripSummaryTransactions(uid: string): Promise<n
 
 // ─── Batch import ─────────────────────────────────────────────────────────────
 
-const BATCH_SIZE = 499 // Firestore limit is 500 ops per batch
-
+/** Progress reports only server-confirmed chunks, never queued local writes. */
 export interface ImportProgress {
   total: number
   done: number
   batchNum: number
   totalBatches: number
-}
-
-export async function batchImportTransactions(
-  uid: string,
-  rows: ParsedRow[],
-  categoryMap: Map<string, string>, // categoryName → categoryId
-  otherCategoryId: string,
-  onProgress: (p: ImportProgress) => void
-): Promise<{ imported: number; skipped: number; cacheInvalidated: boolean }> {
-  const txnColl = collection(db, 'users', uid, 'transactions')
-  const totalBatches = Math.ceil(rows.length / BATCH_SIZE)
-  let imported = 0
-  let skipped  = 0
-  let cacheInvalidated = true
-
-  try {
-    for (let bi = 0; bi < totalBatches; bi++) {
-      const chunk = rows.slice(bi * BATCH_SIZE, (bi + 1) * BATCH_SIZE)
-      const batch = writeBatch(db)
-      let chunkImported = 0
-      let chunkSkipped = 0
-
-      for (const row of chunk) {
-        if (!row.amountPaise || !row.dateStr) { chunkSkipped++; continue }
-
-        const catId = row.resolvedCategoryId
-          ?? (row.suggestedCategoryName ? categoryMap.get(row.suggestedCategoryName) : null)
-          ?? otherCategoryId
-
-        const ref = doc(txnColl)
-        const parsedDate = new Date(row.dateStr + 'T12:00:00')
-        if (isNaN(parsedDate.getTime())) {
-          // Should not happen if parseExcelDate is correct, but guard against
-          // any edge-case date strings that JS Date refuses to parse
-          console.warn('[Spenza Import] Skipping row with unparseable date:', row.dateStr, row.description)
-          chunkSkipped++
-          continue
-        }
-        const date = Timestamp.fromDate(parsedDate)
-
-        batch.set(ref, {
-          id: ref.id,
-          amountPaise: row.amountPaise,
-          description: row.description,
-          categoryId: catId,
-          type: row.isTripRow ? 'trip' : 'everyday',
-          date,
-          paymentMode: 'Other',
-          paymentAccountId: null,
-          tripId: row.tripId ?? null,
-          personId: null,
-          tags: [],
-          notes: '',
-          receiptUrl: null,
-          isImported: true,
-          importSource: 'excel',
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        })
-        chunkImported++
-      }
-
-      if (chunkImported > 0) {
-        await batch.commit()
-      }
-      imported += chunkImported
-      skipped += chunkSkipped
-      onProgress({ total: rows.length, done: Math.min((bi + 1) * BATCH_SIZE, rows.length), batchNum: bi + 1, totalBatches })
-    }
-  } finally {
-    if (imported > 0) {
-      cacheInvalidated = await invalidateInsightsCache(uid)
-    }
-  }
-
-  return { imported, skipped, cacheInvalidated }
 }
 
 // ─── Clear & Count imports ────────────────────────────────────────────────────

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { format } from 'date-fns'
+import { recurringDateKey, parseRecurringDate, formatRecurringDate } from '@/utils/recurringDates'
 import { Timestamp } from 'firebase/firestore'
 import { Plus, Pause, Play, Trash2, RepeatIcon, Loader2, X, Pencil } from 'lucide-react'
 import { useForm } from 'react-hook-form'
@@ -194,7 +194,7 @@ function RecurringRow({
       <div className="flex-1 min-w-0">
         <p className="truncate text-sm font-medium text-[var(--text-primary)]">{item.description}</p>
         <p className="text-xs text-[var(--text-muted)]">
-          {formatFrequency(item)} · next {format(dueDate, 'd MMM yyyy')}
+          {formatFrequency(item)} · next {formatRecurringDate(dueDate)}
         </p>
       </div>
       <span className="shrink-0 text-sm font-bold text-[var(--text-primary)]">
@@ -240,13 +240,13 @@ function RecurringForm({
       amountRupees: editItem ? editItem.amountPaise / 100 : undefined,
       categoryId: editItem?.categoryId ?? '',
       frequency: editItem?.frequency ?? 'monthly',
-      dayOfMonth: editItem?.dayOfMonth ?? new Date().getDate(),
+      dayOfMonth: editItem ? editItem.dayOfMonth ?? null : Math.min(28, new Date().getUTCDate()),
       dayOfWeek: editItem?.dayOfWeek ?? null,
       paymentMode: editItem?.paymentMode ?? 'UPI',
       paymentAccountId: editItem?.paymentAccountId ?? null,
       nextDueDateStr: editItem
-        ? format((editItem.nextDueDate as Timestamp).toDate(), 'yyyy-MM-dd')
-        : format(new Date(), 'yyyy-MM-dd'),
+        ? recurringDateKey(editItem.nextDueDate.toDate())
+        : recurringDateKey(new Date()),
     },
   })
 
@@ -262,8 +262,8 @@ function RecurringForm({
     setSubmitting(true)
     setSaveError(null)
     try {
-      const nextDue = editItem && data.nextDueDateStr === format(editItem.nextDueDate.toDate(), 'yyyy-MM-dd')
-        ? editItem.nextDueDate : Timestamp.fromDate(new Date(data.nextDueDateStr))
+      const nextDue = editItem && data.nextDueDateStr === recurringDateKey(editItem.nextDueDate.toDate())
+        ? editItem.nextDueDate : Timestamp.fromDate(parseRecurringDate(data.nextDueDateStr))
       const payload = {
         description: data.description,
         amountPaise: Math.round(data.amountRupees * 100),
@@ -271,17 +271,15 @@ function RecurringForm({
         frequency: data.frequency as RecurringFrequency,
         dayOfMonth: data.frequency === 'monthly' ? (data.dayOfMonth ?? null) : null,
         dayOfWeek: data.frequency === 'weekly' ? (data.dayOfWeek ?? null) : null,
-        monthDay: null,
+        monthDay: editItem?.monthDay ?? null,
         nextDueDate: nextDue,
-        lastGeneratedDate: editItem?.lastGeneratedDate ?? null,
         paymentMode: data.paymentMode as PaymentMode,
         paymentAccountId: ACCOUNT_MODES.includes(data.paymentMode as PaymentMode) ? (data.paymentAccountId ?? null) : null,
-        isActive: editItem?.isActive ?? true,
       }
       if (editItem) {
         await updateRecurringItem(uid, editItem.id, payload, editItem)
       } else {
-        await addRecurringItem(uid, payload)
+        await addRecurringItem(uid, { ...payload, isActive: true, lastGeneratedDate: null })
       }
       onSuccess()
     } catch (err) {

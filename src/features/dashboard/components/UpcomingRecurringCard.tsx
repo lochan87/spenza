@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { format } from 'date-fns'
+import { formatRecurringDate, recurringDaysUntil } from '@/utils/recurringDates'
 import { Timestamp } from 'firebase/firestore'
 import { RepeatIcon, ChevronRight } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
@@ -51,7 +51,7 @@ export function UpcomingRecurringCard({ categories }: UpcomingRecurringCardProps
           const cat = categories.find(c => c.id === item.categoryId)
           const catMeta = getCategoryMeta(cat?.name ?? 'Other')
           const dueDate = (item.nextDueDate as Timestamp).toDate()
-          const daysLeft = Math.ceil((dueDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24))
+          const daysLeft = recurringDaysUntil(dueDate)
 
           return (
             <div key={item.id} className="flex items-center gap-3 rounded-xl bg-[var(--surface-2)] px-3 py-2.5">
@@ -62,7 +62,7 @@ export function UpcomingRecurringCard({ categories }: UpcomingRecurringCardProps
                 </p>
                 <p className="text-[10px] text-[var(--text-muted)]">
                   {daysLeft === 0 ? 'Today' : daysLeft === 1 ? 'Tomorrow' : `In ${daysLeft} days`}
-                  {' · '}{format(dueDate, 'd MMM')}
+                  {' · '}{formatRecurringDate(dueDate, false)}
                 </p>
               </div>
               <span className="shrink-0 text-sm font-bold text-[var(--text-primary)]">

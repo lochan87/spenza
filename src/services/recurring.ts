@@ -2,9 +2,10 @@ import {
   collection, doc, setDoc, getDocs, deleteDoc,
   query, orderBy, where, serverTimestamp, Timestamp, runTransaction,
 } from 'firebase/firestore'
-import { addDays, addMonths, addWeeks, addYears } from 'date-fns'
+import { computeNextDueDate } from '@/utils/recurringDates'
+export { computeNextDueDate } from '@/utils/recurringDates'
 import { db } from '@/firebase/config'
-import type { RecurringItem, RecurringFrequency } from '@/types'
+import type { RecurringItem } from '@/types'
 import { TransactionSchema } from '@/utils/schemas'
 
 const recColl = (uid: string) => collection(db, 'users', uid, 'recurring')
@@ -25,7 +26,8 @@ export async function getOverdueRecurring(uid: string): Promise<RecurringItem[]>
 
 export async function getUpcomingRecurring(uid: string, days = 7): Promise<RecurringItem[]> {
   const now = new Date()
-  const until = addDays(now, days)
+  const until = new Date(now.getTime())
+  until.setUTCDate(until.getUTCDate() + days)
   const snap = await getDocs(
     query(
       recColl(uid),
@@ -64,6 +66,7 @@ export async function updateRecurringItem(
   if (!touchesSchedule) {
     // Non-schedule edits (e.g. pausing) stay queued offline like other ordinary writes.
     const { lastGeneratedDate: _ignoredGeneration, ...editable } = data
+    if (original) delete editable.isActive
     await setDoc(ref, { ...editable, updatedAt: serverTimestamp() }, { merge: true })
     return
   }
@@ -75,7 +78,23 @@ export async function updateRecurringItem(
       throw new RecurringConfirmationError('The recurring schedule changed or was logged in another tab. Reload the Recurring page and reopen this form before saving.')
     }
     // Confirmation owns lastGeneratedDate; a stale editor must never restore it.
-    const { lastGeneratedDate: _lastGeneratedDate, ...editable } = data
+    const { lastGeneratedDate: _lastGeneratedDate, isActive: _isActive, ...editable } = data
+    // Mode and account form one value: merging them independently can produce an
+    // invalid combination (for example Cash with a concurrently changed card).
+    const paymentChanged = (data.paymentMode !== undefined && data.paymentMode !== original.paymentMode) ||
+      (data.paymentAccountId !== undefined && data.paymentAccountId !== original.paymentAccountId)
+    if (paymentChanged && (latest.paymentMode !== original.paymentMode || latest.paymentAccountId !== original.paymentAccountId)) {
+      throw new RecurringConfirmationError('Payment details changed in another tab. Reload and reopen this expense before saving.')
+    }
+    // Ordinary forms cannot revert metadata changed since they were opened.
+    for (const key of ['description', 'amountPaise', 'categoryId', 'paymentMode', 'paymentAccountId'] as const) {
+      if (editable[key] === undefined) continue
+      if (editable[key] === original[key]) {
+        delete editable[key]
+      } else if (latest[key] !== original[key] && latest[key] !== editable[key]) {
+        throw new RecurringConfirmationError('This recurring expense changed in another tab. Reload and reopen it before saving.')
+      }
+    }
     txn.update(ref, { ...editable, updatedAt: serverTimestamp() })
   })
 }
@@ -156,9 +175,10 @@ export async function confirmRecurringOccurrence(uid: string, item: RecurringIte
     if (!validation.success) {
       throw new RecurringConfirmationError('Check the amount, category and payment account in this recurring expense before confirming.')
     }
-    const nextDueDate = Timestamp.fromDate(computeNextDueDate(
+    const nextDate = computeNextDueDate(
       latest.nextDueDate.toDate(), latest.frequency, latest.dayOfMonth, latest.dayOfWeek
-    ))
+    )
+    const nextDueDate = new Timestamp(Math.floor(nextDate.getTime() / 1000), latest.nextDueDate.nanoseconds)
     txn.set(expenseRef, {
       ...validation.data, date: latest.nextDueDate, id: transactionId,
       recurringItemId: item.id, recurringOccurrenceDate: latest.nextDueDate,
@@ -187,34 +207,6 @@ export function recurringSaveErrorMessage(error: unknown): string {
 
 export async function deleteRecurringItem(uid: string, id: string): Promise<void> {
   await deleteDoc(recRef(uid, id))
-}
-
-/**
- * Advance nextDueDate to the next cycle after the given date.
- * Called after the user confirms logging a recurring expense.
- */
-export function computeNextDueDate(
-  current: Date,
-  frequency: RecurringFrequency,
-  dayOfMonth: number | null,
-  _dayOfWeek: number | null
-): Date {
-  switch (frequency) {
-    case 'weekly': {
-      return addWeeks(current, 1)
-    }
-    case 'monthly': {
-      const next = addMonths(current, 1)
-      // Snap to the same day of month if specified
-      if (dayOfMonth) {
-        next.setDate(Math.min(dayOfMonth, new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate()))
-      }
-      return next
-    }
-    case 'yearly': {
-      return addYears(current, 1)
-    }
-  }
 }
 
 /** Format recurring frequency for display */

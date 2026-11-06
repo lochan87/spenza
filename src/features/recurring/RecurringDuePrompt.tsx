@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { format } from 'date-fns'
+import { formatRecurringDate } from '@/utils/recurringDates'
 import { Timestamp } from 'firebase/firestore'
 import { Bell, Check, X, ChevronDown, ChevronUp, Loader2 } from 'lucide-react'
 import { getCategoryMeta } from '@/utils/categoryColors'
@@ -93,7 +93,7 @@ export function RecurringDuePrompt({
                         {item.description}
                       </p>
                       <p className="text-[10px] text-[var(--text-muted)]">
-                        Due {format(dueDate, 'd MMM yyyy')}
+                        Due {formatRecurringDate(dueDate)}
                       </p>
                     </div>
                     <button

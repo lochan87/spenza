@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs'
 import { runInNewContext } from 'node:vm'
 import ts from 'typescript'
 import { Timestamp } from 'firebase/firestore'
-import * as dateFns from 'date-fns'
+import * as recurringDates from '../../utils/recurringDates.ts'
 import * as transactionSchemas from '../../utils/schemas.ts'
 import * as recurringMath from '../../utils/recurringMath.ts'
 import type { RecurringItem } from '../../types/index.ts'
@@ -69,31 +69,6 @@ function createHarness(options: HarnessOptions = {}) {
   let commitQueue: Promise<void> = Promise.resolve()
 
   const bump = (path: string) => versions.set(path, (versions.get(path) ?? 0) + 1)
-
-  const applyWrite = (write: Write) => {
-    if (options.failOnPath === write.ref) throw new Error(`Simulated ${write.type} failure`)
-    if (write.type === 'delete') {
-      docs.delete(write.ref)
-      bump(write.ref)
-      appliedWrites++
-      return
-    }
-    if (write.type === 'update') {
-      const existing = docs.get(write.ref)
-      if (!existing) {
-        const error = new Error('Simulated document not found') as Error & { code: string }
-        error.code = 'not-found'
-        throw error
-      }
-      docs.set(write.ref, { ...existing, ...write.data })
-      bump(write.ref)
-      appliedWrites++
-      return
-    }
-    docs.set(write.ref, { ...write.data })
-    bump(write.ref)
-    appliedWrites++
-  }
 
   const setDoc = async (ref: string, data: StoredDoc, opts?: { merge?: boolean }) => {
     if (options.failOnPath === ref) throw new Error('Simulated document write failure')
@@ -167,15 +142,24 @@ function createHarness(options: HarnessOptions = {}) {
           }
           if (!conflict) {
             if (options.failCommit) throw new Error('Simulated commit failure')
-            const backup = new Map(docs)
-            try {
-              for (const write of writes) applyWrite(write)
-            } catch (error) {
-              // A failed transaction commit is atomic: no writes survive.
-              docs.clear()
-              for (const [path, data] of backup) docs.set(path, data)
-              throw error
+            // Stage every mutation, including bookkeeping. Failed attempts publish nothing.
+            const stagedDocs = new Map(docs)
+            const stagedVersions = new Map(versions)
+            for (const write of writes) {
+              if (options.failOnPath === write.ref) throw new Error(`Simulated ${write.type} failure`)
+              if (write.type === 'delete') stagedDocs.delete(write.ref)
+              else {
+                const existing = stagedDocs.get(write.ref)
+                if (write.type === 'update' && !existing) throw new Error('Simulated document not found')
+                stagedDocs.set(write.ref, write.type === 'update' ? { ...existing, ...write.data } : { ...write.data })
+              }
+              stagedVersions.set(write.ref, (stagedVersions.get(write.ref) ?? 0) + 1)
             }
+            docs.clear()
+            for (const [path, data] of stagedDocs) docs.set(path, data)
+            versions.clear()
+            for (const [path, version] of stagedVersions) versions.set(path, version)
+            appliedWrites += writes.length
           }
         } finally {
           release()
@@ -205,7 +189,7 @@ function createHarness(options: HarnessOptions = {}) {
       if (name === '@/firebase/config') return { db: {} }
       if (name === '@/utils/schemas') return transactionSchemas
       if (name === '@/utils/recurringMath') return recurringMath
-      if (name === 'date-fns') return dateFns
+      if (name === '@/utils/recurringDates') return recurringDates
       throw new Error(`Unexpected import: ${name}`)
     },
   })
@@ -217,6 +201,7 @@ function createHarness(options: HarnessOptions = {}) {
     setOnline: (value: boolean) => { nav.onLine = value },
     attempts: () => attempts,
     appliedWrites: () => appliedWrites,
+    versions: () => new Map(versions),
     read: (path: string) => docs.get(path),
     directWrite: (path: string, data: StoredDoc) => {
       docs.set(path, { ...data })
@@ -232,8 +217,8 @@ function segmentList(segments: string[]) {
   return { path: segments.join('/') }
 }
 
-function atLocal(year: number, month: number, day: number, hours = 12): Timestamp {
-  return Timestamp.fromDate(new Date(year, month, day, hours, 0, 0, 0))
+function atUTC(year: number, month: number, day: number, hours = 12): Timestamp {
+  return Timestamp.fromDate(new Date(Date.UTC(year, month, day, hours, 0, 0, 0)))
 }
 
 function overdueDate(daysAgo = 1): Timestamp {
@@ -311,6 +296,8 @@ describe('Recurring confirmation — atomic, idempotent and concurrency-safe', (
     assert.equal(schedule.nextDueDate.toMillis(), item.nextDueDate.toMillis())
     assert.equal(schedule.lastGeneratedDate, null)
     assert.ok(h.read(h.insightsPath), 'insights cache must remain when nothing committed')
+    assert.deepEqual(h.versions(), new Map())
+    assert.equal(h.appliedWrites(), 0)
   })
 
   it('3. does not create a duplicate expense when the same occurrence is confirmed twice', async () => {
@@ -385,13 +372,13 @@ describe('Recurring confirmation — atomic, idempotent and concurrency-safe', (
   })
 
   it('7. advances weekly occurrences by exactly one week', async () => {
-    const due = atLocal(2026, 0, 5, 9) // Monday 5 Jan 2026, local time
+    const due = atUTC(2026, 0, 5, 9) // Monday 5 Jan 2026, UTC
     const h = createHarness()
     const next = h.service.computeNextDueDate(due.toDate(), 'weekly', null, 1)
-    assert.equal(next.getFullYear(), 2026)
-    assert.equal(next.getMonth(), 0)
-    assert.equal(next.getDate(), 12)
-    assert.equal(next.getHours(), 9)
+    assert.equal(next.getUTCFullYear(), 2026)
+    assert.equal(next.getUTCMonth(), 0)
+    assert.equal(next.getUTCDate(), 12)
+    assert.equal(next.getUTCHours(), 9)
 
     const item = recurringItem({ frequency: 'weekly', dayOfMonth: null, dayOfWeek: 1, nextDueDate: due })
     const wek = createHarness({ docs: seedFor(item) })
@@ -402,39 +389,39 @@ describe('Recurring confirmation — atomic, idempotent and concurrency-safe', (
 
   it('8. advances monthly occurrences across month boundaries and leap years', () => {
     const h = createHarness()
-    const jan31 = atLocal(2026, 0, 31)
-    assert.equal(h.service.computeNextDueDate(jan31.toDate(), 'monthly', null, null).getDate(), 28)
-    assert.equal(h.service.computeNextDueDate(jan31.toDate(), 'monthly', null, null).getMonth(), 1)
+    const jan31 = atUTC(2026, 0, 31)
+    assert.equal(h.service.computeNextDueDate(jan31.toDate(), 'monthly', null, null).getUTCDate(), 28)
+    assert.equal(h.service.computeNextDueDate(jan31.toDate(), 'monthly', null, null).getUTCMonth(), 1)
 
-    const aug31 = atLocal(2026, 7, 31)
+    const aug31 = atUTC(2026, 7, 31)
     const sep = h.service.computeNextDueDate(aug31.toDate(), 'monthly', null, null)
-    assert.equal(sep.getMonth(), 8)
-    assert.equal(sep.getDate(), 30)
+    assert.equal(sep.getUTCMonth(), 8)
+    assert.equal(sep.getUTCDate(), 30)
 
-    const jan31Leap = atLocal(2028, 0, 31)
+    const jan31Leap = atUTC(2028, 0, 31)
     const febLeap = h.service.computeNextDueDate(jan31Leap.toDate(), 'monthly', null, null)
-    assert.equal(febLeap.getMonth(), 1)
-    assert.equal(febLeap.getDate(), 29)
+    assert.equal(febLeap.getUTCMonth(), 1)
+    assert.equal(febLeap.getUTCDate(), 29)
 
-    const jan15 = atLocal(2026, 0, 15)
+    const jan15 = atUTC(2026, 0, 15)
     const feb15 = h.service.computeNextDueDate(jan15.toDate(), 'monthly', 15, null)
-    assert.equal(feb15.getMonth(), 1)
-    assert.equal(feb15.getDate(), 15)
+    assert.equal(feb15.getUTCMonth(), 1)
+    assert.equal(feb15.getUTCDate(), 15)
   })
 
   it('9. advances yearly occurrences and clamps leap-day anniversaries', () => {
     const h = createHarness()
-    const leapDay = atLocal(2028, 1, 29)
+    const leapDay = atUTC(2028, 1, 29)
     const next = h.service.computeNextDueDate(leapDay.toDate(), 'yearly', null, null)
-    assert.equal(next.getMonth(), 1)
-    assert.equal(next.getDate(), 28)
-    assert.equal(next.getFullYear(), 2029)
+    assert.equal(next.getUTCMonth(), 1)
+    assert.equal(next.getUTCDate(), 28)
+    assert.equal(next.getUTCFullYear(), 2029)
 
-    const march = atLocal(2026, 2, 1)
+    const march = atUTC(2026, 2, 1)
     const nextMarch = h.service.computeNextDueDate(march.toDate(), 'yearly', null, null)
-    assert.equal(nextMarch.getFullYear(), 2027)
-    assert.equal(nextMarch.getMonth(), 2)
-    assert.equal(nextMarch.getDate(), 1)
+    assert.equal(nextMarch.getUTCFullYear(), 2027)
+    assert.equal(nextMarch.getUTCMonth(), 2)
+    assert.equal(nextMarch.getUTCDate(), 1)
   })
 
   it('10. keeps later overdue occurrences available and confirms them as separate expenses', async () => {
@@ -484,8 +471,8 @@ describe('Recurring confirmation — atomic, idempotent and concurrency-safe', (
   })
 
   it('12. rejects stale recurring edit forms instead of rewinding an advanced schedule', async () => {
-    const original = recurringItem({ nextDueDate: atLocal(2026, 0, 15) })
-    const advanced = atLocal(2026, 1, 15)
+    const original = recurringItem({ nextDueDate: atUTC(2026, 0, 15) })
+    const advanced = atUTC(2026, 1, 15)
     const h = createHarness({
       docs: { [`${basePath}/recurring/${original.id}`]: { ...original, nextDueDate: advanced, lastGeneratedDate: advanced } },
     })
@@ -505,12 +492,12 @@ describe('Recurring confirmation — atomic, idempotent and concurrency-safe', (
   })
 
   it('13. writes a legitimate schedule edit and ignores lastGeneratedDate supplied by the form', async () => {
-    const original = recurringItem({ nextDueDate: atLocal(2026, 0, 15) })
-    const generated = atLocal(2026, 0, 15, 8)
+    const original = recurringItem({ nextDueDate: atUTC(2026, 0, 15) })
+    const generated = atUTC(2026, 0, 15, 8)
     const h = createHarness({
       docs: { [`${basePath}/recurring/${original.id}`]: { ...original, lastGeneratedDate: generated } },
     })
-    const newDue = atLocal(2026, 1, 20)
+    const newDue = atUTC(2026, 1, 20)
 
     await h.service.updateRecurringItem('test-user', original.id, {
       description: 'Netflix Premium',
@@ -553,6 +540,10 @@ describe('Recurring confirmation — atomic, idempotent and concurrency-safe', (
     const item = recurringItem()
     const h = createHarness({ docs: seedFor(item), failOnPath: `${basePath}/insights/summary` })
 
+    h.directWrite(h.insightsPath, { schemaVersion: 9 })
+    const beforeDocs = new Map(h.docs)
+    const beforeVersions = h.versions()
+    const beforeWrites = h.appliedWrites()
     await assert.rejects(
       h.service.confirmRecurringOccurrence('test-user', item, item.amountPaise),
       /Simulated delete failure/
@@ -560,6 +551,9 @@ describe('Recurring confirmation — atomic, idempotent and concurrency-safe', (
     assert.equal(h.read(h.transactionPath(h.service.recurringOccurrenceId(item))), undefined)
     assert.equal(h.read(h.recurringPath(item.id))!.nextDueDate.toMillis(), item.nextDueDate.toMillis())
     assert.ok(h.read(h.insightsPath), 'the failed cache delete must not remove the summary')
+    assert.deepEqual(h.docs, beforeDocs)
+    assert.deepEqual(h.versions(), beforeVersions)
+    assert.equal(h.appliedWrites(), beforeWrites)
   })
 
   it('17. rejects offline confirmation before touching data and succeeds when retried online', async () => {
@@ -606,9 +600,9 @@ describe('Recurring confirmation — atomic, idempotent and concurrency-safe', (
 
   it('19. derives stable, collision-resistant Firestore document ids', () => {
     const h = createHarness()
-    const a = recurringItem({ nextDueDate: atLocal(2026, 0, 15) })
-    const later = recurringItem({ nextDueDate: atLocal(2026, 1, 15) })
-    const other = recurringItem({ id: 'rec-other', nextDueDate: atLocal(2026, 0, 15) })
+    const a = recurringItem({ nextDueDate: atUTC(2026, 0, 15) })
+    const later = recurringItem({ nextDueDate: atUTC(2026, 1, 15) })
+    const other = recurringItem({ id: 'rec-other', nextDueDate: atUTC(2026, 0, 15) })
 
     const id = h.service.recurringOccurrenceId(a)
     assert.equal(h.service.recurringOccurrenceId({ ...a }), id)
@@ -621,7 +615,7 @@ describe('Recurring confirmation — atomic, idempotent and concurrency-safe', (
 
   it('20. rejects a confirmation whose schedule changed or is no longer active', async () => {
     const item = recurringItem()
-    const advanced = atLocal(2026, 5, 15)
+    const advanced = atUTC(2026, 5, 15)
     const h = createHarness({
       docs: { [`${basePath}/recurring/${item.id}`]: { ...item, nextDueDate: advanced } },
     })
@@ -638,4 +632,100 @@ describe('Recurring confirmation — atomic, idempotent and concurrency-safe', (
       /schedule changed or is no longer active/
     )
   })
+
+  for (const active of [true, false]) {
+    it(`preserves a concurrent ${active ? 'pause' : 'unpause'} when a stale form saves`, async () => {
+      const original = recurringItem({ isActive: active })
+      const h = createHarness({ docs: seedFor(original) })
+      await h.service.updateRecurringItem('test-user', original.id, { isActive: !active })
+      await h.service.updateRecurringItem('test-user', original.id, {
+        description: 'Renamed', nextDueDate: original.nextDueDate,
+        isActive: active, lastGeneratedDate: null,
+      }, original)
+      const stored = h.read(h.recurringPath(original.id))!
+      assert.equal(stored.isActive, !active)
+      assert.equal(stored.description, 'Renamed')
+      assert.ok(stored.nextDueDate.isEqual(original.nextDueDate))
+    })
+  }
+
+  it('preserves untouched metadata changed by another editor', async () => {
+    const original = recurringItem()
+    const h = createHarness({ docs: seedFor(original) })
+    await h.service.updateRecurringItem('test-user', original.id, {
+      amountPaise: 79900, paymentMode: 'Cash', paymentAccountId: null,
+      nextDueDate: original.nextDueDate,
+    }, original)
+    await h.service.updateRecurringItem('test-user', original.id, {
+      description: 'Renamed', amountPaise: original.amountPaise,
+      paymentMode: original.paymentMode, paymentAccountId: original.paymentAccountId,
+      nextDueDate: original.nextDueDate,
+    }, original)
+    const stored = h.read(h.recurringPath(original.id))!
+    assert.equal(stored.description, 'Renamed')
+    assert.equal(stored.amountPaise, 79900)
+    assert.equal(stored.paymentMode, 'Cash')
+    assert.equal(stored.paymentAccountId, null)
+  })
+
+  it('rejects conflicting metadata edits without writing', async () => {
+    const original = recurringItem()
+    const h = createHarness({ docs: seedFor(original) })
+    await h.service.updateRecurringItem('test-user', original.id, {
+      description: 'Other editor', nextDueDate: original.nextDueDate,
+    }, original)
+    const before = new Map(h.docs)
+    await assert.rejects(h.service.updateRecurringItem('test-user', original.id, {
+      description: 'My edit', nextDueDate: original.nextDueDate,
+    }, original), /changed in another tab/)
+    assert.deepEqual(h.docs, before)
+    assert.equal(h.appliedWrites(), 1)
+  })
+
+  it('rejects conflicting payment pairs instead of merging mode with a different account', async () => {
+    const original = recurringItem()
+    const h = createHarness({ docs: seedFor(original) })
+    await h.service.updateRecurringItem('test-user', original.id, {
+      paymentMode: 'Cash', paymentAccountId: null, nextDueDate: original.nextDueDate,
+    }, original)
+    await assert.rejects(h.service.updateRecurringItem('test-user', original.id, {
+      paymentMode: 'Card', paymentAccountId: 'other-card', nextDueDate: original.nextDueDate,
+    }, original), /Payment details changed/)
+    assert.equal(h.appliedWrites(), 1)
+    assert.equal(h.read(h.recurringPath(original.id))!.paymentAccountId, null)
+  })
+
+  // These exact stored timestamps are also exercised in isolated TZ child processes.
+  for (const [frequency, due, expected, day] of [
+    ['monthly', '2026-03-01T00:00:00Z', '2026-04-01T00:00:00.000Z', 1],
+    ['monthly', '2024-01-31T00:00:00Z', '2024-02-29T00:00:00.000Z', 31],
+    ['weekly', '2026-03-07T12:00:00Z', '2026-03-14T12:00:00.000Z', null],
+    ['weekly', '2025-11-01T12:00:00Z', '2025-11-08T12:00:00.000Z', null],
+    ['yearly', '2024-02-29T00:00:00Z', '2025-02-28T00:00:00.000Z', null],
+  ] as const) {
+    it(`confirms ${frequency} ${due} to ${expected} independently of host timezone`, async () => {
+      const item = recurringItem({ frequency, nextDueDate: Timestamp.fromDate(new Date(due)), dayOfMonth: day })
+      const h = createHarness({ docs: seedFor(item) })
+      const result = await h.service.confirmRecurringOccurrence('test-user', item, item.amountPaise)
+      assert.equal(result.recurringItem!.nextDueDate.toDate().toISOString(), expected)
+      assert.equal(result.transactionId, `recurring|rec-1|${item.nextDueDate.seconds}|0`)
+      assert.ok(h.read(h.transactionPath(result.transactionId))!.date.isEqual(item.nextDueDate))
+      const retry = await h.service.confirmRecurringOccurrence('test-user', item, item.amountPaise)
+      assert.equal(retry.created, false)
+      assert.equal(h.appliedWrites(), 3)
+    })
+  }
+
+  it('retains legacy non-midnight timestamps and sub-millisecond precision', async () => {
+    const due = new Timestamp(Date.parse('2026-02-28T18:30:00Z') / 1000, 123456789)
+    const item = recurringItem({ nextDueDate: due, dayOfMonth: null })
+    const h = createHarness({ docs: seedFor(item) })
+    await h.service.updateRecurringItem('test-user', item.id, { description: 'Legacy', nextDueDate: due }, item)
+    assert.ok(h.read(h.recurringPath(item.id))!.nextDueDate.isEqual(due))
+    const result = await h.service.confirmRecurringOccurrence('test-user', item, item.amountPaise)
+    assert.equal(result.recurringItem!.nextDueDate.seconds, Date.parse('2026-03-28T18:30:00Z') / 1000)
+    assert.equal(result.recurringItem!.nextDueDate.nanoseconds, due.nanoseconds)
+    assert.ok(h.read(h.transactionPath(result.transactionId))!.date.isEqual(due))
+  })
+
 })

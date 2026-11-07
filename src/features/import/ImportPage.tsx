@@ -16,7 +16,7 @@ import {
   type DetectedSheet, type SheetParseResult, type ParsedRow,
   type DuplicateCandidate, type SheetKind, type ImportProgress,
 } from '@/services/importExcel'
-import { sha256, newImportOperation, importRecordId, type ImportHeader, type ImportPlan, type ImportTripDraft } from '@/utils/importPlan'
+import { ImportSizeError, sha256, newImportOperation, importRecordId, type ImportHeader, type ImportPlan, type ImportTripDraft } from '@/utils/importPlan'
 import { findImportOperations, buildImportPlan, saveImportPlan, executeImport, ImportExecutionError, type ImportResult } from '@/services/importOperations'
 import { formatINR } from '@/utils/format'
 import { DatePicker } from '@/components/ui/DatePicker'
@@ -59,6 +59,7 @@ export function ImportPage() {
   const pendingPlan = useRef<ImportPlan | null>(null)
   const [hasFrozenPlan, setHasFrozenPlan] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [sizeBlocked, setSizeBlocked] = useState(false)
   const [expandedSheet, setExpandedSheet] = useState<string | null>(null)
   const [parsing, setParsing] = useState(false)
   /**
@@ -144,6 +145,7 @@ export function ImportPage() {
     if (inFlight.current) return
     inFlight.current = true
     setError(null)
+    setSizeBlocked(false)
     setFileName(file.name)
     try {
       const buffer = await file.arrayBuffer()
@@ -342,6 +344,7 @@ export function ImportPage() {
       setResult(await executeImport(user.uid, operationId, fingerprint, setProgress))
       setStep('done')
     } catch (err) {
+      setSizeBlocked(err instanceof ImportSizeError)
       setResult(err instanceof ImportExecutionError ? err.result : null)
       setError(err instanceof Error ? err.message : 'Could not verify import. Resume the same operation after reconnecting.')
       setStep('confirm')
@@ -360,6 +363,7 @@ export function ImportPage() {
       setResult(await executeImport(user.uid, id, fingerprint, setProgress))
       setStep('done')
     } catch (err) {
+      setSizeBlocked(err instanceof ImportSizeError)
       setResult(err instanceof ImportExecutionError ? err.result : null)
       setError(err instanceof Error ? err.message : 'Unable to verify this import. Reconnect and resume the same operation.')
       setStep('resume')
@@ -422,13 +426,14 @@ export function ImportPage() {
       {step === 'resume' && (
         <div className="flex flex-col gap-3 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4">
           <h2 className="font-semibold text-[var(--text-primary)]">Previous imports of this source</h2>
+          {sizeBlocked && <button onClick={() => setStep('upload')} className="text-left text-sm text-[var(--primary)]">Choose a smaller source file</button>}
           <p className="text-sm text-[var(--text-muted)]">Resume uses the saved selections, corrected dates and trip choices. Completed rows will not be imported again. Legacy imports require reconciliation; starting a new import is not a safe retry for them.</p>
           {savedOperations.map(op => (
-            <button key={op.operationId} disabled={op.version === 1} onClick={() => handleResume(op.operationId)} className="rounded-xl border border-[var(--border)] p-3 text-left text-sm text-[var(--primary)]">
+            <button key={op.operationId} disabled={op.version === 1 || (sizeBlocked && op.operationId === operationId)} onClick={() => handleResume(op.operationId)} className="rounded-xl border border-[var(--border)] p-3 text-left text-sm text-[var(--primary)]">
               {op.version === 1 ? 'Reconciliation required (legacy import; execution blocked)' : 'Resume / check results'}: {op.fileName} · {op.total} selected · {op.skipped} skipped · {op.ready ? 'Reviewed plan saved' : 'Preparation incomplete'} · {op.operationId.slice(-8)}
             </button>
           ))}
-          <button onClick={() => { setOperationId(newImportOperation(fingerprint, true)); pendingPlan.current = null; setHasFrozenPlan(false); setResult(null); setError(null); setStep('detect') }} className="rounded-xl border border-[var(--warning)] p-3 text-sm text-[var(--text-primary)]">
+          <button onClick={() => { setOperationId(newImportOperation(fingerprint, true)); pendingPlan.current = null; setHasFrozenPlan(false); setResult(null); setError(null); setSizeBlocked(false); setStep('detect') }} className="rounded-xl border border-[var(--warning)] p-3 text-sm text-[var(--text-primary)]">
             Start a new import — intentionally add these records again
           </button>
         </div>
@@ -883,11 +888,17 @@ export function ImportPage() {
             )}
           </div>
 
-          <button onClick={handleImport}
-            className="flex items-center justify-center gap-2 rounded-xl bg-[var(--success)] py-3.5 text-sm font-semibold text-white">
-            <CheckCircle2 className="h-4 w-4" />
-            {hasFrozenPlan ? 'Resume saved import safely' : `Import ${totalRows} Transactions`}
-          </button>
+          {sizeBlocked ? (
+            <button onClick={() => setStep('upload')} className="rounded-xl border border-[var(--border)] p-3 text-sm text-[var(--primary)]">
+              Choose a smaller source file
+            </button>
+          ) : (
+            <button onClick={handleImport}
+              className="flex items-center justify-center gap-2 rounded-xl bg-[var(--success)] py-3.5 text-sm font-semibold text-white">
+              <CheckCircle2 className="h-4 w-4" />
+              {hasFrozenPlan ? 'Resume saved import safely' : `Import ${totalRows} Transactions`}
+            </button>
+          )}
         </div>
       )}
 

@@ -42,7 +42,7 @@ it('Firestore emulator: concurrent Admin execution, atomic proof and deleted-row
     const [hostname, port] = host!.split(':')
     connectFirestoreEmulator(firestore, hostname, Number(port), { mockUserToken: { sub: uid, user_id: uid } })
     try {
-      for (const child of ['trustedV2Receipts/0', `trustedV2Trips/${tripId}`]) {
+      for (const child of ['trustedV2Receipts/0', `trustedV2Trips/${tripId}`, 'trustedV2State/execution']) {
         const proof = doc(firestore, `${op.path}/${child}`)
         const stored = await getDoc(proof)
         assert.equal(stored.exists(), true)

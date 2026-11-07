@@ -1,7 +1,7 @@
 import { collection, doc, getDocFromServer, getDocsFromServer, query, where, runTransaction } from 'firebase/firestore'
 import { getFunctions, httpsCallable } from 'firebase/functions'
 import { app, db } from '@/firebase/config'
-import { headerSchema, chunkSchema, operationIdSchema, IMPORT_CHUNK_ROWS, IMPORT_MAX_CHUNKS, sha256, importRecordId, validatePlan, type ImportPlan, type ImportHeader, type ImportChunk, type ImportTripDraft } from '@/utils/importPlan'
+import { headerSchema, chunkSchema, ImportSizeError, addImportPayloadBytes, operationIdSchema, IMPORT_CHUNK_ROWS, IMPORT_MAX_CHUNKS, sha256, importRecordId, validatePlan, type ImportPlan, type ImportHeader, type ImportChunk, type ImportTripDraft } from '@/utils/importPlan'
 import type { ParsedRow, ImportProgress } from './importExcel'
 
 const opRef = (uid: string, id: string) => doc(db, 'users', uid, 'importOperations', operationIdSchema.parse(id))
@@ -38,8 +38,6 @@ export async function buildImportPlan(uid: string, operationId: string, fingerpr
   for (let start = 0; start < frozen.length; start += IMPORT_CHUNK_ROWS) {
     chunks.push(chunkSchema.parse({ version: 2, operationId, fingerprint, index: chunks.length, rows: frozen.slice(start, start + IMPORT_CHUNK_ROWS) }))
   }
-  // Keep well below Firestore's 1 MiB document and 10 MiB transaction limits.
-  for (const chunk of chunks) if (new TextEncoder().encode(JSON.stringify(chunk)).length > 90000) throw new Error('Import chunk is too large. Shorten source descriptions or split the file.')
   const header = headerSchema.parse({ version: 2, ownerUid: uid, operationId, fingerprint, fileName,
     hashes: await Promise.all(chunks.map(c => sha256(JSON.stringify(c)))), total: rows.length, skipped, ready: false })
   return validatePlan({ header, chunks }, uid, fingerprint)
@@ -63,11 +61,13 @@ export async function loadImportPlan(uid: string, id: string, fingerprint: strin
   if (header.version !== 2) throw new Error('Previous import requires reconciliation. Do not replay it or start a new import as a retry.')
   if (header.operationId !== id) throw new Error('Invalid saved import identity.')
   const chunks: ImportChunk[] = []
+  let bytes = 0
   for (let index = 0; index < header.hashes.length; index++) {
     const part = await getDocFromServer(childRef(uid, id, 'chunks', String(index)))
     if (!part.exists()) throw new Error('Saved plan is incomplete; no financial writes can start. Reopen the original review or explicitly start a new operation.')
     const data = part.data()
-    if (data.hash !== header.hashes[index] || typeof data.payload !== 'string' || data.payload.length > 90000) throw new Error('Saved import chunk is incompatible.')
+    if (data.hash !== header.hashes[index] || typeof data.payload !== 'string') throw new Error('Saved import chunk is incompatible.')
+    bytes = addImportPayloadBytes(data.payload, bytes)
     chunks.push(chunkSchema.parse(JSON.parse(data.payload)))
   }
   const plan = await validatePlan({ header, chunks }, uid, fingerprint)
@@ -133,6 +133,7 @@ export async function executeImport(uid: string, id: string, fingerprint: string
     }
     throw new Error('The server has not confirmed completion.')
   } catch (error) {
+    if ((error as { details?: { reason?: string } })?.details?.reason === 'import-size-limit') throw new ImportSizeError()
     const code = (error as { code?: string })?.code
     const reason = code === 'functions/unauthenticated' ? 'Sign in again to resume.'
       : code === 'functions/permission-denied' ? 'Import access was denied.'

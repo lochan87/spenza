@@ -58,6 +58,7 @@ it('Firestore emulator: import ownership, immutable plans, schema bounds and rec
     await assert.rejects(deleteDoc(doc(db, `${path}/tripReceipts/${tripId}`)))
     for (const [child, payload] of [
       ['trustedV2Receipts/0', receipt],
+      ['trustedV2State/execution', { version: 1, binding: 'b'.repeat(64), nextChunk: 1, committed: 1 }],
       [`trustedV2Trips/${tripId}`, { tripId, operationId: id }],
     ] as const) {
       await assert.rejects(setDoc(doc(db, `${path}/${child}`), payload))

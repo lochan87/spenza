@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { runInNewContext } from 'node:vm'
 import ts from 'typescript'
+import { ImportSizeError } from '../../../utils/importPlan.ts'
 
 const transactionsPage = new URL('../TransactionsPage.tsx', import.meta.url)
 const importPage = new URL('../../import/ImportPage.tsx', import.meta.url)
@@ -128,7 +129,7 @@ describe('Transactions and import — non-destructive loading', () => {
     ]
     const runImport = readCallback(importPage, 'handleImport', {
       inFlight: { current: false }, pendingPlan: { current: null }, operationId: 'op', fingerprint: 'source', fileName: 'test.csv',
-      setHasFrozenPlan: () => {}, allParsedRows: incomingRows, ImportExecutionError: class extends Error {},
+      setHasFrozenPlan: () => {}, setSizeBlocked: () => {}, ImportSizeError: class extends Error {}, allParsedRows: incomingRows, ImportExecutionError: class extends Error {},
       user: { uid: 'test-user' }, unresolvedRows: [], categories: [{ id: 'other', name: 'Other' }],
       tripIdMap: {}, catOverrides: {}, dateDecisions: { 'skip-date': 'skip' },
       excludedTripSheets: new Set(), excludedMonthlyRowIds: new Set(['summary']),
@@ -152,4 +153,21 @@ describe('Transactions and import — non-destructive loading', () => {
     assert.equal(cleanupCalls, 0)
     assert.deepEqual(records, original)
   })
+  it('marks an oversized saved import non-retryable without reporting success', async () => {
+    const steps: string[] = [], messages: unknown[] = [], blocked: boolean[] = []
+    let calls = 0
+    const resume = readCallback(importPage, 'handleResume', {
+      user: { uid: 'test-user' }, inFlight: { current: false }, fingerprint: 'source', Error, ImportSizeError,
+      ImportExecutionError: class extends Error {}, setOperationId: () => {}, setProgress: () => {}, setResult: () => {},
+      setSizeBlocked: (value: boolean) => blocked.push(value), setStep: (value: string) => steps.push(value),
+      setError: (value: unknown) => messages.push(value),
+      executeImport: async () => { calls++; throw new ImportSizeError() },
+    })
+    await resume('saved-op')
+    assert.equal(calls, 1)
+    assert.deepEqual(blocked, [true])
+    assert.deepEqual(steps, ['importing', 'resume'])
+    assert.match(String(messages[1]), /Retrying this saved plan cannot succeed/)
+  })
+
 })

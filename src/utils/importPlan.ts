@@ -4,6 +4,18 @@ import { TransactionSchema } from './schemas.ts'
 // Versioned, bounded frozen plans. No source workbook or secrets are persisted.
 export const IMPORT_CHUNK_ROWS = 20
 export const IMPORT_MAX_CHUNKS = 500
+export const IMPORT_MAX_CHUNK_BYTES = 90_000
+export const IMPORT_MAX_PLAN_BYTES = 8_000_000
+export class ImportSizeError extends Error {
+  readonly code = 'import-size-limit'
+  constructor() { super('This import exceeds the encoded size limit. Split the source file into smaller imports and review them separately. Retrying this saved plan cannot succeed. No rows were dropped.') }
+}
+/** Count the exact UTF-8 JSON payloads stored in chunk documents. */
+export function addImportPayloadBytes(payload: string, total = 0): number {
+  const bytes = new TextEncoder().encode(payload).byteLength
+  if (bytes > IMPORT_MAX_CHUNK_BYTES || total + bytes > IMPORT_MAX_PLAN_BYTES) throw new ImportSizeError()
+  return total + bytes
+}
 const hash = z.string().regex(/^[a-f0-9]{64}$/)
 const id = z.string().min(1).max(200).refine(v => !v.includes('/') && v !== '.' && v !== '..')
 export const operationIdSchema = z.string().regex(/^[a-f0-9]{64}(?:-[a-f0-9-]{36})?$/)
@@ -63,7 +75,9 @@ export async function validatePlan(plan: ImportPlan, uid: string, fingerprint: s
   const seen = new Set<string>()
   const trips = new Map<string, string>()
   const chunks: ImportChunk[] = []
+  let bytes = 0
   for (const [index, raw] of plan.chunks.entries()) {
+    bytes = addImportPayloadBytes(JSON.stringify(raw), bytes)
     const chunk = chunkSchema.parse(raw)
     if (chunk.index !== index || chunk.operationId !== header.operationId || chunk.fingerprint !== fingerprint ||
         await sha256(JSON.stringify(chunk)) !== header.hashes[index]) throw new Error('Saved import plan is incompatible or damaged.')

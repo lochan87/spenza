@@ -109,6 +109,10 @@ service cloud.firestore {
           allow read: if isOwner(uid);
           allow write: if false;
         }
+        match /trustedV2State/{stateId} {
+          allow read: if isOwner(uid);
+          allow write: if false;
+        }
       }
 
       // ── insights subcollection ────────────────────────────────────────────

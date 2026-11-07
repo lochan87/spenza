@@ -13,10 +13,12 @@ type StoredDoc = Record<string, any>
 interface Write { type: 'set' | 'update' | 'delete'; ref: string; data?: StoredDoc }
 // Actual service functions; an optimistic, staged transaction double. No Firebase
 // configuration is loaded, and no network or production writes are possible.
-function createHarness(options: { failOnPath?: string; loseResponseOn?: string; failRead?: boolean; callableError?: string; beforeTransaction?: () => void } = {}) {
+function createHarness(options: { failOnPath?: string; loseResponseOn?: string; failRead?: boolean; callableError?: string; callableDetails?: unknown; beforeTransaction?: () => void } = {}) {
   const docs = new Map<string, StoredDoc>()
   const versions = new Map<string, number>()
   const nav = { onLine: true }
+  let reads = 0
+  let calls = 0
   let attempts = 0
   let appliedWrites = 0
   let commitQueue: Promise<void> = Promise.resolve()
@@ -43,6 +45,7 @@ function createHarness(options: { failOnPath?: string; loseResponseOn?: string; 
         const txn = {
           get: async (ref: string) => {
             if (wrote) throw new Error('Firestore transactions must complete all reads before writing')
+            reads++
             readVersions.set(ref, versions.get(ref) ?? 0)
             const data = docs.get(ref)
             return {
@@ -117,18 +120,19 @@ function createHarness(options: { failOnPath?: string; loseResponseOn?: string; 
 
   // Adapter shares the optimistic store with the actual callable core. This is
   // an in-memory concurrency simulation, not a security-rules emulator.
-  const ref = (path: string): any => ({ path, get: async () => ({ exists: docs.has(path), data: () => docs.get(path) }),
+  const ref = (path: string): any => ({ path, get: async () => { reads++; return { exists: docs.has(path), data: () => docs.get(path) } },
     collection: (name: string) => ({ doc: (key: string) => ref(`${path}/${name}/${key}`) }) })
   const admin = { doc: ref, runTransaction: (callback: (txn: any) => Promise<unknown>) => sdk.runTransaction({}, txn => {
     const adapter: any = {
       get: async (r: any) => { const snap = await txn.get(r.path); return { exists: snap.exists(), data: snap.data } },
       getAll: (...refs: any[]) => Promise.all(refs.map(r => adapter.get(r))),
       create: (r: any, data: StoredDoc) => { if (docs.has(r.path)) throw new Error('Create collision'); txn.set(r.path, data) },
+      set: (r: any, data: StoredDoc) => txn.set(r.path, data),
       delete: (r: any) => txn.delete(r.path),
     }
     return callback(adapter)
   }) } as unknown as Parameters<typeof executeTrustedImport>[0]
-  const invoke = (uid = 'test-user', input: unknown = { operationId: fingerprint }) => executeTrustedImport(admin, uid, input)
+  const invoke = (uid = 'test-user', input: unknown = { operationId: fingerprint }) => { calls++; return executeTrustedImport(admin, uid, input) }
   docs.set(`${basePath}/categories/other`, { name: 'Other' })
   docs.set(`${basePath}/categories/reviewed-category`, { name: 'Reviewed' })
   const source = readFileSync(new URL('../importOperations.ts', import.meta.url), 'utf8')
@@ -142,7 +146,7 @@ function createHarness(options: { failOnPath?: string; loseResponseOn?: string; 
     console, TextEncoder, Date, Error,
     require: (name: string) => {
       if (name === 'firebase/functions') return { getFunctions: () => ({}), httpsCallable: () => async (input: unknown) => {
-        if (options.callableError) throw Object.assign(new Error('Callable failed'), { code: options.callableError })
+        if (options.callableError) throw Object.assign(new Error('Callable failed'), { code: options.callableError, details: options.callableDetails })
         return { data: await invoke('test-user', input) }
       } }
       if (name === 'firebase/firestore') return sdk
@@ -155,7 +159,7 @@ function createHarness(options: { failOnPath?: string; loseResponseOn?: string; 
 
   return {
     service: serviceExports as typeof import('../importOperations.ts'),
-    options, nav, invoke,
+    options, nav, invoke, reads: () => reads, calls: () => calls,
     docs,
     setOnline: (value: boolean) => { nav.onLine = value },
     attempts: () => attempts,
@@ -439,6 +443,110 @@ describe('Trusted v2 execution boundary', () => {
     await prepare(h)
     await assert.rejects(h.service.executeImport('test-user', fingerprint, fingerprint), (e: any) => !e.result.complete && e.result.unresolved === 2)
     assert.equal(expenses(h).length, 0)
+  })
+})
+
+describe('Import limits and trusted validation cursor', () => {
+  it('rejects the audit multibyte 10,000-row plan before any persistence', async () => {
+    const h = createHarness()
+    const before = new Map(h.docs)
+    await assert.rejects(prepare(h, 10000, fingerprint, rows(10000).map(r => ({ ...r, description: '費'.repeat(200) }))), /Split the source file/)
+    assert.deepEqual(h.docs, before)
+    // A hostile/old client bypassing preflight must still fail on the server.
+    const plan = await h.service.buildImportPlan('test-user', fingerprint, fingerprint, 'audit.csv', rows(10000), new Map(), 'other', {}, 0)
+    const path = `${basePath}/importOperations/${fingerprint}`
+    for (const chunk of plan.chunks) {
+      for (const row of chunk.rows) row.description = '費'.repeat(200)
+      const payload = JSON.stringify(chunk)
+      plan.header.hashes[chunk.index] = await importPlan.sha256(payload)
+      h.directWrite(`${path}/chunks/${chunk.index}`, { index: chunk.index, hash: plan.header.hashes[chunk.index], payload })
+    }
+    h.directWrite(path, { ...plan.header, ready: true })
+    await assert.rejects(h.invoke(), error => error instanceof importPlan.ImportSizeError)
+    assert.equal(expenses(h).length, 0)
+    assert.equal(h.read(`${path}/trustedV2State/execution`), undefined)
+  })
+  it('surfaces non-retryable server size errors without retry advice or fallback', async () => {
+    const h = createHarness({ callableError: 'functions/invalid-argument', callableDetails: { reason: 'import-size-limit', retryable: false } })
+    await prepare(h)
+    await assert.rejects(h.service.executeImport('test-user', fingerprint, fingerprint), (error: unknown) => error instanceof importPlan.ImportSizeError && !error.message.includes('Resume this same operation'))
+    assert.equal(expenses(h).length, 0)
+  })
+  it('uses exact UTF-8 chunk and aggregate byte boundaries', () => {
+    const { addImportPayloadBytes: add, IMPORT_MAX_PLAN_BYTES: max, IMPORT_MAX_CHUNK_BYTES: chunk } = importPlan
+    assert.equal(add('費'), 3)
+    assert.equal(add('a', max - 2), max - 1)
+    assert.equal(add('a', max - 1), max)
+    assert.throws(() => add('a', max), /size limit/)
+    assert.equal(add('a'.repeat(chunk)), chunk)
+    assert.throws(() => add('a'.repeat(chunk + 1)), /size limit/)
+  })
+  it('binds server state to the header and rejects subsequent header mutation', async () => {
+    const h = createHarness()
+    await prepare(h, 23)
+    await h.invoke()
+    const path = `${basePath}/importOperations/${fingerprint}`
+    h.directWrite(path, { ...h.read(path), fileName: 'changed' })
+    await assert.rejects(h.invoke(), /validation state/)
+    assert.equal(expenses(h).length, 20)
+  })
+  it('rejects chunk replacement after validation without advancing progress', async () => {
+    const h = createHarness()
+    await prepare(h, 23)
+    await h.invoke()
+    const path = `${basePath}/importOperations/${fingerprint}`
+    const chunk = h.read(`${path}/chunks/1`)!
+    h.directWrite(`${path}/chunks/1`, { ...chunk, payload: chunk.payload.replace('Identical lunch', 'Tampered lunch') })
+    await assert.rejects(h.invoke(), /Validated chunk changed/)
+    assert.equal(h.read(`${path}/trustedV2State/execution`)!.committed, 20)
+    assert.equal(expenses(h).length, 20)
+  })
+  it('rolls back financial writes and proof when the state update fails', async () => {
+    const h = createHarness()
+    await prepare(h)
+    const before = new Map(h.docs)
+    h.options.failOnPath = `${basePath}/importOperations/${fingerprint}/trustedV2State/execution`
+    await assert.rejects(h.invoke())
+    assert.deepEqual(h.docs, before)
+  })
+  it('reconciles pre-cursor v2 receipts without recreating deleted expenses', async () => {
+    const h = createHarness()
+    await prepare(h, 23)
+    await h.invoke()
+    h.docs.delete(`${basePath}/importOperations/${fingerprint}/trustedV2State/execution`)
+    h.docs.delete(expenses(h)[0][0])
+    const first = await h.invoke()
+    assert.equal(first.imported, 3)
+    assert.equal(first.alreadyCommitted, 20)
+    assert.equal(first.complete, true)
+    assert.equal(expenses(h).length, 22)
+  })
+  it('read budget for 1,000 rows without full-plan rereads', async () => {
+    const h = createHarness()
+    await prepare(h, 1000)
+    const before = h.reads(), started = performance.now(), memory = process.memoryUsage().heapUsed
+    let result
+    let firstCallMs = 0, firstCallReads = 0
+    do {
+      result = await h.invoke()
+      if (h.calls() === 1) { firstCallMs = Math.round(performance.now() - started); firstCallReads = h.reads() - before }
+    } while (!result.complete)
+    assert.equal(firstCallReads, 128) // 101 one-time validation reads + 27 execution reads
+    const reads = h.reads() - before
+    assert.equal(reads, 1451)
+    assert.equal(h.calls(), 50)
+    console.log(JSON.stringify({ benchmark: 'in-memory production executor', rows: 1000, reads, calls: h.calls(),
+      firstCallMs, firstCallReads, elapsedMs: Math.round(performance.now() - started), heapDeltaBytes: process.memoryUsage().heapUsed - memory,
+      previousReadsCalculated: 6250, rows10000ReadsEstimated: 14501, previous10000ReadsCalculated: 512500 }))
+  })
+  it('checks a completed operation using four reads and no financial writes', async () => {
+    const h = createHarness()
+    await prepare(h)
+    await h.invoke()
+    const reads = h.reads(), writes = h.appliedWrites()
+    assert.equal((await h.invoke()).complete, true)
+    assert.equal(h.reads() - reads, 4)
+    assert.equal(h.appliedWrites(), writes)
   })
 })
 

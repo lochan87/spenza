@@ -1,6 +1,6 @@
 import { it } from 'node:test'
 import assert from 'node:assert/strict'
-import { importRecordId, sha256 } from '../../src/utils/importPlan.ts'
+import { chunkSchema, importRecordId, sha256 } from '../../src/utils/importPlan.ts'
 
 // Fixed loopback/demo endpoints: never use frontend Firebase config or credentials.
 const enabled = process.env.SPENZA_CALLABLE_EMULATORS === '1'
@@ -34,7 +34,7 @@ it('Auth + Functions + Firestore emulators: authenticated callable, retries and 
         description: 'Lunch', amountPaise: 100, categoryId: 'other', dateMillis: 1700000000000,
         tripId: null, newTrip: null, paymentMode: 'Other', paymentAccountId: null,
       })))
-      chunks.push({ version: 2, operationId: id, fingerprint, index, rows })
+      chunks.push(chunkSchema.parse({ version: 2, operationId: id, fingerprint, index, rows }))
     }
     const hashes = await Promise.all(chunks.map(c => sha256(JSON.stringify(c))))
     await db.doc(path).create({ version: 2, ownerUid: owner.localId, operationId: id, fingerprint, fileName: 'test.csv', hashes, total: 21, skipped: 0, ready: true })

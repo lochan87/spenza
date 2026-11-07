@@ -1,7 +1,7 @@
 import { it } from 'node:test'
 import assert from 'node:assert/strict'
 import { executeTrustedImport } from '../src/importExecutor.ts'
-import { importRecordId, sha256 } from '../../src/utils/importPlan.ts'
+import { chunkSchema, importRecordId, sha256 } from '../../src/utils/importPlan.ts'
 
 const host = process.env.SPENZA_FIRESTORE_EMULATOR_HOST
 it('Firestore emulator: concurrent Admin execution, atomic proof and deleted-row preservation', { skip: !host }, async () => {
@@ -22,7 +22,7 @@ it('Firestore emulator: concurrent Admin execution, atomic proof and deleted-row
       transactionId: await importRecordId(operationId, 'row', `Sheet::${index}`), amountPaise: 12345,
       description: 'Identical rows', categoryId: 'other', dateMillis: 1700000000000,
       tripId, newTrip: { name: 'Trip', startMillis: 1700000000000, endMillis: 1700000000000 }, paymentMode: 'Other', paymentAccountId: null })))
-    const chunk = { version: 2, operationId, fingerprint, index: 0, rows }
+    const chunk = chunkSchema.parse({ version: 2, operationId, fingerprint, index: 0, rows })
     const payload = JSON.stringify(chunk), hash = await sha256(payload)
     await op.create({ version: 2, ownerUid: uid, operationId, fingerprint, fileName: 'test.csv', hashes: [hash], total: 2, skipped: 0, ready: true })
     await op.collection('chunks').doc('0').create({ index: 0, hash, payload })

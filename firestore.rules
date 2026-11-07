@@ -89,7 +89,7 @@ service cloud.firestore {
             && chunkId == string(request.resource.data.index)
             && request.resource.data.hash == header().hashes[request.resource.data.index]
             && request.resource.data.hash is string && request.resource.data.hash.matches('^[a-f0-9]{64}$')
-            && request.resource.data.payload is string && request.resource.data.payload.size() <= 90000;
+            && request.resource.data.payload is string && request.resource.data.payload.toUtf8().size() <= 90000;
           allow update, delete: if false;
         }
         // Legacy proof is untrusted; all completion proof is server-owned.

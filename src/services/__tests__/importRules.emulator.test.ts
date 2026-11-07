@@ -39,9 +39,13 @@ it('Firestore emulator: import ownership, immutable plans, schema bounds and rec
     await assert.rejects(getDoc(doc(anon, path)))
     const chunk = { index: 0, hash: header.hashes[0], payload: '{}' }
     await assert.rejects(setDoc(doc(db, `${path}/chunks/0`), { ...chunk, payload: 'x'.repeat(90001) }))
+    // 30,001 '€' characters are under 90,000 characters but 90,003 UTF-8 bytes.
+    await assert.rejects(setDoc(doc(db, `${path}/chunks/0`), { ...chunk, payload: '€'.repeat(30001) }))
     await assert.rejects(setDoc(doc(db, `${path}/chunks/1`), chunk))
-    await setDoc(doc(db, `${path}/chunks/0`), chunk)
-    await assert.rejects(setDoc(doc(db, `${path}/chunks/0`), chunk))
+    // Exactly 90,000 UTF-8 bytes remains valid.
+    const maxMultibytePayload = '€'.repeat(30000)
+    await setDoc(doc(db, `${path}/chunks/0`), { ...chunk, payload: maxMultibytePayload })
+    await assert.rejects(setDoc(doc(db, `${path}/chunks/0`), { ...chunk, payload: maxMultibytePayload }))
     await assert.rejects(getDoc(doc(other, `${path}/chunks/0`)))
     await assert.rejects(updateDoc(doc(db, path), { fileName: 'changed' }))
     await updateDoc(doc(db, path), { ready: true })

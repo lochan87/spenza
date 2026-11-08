@@ -8,21 +8,13 @@ import {
   query,
   where,
   orderBy,
-  runTransaction,
   serverTimestamp,
   Timestamp,
 } from 'firebase/firestore'
 import { getFunctions, httpsCallable } from 'firebase/functions'
 import { app, db } from '@/firebase/config'
-import { invalidateInsightsCache } from '@/services/insights'
 import { PersonSchema } from '@/utils/schemas'
-import {
-  applyFullSettlement,
-  getRecoverablePaise,
-  getNormalizedSplits,
-  toNonNegativeIntPaise,
-  UNASSIGNED_PERSON_ID,
-} from '@/utils/splitMath'
+import { toNonNegativeIntPaise } from '@/utils/splitMath'
 import type { Person, Transaction } from '@/types'
 
 function toClientTimestamp(ts: any): Timestamp | null | undefined {
@@ -34,9 +26,73 @@ function toClientTimestamp(ts: any): Timestamp | null | undefined {
   return ts
 }
 
+function hydrateTransaction(rawTx: any): Transaction {
+  return {
+    ...rawTx,
+    date: toClientTimestamp(rawTx.date)!,
+    createdAt: toClientTimestamp(rawTx.createdAt) ?? undefined,
+    updatedAt: toClientTimestamp(rawTx.updatedAt) ?? undefined,
+    splits: Array.isArray(rawTx.splits)
+      ? rawTx.splits.map((s: any) => ({
+          ...s,
+          settledAt: toClientTimestamp(s.settledAt),
+        }))
+      : rawTx.splits,
+  }
+}
+
+// Durable pending idempotency key lifecycle for network retry safety
+const pendingKeys = new Map<string, { key: string; timestamp: number }>()
+
+export function getOrCreatePendingKey(operationType: string, id: string, extra = ''): string {
+  const cacheKey = `spenza_pending_${operationType}_${id}_${extra}`
+  const now = Date.now()
+  const existingMem = pendingKeys.get(cacheKey)
+  if (existingMem && now - existingMem.timestamp < 300_000) {
+    return existingMem.key
+  }
+  if (typeof window !== 'undefined' && window.sessionStorage) {
+    try {
+      const stored = window.sessionStorage.getItem(cacheKey)
+      if (stored) {
+        const parsed = JSON.parse(stored)
+        if (now - parsed.timestamp < 300_000) {
+          pendingKeys.set(cacheKey, parsed)
+          return parsed.key
+        }
+      }
+    } catch {
+      // Storage unavailable or disabled
+    }
+  }
+
+  const newKey = crypto.randomUUID()
+  const entry = { key: newKey, timestamp: now }
+  pendingKeys.set(cacheKey, entry)
+  if (typeof window !== 'undefined' && window.sessionStorage) {
+    try {
+      window.sessionStorage.setItem(cacheKey, JSON.stringify(entry))
+    } catch {
+      // Storage unavailable or disabled
+    }
+  }
+  return newKey
+}
+
+export function clearPendingKey(operationType: string, id: string, extra = '') {
+  const cacheKey = `spenza_pending_${operationType}_${id}_${extra}`
+  pendingKeys.delete(cacheKey)
+  if (typeof window !== 'undefined' && window.sessionStorage) {
+    try {
+      window.sessionStorage.removeItem(cacheKey)
+    } catch {
+      // Storage unavailable or disabled
+    }
+  }
+}
+
 const peopleColl = (uid: string) => collection(db, 'users', uid, 'people')
 const personRef = (uid: string, id: string) => doc(db, 'users', uid, 'people', id)
-const txRef = (uid: string, id: string) => doc(db, 'users', uid, 'transactions', id)
 
 function validateUid(uid: string): string {
   if (!uid || typeof uid !== 'string' || !uid.trim()) {
@@ -220,7 +276,8 @@ export async function recordSplitRepayment(
   uid: string,
   transactionId: string,
   personId: string,
-  repaymentPaise: number
+  repaymentPaise: number,
+  customIdempotencyKey?: string
 ): Promise<{ tx: Transaction; appliedPaise: number }> {
   validateUid(uid)
   const cleanTxId = validateTransactionId(transactionId)
@@ -235,183 +292,219 @@ export async function recordSplitRepayment(
     throw new Error('You are offline. Recording a repayment requires an internet connection.')
   }
 
-  const idempotencyKey = crypto.randomUUID()
+  const opKey = `${cleanTxId}_${cleanPersonId}`
+  const idempotencyKey =
+    customIdempotencyKey || getOrCreatePendingKey('repay', opKey, String(paise))
+
   const functions = getFunctions(app, 'us-central1')
   const executeRepayment = httpsCallable<
     { transactionId: string; personId: string; repaymentPaise: number; idempotencyKey: string },
     { tx: any; appliedPaise: number; replayed?: boolean }
   >(functions, 'executeRepaymentV1')
 
-  const res = await executeRepayment({
-    transactionId: cleanTxId,
-    personId: cleanPersonId,
-    repaymentPaise: paise,
-    idempotencyKey,
-  })
+  try {
+    const res = await executeRepayment({
+      transactionId: cleanTxId,
+      personId: cleanPersonId,
+      repaymentPaise: paise,
+      idempotencyKey,
+    })
 
-  const rawTx = res.data.tx
-  const tx: Transaction = {
-    ...rawTx,
-    date: toClientTimestamp(rawTx.date)!,
-    createdAt: toClientTimestamp(rawTx.createdAt) ?? undefined,
-    updatedAt: toClientTimestamp(rawTx.updatedAt) ?? undefined,
-    splits: Array.isArray(rawTx.splits)
-      ? rawTx.splits.map((s: any) => ({
-          ...s,
-          settledAt: toClientTimestamp(s.settledAt),
-        }))
-      : rawTx.splits,
-  }
+    clearPendingKey('repay', opKey, String(paise))
 
-  return {
-    tx,
-    appliedPaise: res.data.appliedPaise,
+    return {
+      tx: hydrateTransaction(res.data.tx),
+      appliedPaise: res.data.appliedPaise,
+    }
+  } catch (err) {
+    throw err
   }
 }
 
 /**
  * Settle the entire remaining balance for a specific person on a transaction.
+ *
+ * Migrated in Phase 7.2B to trusted Cloud Function execution (`executeSettlementV1`).
  */
 export async function settleSplitShare(
   uid: string,
   transactionId: string,
-  personId: string
+  personId: string,
+  customIdempotencyKey?: string
 ): Promise<{ tx: Transaction; settledPaise: number }> {
-  const cleanUid = validateUid(uid)
+  validateUid(uid)
   const cleanTxId = validateTransactionId(transactionId)
   const cleanPersonId = validatePersonId(personId)
 
-  const targetDocRef = txRef(cleanUid, cleanTxId)
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    throw new Error('You are offline. Settling dues requires an internet connection.')
+  }
 
-  const result = await runTransaction(db, async txn => {
-    const snap = await txn.get(targetDocRef)
-    if (!snap.exists()) {
-      throw new Error(`Transaction "${cleanTxId}" not found`)
-    }
+  const opKey = `${cleanTxId}_${cleanPersonId}`
+  const idempotencyKey =
+    customIdempotencyKey || getOrCreatePendingKey('settleSplit', opKey)
 
-    const currentTx = { id: snap.id, ...snap.data() } as Transaction
-    const update = applyFullSettlement(currentTx, cleanPersonId)
-    const newRecoverable = getRecoverablePaise({ ...currentTx, splits: update.splits })
+  const functions = getFunctions(app, 'us-central1')
+  const executeSettlement = httpsCallable<
+    { mode: 'splitShare'; transactionId: string; personId: string; idempotencyKey: string },
+    { tx: any; settledPaise: number; replayed?: boolean }
+  >(functions, 'executeSettlementV1')
 
-    if (update.settledPaise > 0) {
-      txn.update(targetDocRef, {
-        recoverablePaise: newRecoverable,
-        splits: update.splits,
-        reimbursementStatus: update.reimbursementStatus,
-        updatedAt: serverTimestamp(),
-      })
-    }
+  try {
+    const res = await executeSettlement({
+      mode: 'splitShare',
+      transactionId: cleanTxId,
+      personId: cleanPersonId,
+      idempotencyKey,
+    })
+
+    clearPendingKey('settleSplit', opKey)
 
     return {
-      tx: {
-        ...currentTx,
-        recoverablePaise: newRecoverable,
-        splits: update.splits,
-        reimbursementStatus: update.reimbursementStatus,
-      },
-      settledPaise: update.settledPaise,
+      tx: hydrateTransaction(res.data.tx),
+      settledPaise: res.data.settledPaise,
     }
-  })
-
-  if (result.settledPaise > 0) {
-    await invalidateInsightsCache(cleanUid)
+  } catch (err) {
+    throw err
   }
-  return result
 }
 
 /**
  * Settle all participants on a transaction in one atomic operation.
+ *
+ * Migrated in Phase 7.2B to trusted Cloud Function execution (`executeSettlementV1`).
  */
 export async function settleAllTransactionSplits(
   uid: string,
-  transactionId: string
+  transactionId: string,
+  customIdempotencyKey?: string
 ): Promise<{ tx: Transaction; settledPaise: number }> {
-  const cleanUid = validateUid(uid)
+  validateUid(uid)
   const cleanTxId = validateTransactionId(transactionId)
 
-  const targetDocRef = txRef(cleanUid, cleanTxId)
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    throw new Error('You are offline. Settling dues requires an internet connection.')
+  }
 
-  const result = await runTransaction(db, async txn => {
-    const snap = await txn.get(targetDocRef)
-    if (!snap.exists()) {
-      throw new Error(`Transaction "${cleanTxId}" not found`)
-    }
+  const opKey = cleanTxId
+  const idempotencyKey =
+    customIdempotencyKey || getOrCreatePendingKey('settleTx', opKey)
 
-    const currentTx = { id: snap.id, ...snap.data() } as Transaction
-    const update = applyFullSettlement(currentTx)
-    const newRecoverable = getRecoverablePaise({ ...currentTx, splits: update.splits })
+  const functions = getFunctions(app, 'us-central1')
+  const executeSettlement = httpsCallable<
+    { mode: 'transactionSplits'; transactionId: string; idempotencyKey: string },
+    { tx: any; settledPaise: number; replayed?: boolean }
+  >(functions, 'executeSettlementV1')
 
-    if (update.settledPaise > 0) {
-      txn.update(targetDocRef, {
-        recoverablePaise: newRecoverable,
-        splits: update.splits,
-        reimbursementStatus: update.reimbursementStatus,
-        updatedAt: serverTimestamp(),
-      })
-    }
+  try {
+    const res = await executeSettlement({
+      mode: 'transactionSplits',
+      transactionId: cleanTxId,
+      idempotencyKey,
+    })
+
+    clearPendingKey('settleTx', opKey)
 
     return {
-      tx: {
-        ...currentTx,
-        recoverablePaise: newRecoverable,
-        splits: update.splits,
-        reimbursementStatus: update.reimbursementStatus,
-      },
-      settledPaise: update.settledPaise,
+      tx: hydrateTransaction(res.data.tx),
+      settledPaise: res.data.settledPaise,
     }
-  })
-
-  if (result.settledPaise > 0) {
-    await invalidateInsightsCache(cleanUid)
+  } catch (err) {
+    throw err
   }
-  return result
+}
+
+export class MultiSettlementPartialError extends Error {
+  readonly settledCount: number
+  readonly totalSettledPaise: number
+  readonly updatedTxns: Transaction[]
+  readonly failedTransactionId: string | null
+
+  constructor(
+    message: string,
+    details: {
+      settledCount: number
+      totalSettledPaise: number
+      updatedTxns: any[]
+      failedTransactionId?: string | null
+    }
+  ) {
+    super(message)
+    this.name = 'MultiSettlementPartialError'
+    this.settledCount = details.settledCount
+    this.totalSettledPaise = details.totalSettledPaise
+    this.updatedTxns = (details.updatedTxns || []).map(hydrateTransaction)
+    this.failedTransactionId = details.failedTransactionId ?? null
+  }
 }
 
 /**
  * Settle all outstanding dues for a specific person across all transactions.
- * Safely iterates through every transaction where `personId` has an unsettled split share
- * and settles it atomically using `settleSplitShare`.
+ *
+ * Migrated in Phase 7.2B to trusted Cloud Function execution (`executeSettlementV1`).
+ * Handles bounded batching and partial progress reporting.
  */
 export async function settlePersonAllDues(
   uid: string,
-  personId: string
-): Promise<{ settledCount: number; totalSettledPaise: number; updatedTxns: Transaction[] }> {
-  const cleanUid = validateUid(uid)
+  personId: string,
+  customIdempotencyKey?: string
+): Promise<{ settledCount: number; totalSettledPaise: number; updatedTxns: Transaction[]; complete?: boolean }> {
+  validateUid(uid)
   const cleanPersonId = validatePersonId(personId)
 
-  const txRefColl = collection(db, 'users', cleanUid, 'transactions')
-  const snap = await getDocs(txRefColl)
-
-  const matchingDocs = snap.docs.filter(d => {
-    const data = d.data() as Transaction
-    const splits = getNormalizedSplits(data)
-    const share = splits.find(
-      s =>
-        s.personId === cleanPersonId ||
-        (s.personId === UNASSIGNED_PERSON_ID &&
-          s.personName.toLowerCase() === cleanPersonId.toLowerCase())
-    )
-    return share && share.amountPaise > share.repaidPaise
-  })
-
-  if (matchingDocs.length === 0) {
-    return { settledCount: 0, totalSettledPaise: 0, updatedTxns: [] }
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    throw new Error('You are offline. Settling dues requires an internet connection.')
   }
 
-  let totalSettled = 0
-  const updatedTxns: Transaction[] = []
+  const opKey = cleanPersonId
+  const idempotencyKey =
+    customIdempotencyKey || getOrCreatePendingKey('settlePerson', opKey)
 
-  for (const docSnap of matchingDocs) {
-    const res = await settleSplitShare(cleanUid, docSnap.id, cleanPersonId)
-    if (res.settledPaise > 0) {
-      totalSettled += res.settledPaise
-      updatedTxns.push(res.tx)
+  const functions = getFunctions(app, 'us-central1')
+  const executeSettlement = httpsCallable<
+    { mode: 'personAllDues'; personId: string; idempotencyKey: string; maxTransactions?: number },
+    {
+      settledCount: number
+      totalSettledPaise: number
+      updatedTxns: any[]
+      complete: boolean
+      replayed?: boolean
+      failedTransactionId?: string | null
+      error?: string | null
     }
-  }
+  >(functions, 'executeSettlementV1')
 
-  return {
-    settledCount: updatedTxns.length,
-    totalSettledPaise: totalSettled,
-    updatedTxns,
+  try {
+    const res = await executeSettlement({
+      mode: 'personAllDues',
+      personId: cleanPersonId,
+      idempotencyKey,
+    })
+
+    const data = res.data
+    const hydratedTxns = (data.updatedTxns || []).map(hydrateTransaction)
+
+    if (data.error && data.failedTransactionId) {
+      throw new MultiSettlementPartialError(data.error, {
+        settledCount: data.settledCount,
+        totalSettledPaise: data.totalSettledPaise,
+        updatedTxns: hydratedTxns,
+        failedTransactionId: data.failedTransactionId,
+      })
+    }
+
+    clearPendingKey('settlePerson', opKey)
+
+    return {
+      settledCount: data.settledCount,
+      totalSettledPaise: data.totalSettledPaise,
+      updatedTxns: hydratedTxns,
+      complete: data.complete,
+    }
+  } catch (err: any) {
+    if (err?.details && typeof err.details.settledCount === 'number') {
+      throw new MultiSettlementPartialError(err.message || 'Settlement partially failed', err.details)
+    }
+    throw err
   }
 }

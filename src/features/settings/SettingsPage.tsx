@@ -22,6 +22,7 @@ import {
   CheckCircle2,
   User as UserIcon,
   Users,
+  FileJson,
 } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
 import { ExpenseDeletionError } from '@/utils/expenseDeletion'
@@ -39,6 +40,7 @@ import {
   getImportedTransactionsCount,
 } from '@/services/importExcel'
 import { exportTransactionsCSV } from '@/services/exportCsv'
+import { exportCompleteFinancialData } from '@/services/financialBackup'
 import {
   getLiveTransactionCount,
   invalidateInsightsCache,
@@ -211,11 +213,14 @@ export function SettingsPage() {
   const [totalTxCount, setTotalTxCount] = useState<number | null>(null)
   const [importedTxCount, setImportedTxCount] = useState<number | null>(null)
   const [exporting, setExporting] = useState(false)
+  const [exportingJSON, setExportingJSON] = useState(false)
   const [resettingCache, setResettingCache] = useState(false)
   const [confirmClearImports, setConfirmClearImports] = useState(false)
   const [clearingImports, setClearingImports] = useState(false)
+  const [ackClearImports, setAckClearImports] = useState(false)
   const [confirmClearAll, setConfirmClearAll] = useState(false)
   const [clearingAll, setClearingAll] = useState(false)
+  const [ackClearAll, setAckClearAll] = useState(false)
   const [statusBanner, setStatusBanner] = useState<{
     type: 'success' | 'error'
     message: string
@@ -296,6 +301,27 @@ export function SettingsPage() {
     }
   }
 
+  const handleExportJSON = async () => {
+    if (!user) return
+    setExportingJSON(true)
+    setStatusBanner(null)
+    try {
+      const res = await exportCompleteFinancialData(user.uid)
+      setStatusBanner({
+        type: 'success',
+        message: `Exported ${res.transactionCount.toLocaleString()} transactions (${res.filename}) with complete integer-paise accounting.`,
+      })
+    } catch (err: any) {
+      console.error('[Spenza Settings] Export JSON error:', err)
+      setStatusBanner({
+        type: 'error',
+        message: err?.message || 'Failed to export complete financial data.',
+      })
+    } finally {
+      setExportingJSON(false)
+    }
+  }
+
   const handleResetInsightsCache = async () => {
     if (!user) return
     setResettingCache(true)
@@ -325,12 +351,13 @@ export function SettingsPage() {
   }
 
   const handleClearImported = async () => {
-    if (!user) return
+    if (!user || !ackClearImports) return
     setClearingImports(true)
     setStatusBanner(null)
     try {
       const { deleted, cacheInvalidated } = await clearImportedTransactions(user.uid)
       setConfirmClearImports(false)
+      setAckClearImports(false)
       await reloadData()
       if (!cacheInvalidated) {
         setStatusBanner({
@@ -359,12 +386,13 @@ export function SettingsPage() {
   }
 
   const handleClearAll = async () => {
-    if (!user) return
+    if (!user || !ackClearAll) return
     setClearingAll(true)
     setStatusBanner(null)
     try {
       const { deleted, cacheInvalidated } = await clearAllTransactions(user.uid)
       setConfirmClearAll(false)
+      setAckClearAll(false)
       await reloadData()
       if (!cacheInvalidated) {
         setStatusBanner({
@@ -796,13 +824,45 @@ export function SettingsPage() {
 
         {/* Export & Import row */}
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          {/* Complete Financial Archive (JSON) */}
+          <div className="flex flex-col justify-between gap-3 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:col-span-2">
+            <div>
+              <div className="flex items-center gap-2">
+                <FileJson className="h-4 w-4 text-[var(--primary)]" />
+                <p className="text-sm font-semibold text-[var(--text-primary)]">
+                  Export Complete Financial Archive (JSON)
+                </p>
+              </div>
+              <p className="mt-1 text-xs text-[var(--text-muted)]">
+                Download a complete, lossless backup of all transaction records in exact integer paise, including per-person splits, repayment histories, categories, payment accounts, and contacts.
+              </p>
+              <p className="mt-1 text-[11px] text-[var(--text-subtle)]">
+                Note: Automated restore is not supported in this version. This file serves as an immutable offline archive for your personal records before performing destructive maintenance.
+              </p>
+            </div>
+            <button
+              id="settings-export-json-btn"
+              type="button"
+              onClick={handleExportJSON}
+              disabled={exportingJSON || totalTxCount === 0}
+              className="flex items-center justify-center gap-2 rounded-xl border border-[var(--primary)] bg-[var(--primary-muted)] px-4 py-2.5 text-xs font-semibold text-[var(--primary)] transition-colors hover:bg-[var(--primary)] hover:text-white disabled:opacity-50"
+            >
+              {exportingJSON ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Download className="h-3.5 w-3.5" />
+              )}
+              {exportingJSON ? 'Exporting Archive…' : 'Download Complete Archive (JSON)'}
+            </button>
+          </div>
+
           <div className="flex flex-col justify-between gap-3 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4">
             <div>
               <p className="text-sm font-semibold text-[var(--text-primary)]">
                 Export All Data (CSV)
               </p>
               <p className="mt-0.5 text-xs text-[var(--text-muted)]">
-                Download your complete transaction history ({totalTxCount ?? '…'} rows) with categories, payment modes, and accounts.
+                Download your transaction history ({totalTxCount ?? '…'} rows) formatted for spreadsheet viewing with categories, payment modes, and accounts.
               </p>
             </div>
             <button
@@ -886,7 +946,9 @@ export function SettingsPage() {
                 disabled={clearingImports || !importedTxCount}
                 onClick={() => {
                   setConfirmClearAll(false)
+                  setAckClearAll(false)
                   setConfirmClearImports(true)
+                  setAckClearImports(false)
                 }}
                 className="flex shrink-0 items-center justify-center gap-2 rounded-xl border border-[var(--danger)] px-4 py-2 text-xs font-semibold text-[var(--danger)] transition-colors hover:bg-[var(--danger)] hover:text-white disabled:opacity-40 disabled:pointer-events-none"
               >
@@ -899,37 +961,72 @@ export function SettingsPage() {
           </div>
 
           {confirmClearImports && (
-            <div className="mt-3 flex flex-col gap-3 rounded-xl border border-[var(--danger)]/40 bg-[var(--danger-muted)] p-3.5 sm:flex-row sm:items-center sm:justify-between">
+            <div className="mt-3 flex flex-col gap-3 rounded-xl border border-[var(--danger)]/40 bg-[var(--danger-muted)] p-4">
               <div className="flex items-start gap-2.5">
                 <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--danger)]" />
-                <p className="text-xs font-medium text-[var(--text-primary)]">
-                  This will permanently delete{' '}
-                  <strong>
-                    {importedTxCount?.toLocaleString() ?? 0} imported transaction
-                    {importedTxCount === 1 ? '' : 's'}
-                  </strong>{' '}
-                  and invalidate your cached Insights summary. This cannot be undone.
-                </p>
+                <div className="flex flex-col gap-1">
+                  <p className="text-xs font-semibold text-[var(--danger)]">
+                    Irreversible Operation: Clear Imported Transactions
+                  </p>
+                  <p className="text-xs text-[var(--text-primary)]">
+                    This will permanently delete up to <strong>{importedTxCount?.toLocaleString() ?? 0} imported transactions</strong> without repayments.
+                    Ledger safeguards will automatically preserve transactions with recorded repayments, but all other imported records will be permanently erased.
+                  </p>
+                  <p className="text-[11px] text-[var(--text-muted)]">
+                    Warning: Deleted records cannot be recovered automatically. It is strongly recommended to export your financial archive first.
+                  </p>
+                </div>
               </div>
-              <div className="flex shrink-0 items-center gap-2">
+
+              <div className="flex flex-col gap-2.5 pt-2 border-t border-[var(--danger)]/20">
+                <div className="flex items-center justify-between gap-3 flex-wrap">
+                  <span className="text-xs text-[var(--text-muted)]">Recommended safeguard:</span>
+                  <button
+                    type="button"
+                    disabled={exportingJSON}
+                    onClick={handleExportJSON}
+                    className="flex items-center gap-1.5 text-xs font-semibold text-[var(--primary)] hover:underline disabled:opacity-50"
+                  >
+                    {exportingJSON ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
+                    Download JSON Archive before deleting
+                  </button>
+                </div>
+
+                <label className="flex items-start gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={ackClearImports}
+                    onChange={e => setAckClearImports(e.target.checked)}
+                    className="mt-0.5 rounded border-[var(--border)] text-[var(--danger)] focus:ring-[var(--danger)]"
+                  />
+                  <span className="text-xs font-medium text-[var(--text-primary)]">
+                    I understand that these transactions will be permanently deleted and no automatic restore exists.
+                  </span>
+                </label>
+              </div>
+
+              <div className="flex shrink-0 items-center justify-end gap-2 pt-1">
                 <button
                   type="button"
                   disabled={clearingImports}
+                  onClick={() => {
+                    setConfirmClearImports(false)
+                    setAckClearImports(false)
+                  }}
+                  className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-1.5 text-xs font-medium text-[var(--text-muted)]"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={clearingImports || !ackClearImports}
                   onClick={handleClearImported}
-                  className="flex items-center gap-1.5 rounded-lg bg-[var(--danger)] px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-60"
+                  className="flex items-center gap-1.5 rounded-lg bg-[var(--danger)] px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-40 disabled:pointer-events-none"
                 >
                   {clearingImports && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
                   {clearingImports
                     ? 'Deleting…'
                     : `Delete ${importedTxCount?.toLocaleString() ?? 0} imported`}
-                </button>
-                <button
-                  type="button"
-                  disabled={clearingImports}
-                  onClick={() => setConfirmClearImports(false)}
-                  className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-1.5 text-xs font-medium text-[var(--text-muted)]"
-                >
-                  Cancel
                 </button>
               </div>
             </div>
@@ -955,7 +1052,9 @@ export function SettingsPage() {
                 disabled={clearingAll || !totalTxCount}
                 onClick={() => {
                   setConfirmClearImports(false)
+                  setAckClearImports(false)
                   setConfirmClearAll(true)
+                  setAckClearAll(false)
                 }}
                 className="flex shrink-0 items-center justify-center gap-2 rounded-xl border border-[var(--danger)] px-4 py-2 text-xs font-semibold text-[var(--danger)] transition-colors hover:bg-[var(--danger)] hover:text-white disabled:opacity-40 disabled:pointer-events-none"
               >
@@ -968,37 +1067,72 @@ export function SettingsPage() {
           </div>
 
           {confirmClearAll && (
-            <div className="mt-3 flex flex-col gap-3 rounded-xl border border-[var(--danger)]/40 bg-[var(--danger-muted)] p-3.5 sm:flex-row sm:items-center sm:justify-between">
+            <div className="mt-3 flex flex-col gap-3 rounded-xl border border-[var(--danger)]/40 bg-[var(--danger-muted)] p-4">
               <div className="flex items-start gap-2.5">
                 <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--danger)]" />
-                <p className="text-xs font-medium text-[var(--text-primary)]">
-                  Are you sure? This will permanently delete all{' '}
-                  <strong>
-                    {totalTxCount?.toLocaleString() ?? 0} transaction
-                    {totalTxCount === 1 ? '' : 's'}
-                  </strong>{' '}
-                  and reset your Insights summary.
-                </p>
+                <div className="flex flex-col gap-1">
+                  <p className="text-xs font-semibold text-[var(--danger)]">
+                    Irreversible Operation: Clear All Transactions
+                  </p>
+                  <p className="text-xs text-[var(--text-primary)]">
+                    This will permanently delete all <strong>{totalTxCount?.toLocaleString() ?? 0} transactions</strong> across your entire account that do not have recorded repayments.
+                    Transactions with repayment history are preserved by ledger safeguards, but all other transaction records will be permanently erased.
+                  </p>
+                  <p className="text-[11px] text-[var(--text-muted)]">
+                    Warning: There is no automated restore. Once deleted, your personal spending history, category breakdowns, and unpaid split dues will be lost forever.
+                  </p>
+                </div>
               </div>
-              <div className="flex shrink-0 items-center gap-2">
+
+              <div className="flex flex-col gap-2.5 pt-2 border-t border-[var(--danger)]/20">
+                <div className="flex items-center justify-between gap-3 flex-wrap">
+                  <span className="text-xs text-[var(--text-muted)]">Recommended safeguard:</span>
+                  <button
+                    type="button"
+                    disabled={exportingJSON}
+                    onClick={handleExportJSON}
+                    className="flex items-center gap-1.5 text-xs font-semibold text-[var(--primary)] hover:underline disabled:opacity-50"
+                  >
+                    {exportingJSON ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
+                    Download JSON Archive before deleting
+                  </button>
+                </div>
+
+                <label className="flex items-start gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={ackClearAll}
+                    onChange={e => setAckClearAll(e.target.checked)}
+                    className="mt-0.5 rounded border-[var(--border)] text-[var(--danger)] focus:ring-[var(--danger)]"
+                  />
+                  <span className="text-xs font-medium text-[var(--text-primary)]">
+                    I understand that these transactions will be permanently deleted and no automatic restore exists.
+                  </span>
+                </label>
+              </div>
+
+              <div className="flex shrink-0 items-center justify-end gap-2 pt-1">
                 <button
                   type="button"
                   disabled={clearingAll}
+                  onClick={() => {
+                    setConfirmClearAll(false)
+                    setAckClearAll(false)
+                  }}
+                  className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-1.5 text-xs font-medium text-[var(--text-muted)]"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={clearingAll || !ackClearAll}
                   onClick={handleClearAll}
-                  className="flex items-center gap-1.5 rounded-lg bg-[var(--danger)] px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-60"
+                  className="flex items-center gap-1.5 rounded-lg bg-[var(--danger)] px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-40 disabled:pointer-events-none"
                 >
                   {clearingAll && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
                   {clearingAll
                     ? 'Deleting…'
                     : `Yes, delete all ${totalTxCount?.toLocaleString() ?? 0}`}
-                </button>
-                <button
-                  type="button"
-                  disabled={clearingAll}
-                  onClick={() => setConfirmClearAll(false)}
-                  className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-1.5 text-xs font-medium text-[var(--text-muted)]"
-                >
-                  Cancel
                 </button>
               </div>
             </div>

@@ -5,6 +5,7 @@ import { runInNewContext } from 'node:vm'
 import ts from 'typescript'
 import { Timestamp } from 'firebase/firestore'
 import * as editHelpers from '../../utils/expenseEdit.ts'
+import * as deletionHelpers from '../../utils/expenseDeletion.ts'
 import type { ExpenseEdit } from '../../utils/expenseEdit.ts'
 import type { Transaction } from '../../types/index.ts'
 
@@ -56,6 +57,7 @@ function harness(options: { failCommit?: boolean; missing?: boolean; offline?: b
       if (name === 'firebase/firestore') return sdk
       if (name === '@/firebase/config') return { db: {} }
       if (name === '@/utils/expenseEdit') return editHelpers
+      if (name === '@/utils/expenseDeletion') return deletionHelpers
       if (name === '@/services/insights') return { invalidateInsightsCache: async () => { invalidations++; return true } }
       throw new Error(`Unexpected import: ${name}`)
     },

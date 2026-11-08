@@ -4,7 +4,6 @@ import {
   setDoc,
   getDoc,
   getDocs,
-  deleteDoc,
   query,
   orderBy,
   limit,
@@ -18,6 +17,7 @@ import { db } from '@/firebase/config'
 import { invalidateInsightsCache } from '@/services/insights'
 import type { Transaction, PaymentAccount, Category } from '@/types'
 import { prepareExpenseEdit, ExpenseEditError, type ExpenseEdit } from '@/utils/expenseEdit'
+import { assertExpenseCanBeDeleted, ExpenseDeletionError } from '@/utils/expenseDeletion'
 
 const PAGE_SIZE = 30
 
@@ -68,7 +68,21 @@ export async function updateTransaction(
 }
 
 export async function deleteTransaction(uid: string, id: string): Promise<void> {
-  await deleteDoc(doc(db, 'users', uid, 'transactions', id))
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    throw new ExpenseDeletionError('You are offline. Deleting an expense requires a connection to verify repayment history. Reconnect and try again.')
+  }
+  const ref = doc(db, 'users', uid, 'transactions', id)
+  try {
+    await runTransaction(db, async txn => {
+      const snap = await txn.get(ref)
+      if (!snap.exists()) return
+      assertExpenseCanBeDeleted(snap.data() as Transaction)
+      txn.delete(ref)
+    })
+  } catch (error) {
+    if (error instanceof ExpenseDeletionError) throw error
+    throw new ExpenseDeletionError('Could not verify repayment history or confirm deletion. Check your connection and refresh before trying again.')
+  }
   const cacheOk = await invalidateInsightsCache(uid)
   if (!cacheOk) {
     console.warn('[Spenza Transactions] Deleted transaction, but failed to invalidate insights cache.')

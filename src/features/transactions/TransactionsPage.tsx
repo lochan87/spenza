@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { format, isToday, isYesterday } from 'date-fns'
 import { Timestamp } from 'firebase/firestore'
@@ -9,6 +9,7 @@ import {
 } from 'lucide-react'
 
 import { useAuth } from '@/hooks/useAuth'
+import { assertExpenseCanBeDeleted, ExpenseDeletionError } from '@/utils/expenseDeletion'
 import {
   getAllTransactions,
   deleteTransaction,
@@ -638,21 +639,45 @@ function DeleteConfirm({
   onCancel,
 }: {
   tx: Transaction
-  onConfirm: () => void
+  onConfirm: () => Promise<void>
   onCancel: () => void
 }) {
   const pendingRecoverablePaise = getPendingRecoverablePaise(tx)
+  const [deleting, setDeleting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const inFlight = useRef(false)
+  let protectionMessage: string | null = null
+  try {
+    assertExpenseCanBeDeleted(tx)
+  } catch (err) {
+    protectionMessage = err instanceof ExpenseDeletionError ? err.message : 'Repayment history could not be verified.'
+  }
+
+  async function confirmDelete() {
+    if (inFlight.current) return
+    inFlight.current = true
+    setDeleting(true)
+    setError(null)
+    try {
+      await onConfirm()
+    } catch (err) {
+      setError(err instanceof ExpenseDeletionError ? err.message : 'Could not delete this expense. Refresh and try again.')
+    } finally {
+      inFlight.current = false
+      setDeleting(false)
+    }
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onCancel} />
+      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => { if (!inFlight.current) onCancel() }} />
       <div className="relative z-10 w-full max-w-sm rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6 shadow-[var(--shadow-xl)]">
         <h3 className="mb-2 text-base font-semibold text-[var(--text-primary)]">Delete expense?</h3>
         <p className="mb-4 text-sm text-[var(--text-muted)]">
-          “{tx.description}” — {formatTxAmount(tx.amountPaise)} will be permanently deleted.
+          “{tx.description}” — {formatTxAmount(tx.amountPaise)}{protectionMessage ? '' : ' will be permanently deleted.'}
         </p>
 
-        {pendingRecoverablePaise > 0 && (
+        {!protectionMessage && pendingRecoverablePaise > 0 && (
           <div className="mb-4 rounded-xl border border-[var(--warning)]/30 bg-[var(--warning-muted)] p-3 text-xs text-[var(--text-secondary)]">
             <div className="mb-1 flex items-center gap-1.5 font-semibold text-[var(--warning)]">
               <AlertTriangle className="h-4 w-4 shrink-0" />
@@ -665,18 +690,21 @@ function DeleteConfirm({
           </div>
         )}
 
+        {(error || protectionMessage) && <p role="alert" className="mb-4 text-sm text-[var(--danger)]">{error || protectionMessage}</p>}
         <div className="flex gap-3">
           <button
             onClick={onCancel}
+            disabled={deleting}
             className="flex-1 rounded-xl border border-[var(--border)] py-2.5 text-sm font-medium text-[var(--text-muted)] hover:bg-[var(--surface-2)] transition-colors"
           >
-            Cancel
+            {protectionMessage ? 'Close' : 'Cancel'}
           </button>
           <button
-            onClick={onConfirm}
+            onClick={confirmDelete}
+            disabled={deleting || !!protectionMessage}
             className="flex-1 rounded-xl bg-[var(--danger)] py-2.5 text-sm font-semibold text-white hover:opacity-90 transition-opacity"
           >
-            Delete
+            {deleting ? 'Checking…' : 'Delete'}
           </button>
         </div>
       </div>

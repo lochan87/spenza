@@ -249,7 +249,8 @@ it('Firestore emulator: deletion safety and bypass verification', { skip: !host 
         }),
       }, db, async () => true)
       await assert.rejects(remove('owner', id), helpers.ExpenseDeletionError)
-      assert.ok(attempts >= 2)
+      // Under strengthened rules, Firestore immediately rejects deletion of the repaid document at the database boundary (attempts >= 1)
+      assert.ok(attempts >= 1)
       assert.equal((await sdk.getDoc(ref)).data()!.splits[0].repaidPaise, 2001)
     })
     await t.test('repayment fails rather than recreating an expense when deletion wins the race', async () => {
@@ -319,7 +320,8 @@ it('Firestore emulator: deletion safety and bypass verification', { skip: !host 
         }),
       }, db, async () => true)
       await assert.rejects(delayed.deleteTransactionsSafely('owner', [a.id, b.id], true), /Confirmed deletions: 0/)
-      assert.ok(attempts >= 2)
+      // Under strengthened rules, Firestore immediately rejects deletion of the repaid document at the database boundary (attempts >= 1)
+      assert.ok(attempts >= 1)
       assert.equal((await sdk.getDoc(a.ref)).data()!.splits[0].repaidPaise, 2001)
       assert.deepEqual((await sdk.getDoc(b.ref)).data(), fixture())
       const c = await seed({ ...fixture(), isImported: true })
@@ -339,12 +341,12 @@ it('Firestore emulator: deletion safety and bypass verification', { skip: !host 
       assert.equal((await sdk.getDoc(sdk.doc(db, 'users', 'owner', 'transactions', ids[0]))).exists(), false)
       assert.deepEqual((await sdk.getDoc(sdk.doc(db, 'users', 'owner', 'transactions', ids[400]))).data(), fixture(5001))
     })
-    await t.test('current rules allow owner direct delete and overwrite of repayment history (confirmed bypass)', async () => {
+    await t.test('rules reject owner direct delete and status-demoting overwrite of repayment history', async () => {
       const a = await seed(fixture(5001)), b = await seed(fixture(2001))
-      await sdk.deleteDoc(a.ref)
-      await sdk.setDoc(b.ref, fixture())
-      assert.equal((await sdk.getDoc(a.ref)).exists(), false)
-      assert.equal((await sdk.getDoc(b.ref)).data()!.splits[0].repaidPaise, 0)
+      await assert.rejects(sdk.deleteDoc(a.ref), /permission-denied/)
+      await assert.rejects(sdk.setDoc(b.ref, fixture()), /permission-denied/)
+      assert.equal((await sdk.getDoc(a.ref)).exists(), true)
+      assert.equal((await sdk.getDoc(b.ref)).data()!.splits[0].repaidPaise, 2001)
     })
   } finally {
     await sdk.terminate(db)

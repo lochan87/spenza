@@ -110,16 +110,15 @@ export function deserializeValue(encoded: ArchiveValue, resolveReference?: Refer
   return result
 }
 
-export const archiveCollections = ['transactions', 'categories', 'paymentAccounts', 'people'] as const
+export const archiveCollections = ['transactions', 'categories', 'paymentAccounts', 'people', 'trips', 'recurring', 'budgets', 'importOperations', 'repaymentReceipts'] as const
+export const importArchiveCollections = ['chunks', 'receipts', 'tripReceipts', 'trustedV2Receipts', 'trustedV2Trips', 'trustedV2State'] as const
 export type ArchiveCollection = typeof archiveCollections[number]
 export interface SourceDocument { id: string; path: string; data: Record<string, unknown> }
 export interface ArchivedDocument { id: string; path: string; data: ArchiveValue }
-export interface ArchiveInput {
+export type ArchiveInput = Record<ArchiveCollection, SourceDocument[]> & {
   uid: string
-  transactions: SourceDocument[]
-  categories: SourceDocument[]
-  paymentAccounts: SourceDocument[]
-  people: SourceDocument[]
+  nestedCollections: Record<string, SourceDocument[]>
+  readVerification?: { method: 'two-server-passes'; startedAt: string; verifiedAt: string; globallyAtomic: false }
   now?: Date
 }
 export interface FinancialExportDocument {
@@ -130,6 +129,8 @@ export interface FinancialExportDocument {
   disclaimer: string
   metadata: {
     counts: Record<ArchiveCollection, number>
+    collectionManifests: { path: string; count: number; documentPaths: string[] }[]
+    readVerification: ArchiveInput['readVerification'] | null
     derived: {
       totalGrossPaise: number
       totalRecoverablePaise: number
@@ -139,29 +140,44 @@ export interface FinancialExportDocument {
     }
   }
   data: Record<ArchiveCollection, ArchivedDocument[]>
+  nestedCollections: Record<string, ArchivedDocument[]>
 }
 
-function checkIdentity(record: SourceDocument | ArchivedDocument, uid: string, collection: ArchiveCollection) {
-  if (!record.id || record.id.includes('/') || record.path !== `users/${uid}/${collection}/${record.id}`) {
+function checkIdentity(record: SourceDocument | ArchivedDocument, collectionPath: string) {
+  if (!record.id || record.id.includes('/') || record.path !== `${collectionPath}/${record.id}`) {
     throw new Error(`Invalid document identity: ${record.path}`)
   }
+}
+
+/** Known schema coverage, including empty child collections. Unknown/orphan subcollections are not discoverable by this client. */
+export function sourceCollections(input: ArchiveInput): [string, SourceDocument[]][] {
+  const roots: [string, SourceDocument[]][] = archiveCollections.map(name => [`users/${input.uid}/${name}`, input[name]])
+  const nestedPaths = input.importOperations.flatMap(op => importArchiveCollections.map(name => `users/${input.uid}/importOperations/${op.id}/${name}`)).sort()
+  if (JSON.stringify(Object.keys(input.nestedCollections).sort()) !== JSON.stringify(nestedPaths)) throw new Error('Missing or unexpected nested import collection')
+  return [...roots, ...nestedPaths.map(path => [path, input.nestedCollections[path]] as [string, SourceDocument[]])]
 }
 
 export function buildFinancialExportDocument(input: ArchiveInput): FinancialExportDocument {
   if (!input.uid || input.uid.includes('/')) throw new Error('Invalid owner UID')
   const data = {} as FinancialExportDocument['data']
   const counts = {} as FinancialExportDocument['metadata']['counts']
-  for (const collection of archiveCollections) {
+  const nestedCollections: FinancialExportDocument['nestedCollections'] = {}
+  const collectionManifests: FinancialExportDocument['metadata']['collectionManifests'] = []
+  for (const [path, records] of sourceCollections(input)) {
+    if (!Array.isArray(records)) throw new Error(`Missing collection: ${path}`)
     const paths = new Set<string>()
-    data[collection] = input[collection].map(record => {
-      checkIdentity(record, input.uid, collection)
+    const serialized = records.map(record => {
+      checkIdentity(record, path)
       if (paths.has(record.path)) throw new Error(`Duplicate document: ${record.path}`)
       paths.add(record.path)
       const value = serializeValue(record.data)
       if (value.type !== 'map') throw new Error('Document data must be a map')
       return { id: record.id, path: record.path, data: value }
     })
-    counts[collection] = data[collection].length
+    collectionManifests.push({ path, count: serialized.length, documentPaths: serialized.map(record => record.path) })
+    const root = archiveCollections.find(name => path === `users/${input.uid}/${name}`)
+    if (root) { data[root] = serialized; counts[root] = serialized.length }
+    else nestedCollections[path] = serialized
   }
   const derived = { totalGrossPaise: 0, totalRecoverablePaise: 0, totalNetPaise: 0, totalRepaidPaise: 0,
     warnings: ['Derived totals use normalized ledger calculations, not raw archival values. They do not verify source completeness.'] }
@@ -186,8 +202,8 @@ export function buildFinancialExportDocument(input: ArchiveInput): FinancialExpo
   }
   return { format: 'spenza-financial-export', version: 2, uid: input.uid,
     exportedAt: (input.now ?? new Date()).toISOString(),
-    disclaimer: 'Reversible archive of the fetched documents in the four listed collections. Fidelity checks compare these reads only; they do not prove database completeness, a consistent snapshot, or successful file storage. Automated restore is not supported.',
-    metadata: { counts, derived }, data }
+    disclaimer: 'Reversible archive of the known financial collections listed in the manifests. Fidelity checks compare fetched reads only; they do not prove database completeness, a globally atomic snapshot, or successful file storage. Unknown collections, orphan import subcollections and external receipt files are not included. Automated restore is unavailable. This file contains sensitive, unencrypted financial and contact data.',
+    metadata: { counts, collectionManifests, readVerification: input.readVerification ?? null, derived }, data, nestedCollections }
 }
 
 /** Source-bound fidelity check, including the actual JSON parse/stringify boundary. */
@@ -197,12 +213,15 @@ export function validateExportIntegrity(archive: FinancialExportDocument, source
     const expected = buildFinancialExportDocument(source)
     if (JSON.stringify(archive.metadata) !== JSON.stringify(expected.metadata)) throw new Error('Metadata differs from fetched source')
     if (JSON.stringify(archive.data) !== JSON.stringify(expected.data)) throw new Error('Document identities, fields or values differ from fetched source')
-    for (const collection of archiveCollections) {
-      for (let index = 0; index < source[collection].length; index++) {
+    if (JSON.stringify(archive.nestedCollections) !== JSON.stringify(expected.nestedCollections)) throw new Error('Nested document identities, fields or values differ from fetched source')
+    for (const [path, records] of sourceCollections(source)) {
+      const root = archiveCollections.find(name => path === `users/${source.uid}/${name}`)
+      const archived = root ? archive.data[root] : archive.nestedCollections[path]
+      for (let index = 0; index < records.length; index++) {
         const references = new Map<string, DocumentReference>()
-        const original = serializeValue(source[collection][index].data, references)
-        const record = archive.data[collection][index]
-        checkIdentity(record, source.uid, collection)
+        const original = serializeValue(records[index].data, references)
+        const record = archived[index]
+        checkIdentity(record, path)
         const roundTrip = deserializeValue(JSON.parse(JSON.stringify(record.data)), identity => {
           const ref = references.get(referenceKey(identity))
           if (!ref) throw new Error('Unknown document reference')

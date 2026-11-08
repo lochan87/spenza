@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import {
   Plus,
@@ -214,6 +214,7 @@ export function SettingsPage() {
   const [importedTxCount, setImportedTxCount] = useState<number | null>(null)
   const [exporting, setExporting] = useState(false)
   const [exportingJSON, setExportingJSON] = useState(false)
+  const maintenanceInFlight = useRef(false)
   const [resettingCache, setResettingCache] = useState(false)
   const [confirmClearImports, setConfirmClearImports] = useState(false)
   const [clearingImports, setClearingImports] = useState(false)
@@ -302,28 +303,31 @@ export function SettingsPage() {
   }
 
   const handleExportJSON = async () => {
-    if (!user) return
+    if (!user || maintenanceInFlight.current) return
+    maintenanceInFlight.current = true
     setExportingJSON(true)
     setStatusBanner(null)
     try {
       const res = await exportCompleteFinancialData(user.uid)
       setStatusBanner({
         type: 'success',
-        message: `Exported ${res.transactionCount.toLocaleString()} transactions (${res.filename}) with complete integer-paise accounting.`,
+        message: `Download initiated: ${res.filename} (${res.transactionCount.toLocaleString()} transactions). Verify the saved file yourself. Matching server reads do not guarantee an atomic snapshot.`,
       })
     } catch (err: any) {
       console.error('[Spenza Settings] Export JSON error:', err)
       setStatusBanner({
         type: 'error',
-        message: err?.message || 'Failed to export complete financial data.',
+        message: err?.message || 'Failed to export financial data.',
       })
     } finally {
       setExportingJSON(false)
+      maintenanceInFlight.current = false
     }
   }
 
   const handleResetInsightsCache = async () => {
-    if (!user) return
+    if (!user || maintenanceInFlight.current) return
+    maintenanceInFlight.current = true
     setResettingCache(true)
     setStatusBanner(null)
     try {
@@ -347,11 +351,13 @@ export function SettingsPage() {
       })
     } finally {
       setResettingCache(false)
+      maintenanceInFlight.current = false
     }
   }
 
   const handleClearImported = async () => {
-    if (!user || !ackClearImports) return
+    if (!user || !ackClearImports || maintenanceInFlight.current) return
+    maintenanceInFlight.current = true
     setClearingImports(true)
     setStatusBanner(null)
     try {
@@ -382,11 +388,13 @@ export function SettingsPage() {
       })
     } finally {
       setClearingImports(false)
+      maintenanceInFlight.current = false
     }
   }
 
   const handleClearAll = async () => {
-    if (!user || !ackClearAll) return
+    if (!user || !ackClearAll || maintenanceInFlight.current) return
+    maintenanceInFlight.current = true
     setClearingAll(true)
     setStatusBanner(null)
     try {
@@ -417,6 +425,7 @@ export function SettingsPage() {
       })
     } finally {
       setClearingAll(false)
+      maintenanceInFlight.current = false
     }
   }
 
@@ -433,6 +442,7 @@ export function SettingsPage() {
 
   return (
     <div className="flex flex-col gap-8 pb-20 md:pb-8">
+      <fieldset disabled={exportingJSON} className="contents">
       {/* Page Header */}
       <div>
         <h1 className="text-xl font-bold text-[var(--text-primary)]">Settings</h1>
@@ -824,27 +834,27 @@ export function SettingsPage() {
 
         {/* Export & Import row */}
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          {/* Complete Financial Archive (JSON) */}
+          {/* Financial Archive (JSON) */}
           <div className="flex flex-col justify-between gap-3 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:col-span-2">
             <div>
               <div className="flex items-center gap-2">
                 <FileJson className="h-4 w-4 text-[var(--primary)]" />
                 <p className="text-sm font-semibold text-[var(--text-primary)]">
-                  Export Complete Financial Archive (JSON)
+                  Export Financial Archive (JSON)
                 </p>
               </div>
               <p className="mt-1 text-xs text-[var(--text-muted)]">
-                Download a complete, lossless backup of all transaction records in exact integer paise, including per-person splits, repayment histories, categories, payment accounts, and contacts.
+                Archive transactions, contacts, categories, payment accounts, trips, schedules, budgets, import records and repayment receipts with original field values preserved.
               </p>
               <p className="mt-1 text-[11px] text-[var(--text-subtle)]">
-                Note: Automated restore is not supported in this version. This file serves as an immutable offline archive for your personal records before performing destructive maintenance.
+                Sensitive, unencrypted financial and contact data: store this JSON securely. Automated restore is unavailable. Two matching server reads detect some concurrent changes but do not guarantee a globally atomic snapshot. Unknown collections, orphan import documents and receipt attachments are not included. A download is not a verified saved backup.
               </p>
             </div>
             <button
               id="settings-export-json-btn"
               type="button"
               onClick={handleExportJSON}
-              disabled={exportingJSON || totalTxCount === 0}
+              disabled={exportingJSON || clearingAll || clearingImports || resettingCache}
               className="flex items-center justify-center gap-2 rounded-xl border border-[var(--primary)] bg-[var(--primary-muted)] px-4 py-2.5 text-xs font-semibold text-[var(--primary)] transition-colors hover:bg-[var(--primary)] hover:text-white disabled:opacity-50"
             >
               {exportingJSON ? (
@@ -852,7 +862,7 @@ export function SettingsPage() {
               ) : (
                 <Download className="h-3.5 w-3.5" />
               )}
-              {exportingJSON ? 'Exporting Archive…' : 'Download Complete Archive (JSON)'}
+              {exportingJSON ? 'Exporting Archive…' : 'Download Financial Archive (JSON)'}
             </button>
           </div>
 
@@ -1019,7 +1029,7 @@ export function SettingsPage() {
                 </button>
                 <button
                   type="button"
-                  disabled={clearingImports || !ackClearImports}
+                  disabled={exportingJSON || clearingImports || !ackClearImports}
                   onClick={handleClearImported}
                   className="flex items-center gap-1.5 rounded-lg bg-[var(--danger)] px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-40 disabled:pointer-events-none"
                 >
@@ -1125,7 +1135,7 @@ export function SettingsPage() {
                 </button>
                 <button
                   type="button"
-                  disabled={clearingAll || !ackClearAll}
+                  disabled={exportingJSON || clearingAll || !ackClearAll}
                   onClick={handleClearAll}
                   className="flex items-center gap-1.5 rounded-lg bg-[var(--danger)] px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-40 disabled:pointer-events-none"
                 >
@@ -1232,12 +1242,16 @@ export function SettingsPage() {
           person={personToDelete}
           onClose={() => setPersonToDelete(null)}
           onConfirm={async () => {
-            if (!user) return
-            await deletePerson(user.uid, personToDelete.id)
-            await reloadData()
+            if (!user || maintenanceInFlight.current) return
+            maintenanceInFlight.current = true
+            try {
+              await deletePerson(user.uid, personToDelete.id)
+              await reloadData()
+            } finally { maintenanceInFlight.current = false }
           }}
         />
       )}
+      </fieldset>
     </div>
   )
 }

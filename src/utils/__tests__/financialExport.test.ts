@@ -2,10 +2,10 @@ import { it } from 'node:test'
 import assert from 'node:assert/strict'
 import { initializeApp, deleteApp } from 'firebase/app'
 import { Bytes, Timestamp, GeoPoint, doc, getFirestore, terminate } from 'firebase/firestore'
-import { serializeValue, deserializeValue, buildFinancialExportDocument, validateExportIntegrity, type ArchiveInput } from '../financialExport.ts'
+import { serializeValue, deserializeValue, buildFinancialExportDocument, validateExportIntegrity, importArchiveCollections, type ArchiveInput } from '../financialExport.ts'
 
 function input(data: Record<string, unknown> = {}): ArchiveInput {
-  return { uid: 'owner', transactions: [{ id: 'actual-id', path: 'users/owner/transactions/actual-id', data }], categories: [], paymentAccounts: [], people: [] }
+  return { uid: 'owner', transactions: [{ id: 'actual-id', path: 'users/owner/transactions/actual-id', data }], categories: [], paymentAccounts: [], people: [], trips: [], recurring: [], budgets: [], importOperations: [], repaymentReceipts: [], nestedCollections: {} }
 }
 const roundTrip = (value: unknown) => deserializeValue(JSON.parse(JSON.stringify(serializeValue(value))))
 
@@ -105,4 +105,26 @@ it('keeps normalized integer-paise summaries separate from the raw ledger', () =
   assert.equal(derived.totalRecoverablePaise, 5001)
   assert.equal(derived.totalNetPaise, 5002)
   assert.equal(derived.totalRepaidPaise, 2001)
+})
+
+it('requires every declared collection and nested manifest and detects lost nested fields and counts', () => {
+  const source = input()
+  const op = { id: 'op', path: 'users/owner/importOperations/op', data: { ready: true } }
+  source.importOperations = [op]
+  assert.throws(() => buildFinancialExportDocument(source), /nested import collection/)
+  for (const name of importArchiveCollections) source.nestedCollections[`${op.path}/${name}`] = []
+  const path = `${op.path}/trustedV2Receipts`
+  source.nestedCollections[path].push({ id: '0', path: `${path}/0`, data: { hash: 'original', count: 3 } })
+  const archive = buildFinancialExportDocument(source)
+  assert.equal(validateExportIntegrity(archive, source).valid, true)
+  const broken = structuredClone(archive)
+  broken.nestedCollections[path][0].data = serializeValue({ count: 3 })
+  assert.equal(validateExportIntegrity(broken, source).valid, false)
+  const missing = structuredClone(archive)
+  delete missing.nestedCollections[path]
+  assert.equal(validateExportIntegrity(missing, source).valid, false)
+  const badCount = structuredClone(archive)
+  badCount.metadata.collectionManifests[0].count++
+  assert.equal(validateExportIntegrity(badCount, source).valid, false)
+  assert.throws(() => buildFinancialExportDocument({ ...source, budgets: undefined } as unknown as ArchiveInput), /Missing collection/)
 })

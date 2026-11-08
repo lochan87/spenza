@@ -9,11 +9,11 @@ import { assertExpenseCanBeDeleted, ExpenseDeletionError, repaymentDeletionMessa
 import { exportCompleteFinancialData } from '../financialBackup.ts'
 import type { Transaction } from '../../types/index.ts'
 
-it('exports missing-date documents and authoritative identities through the real service without modifying raw data', async () => {
+function backupHarness(options: { failPath?: string; cache?: boolean; pending?: boolean; pendingDocument?: boolean; changePath?: string; emptyPath?: string } = {}) {
   const raw = { id: 'conflicting-id', amountPaise: '100.50', legacyExtra: { evidence: -2 } }
-  const stored = { ...raw }
   let download: Blob | undefined
   let clicks = 0
+  const reads = new Map<string, number>()
   const exports = {} as { exportCompleteFinancialData: (uid: string, db: unknown) => Promise<{ transactionCount: number; success: boolean }> }
   const source = readFileSync(new URL('../financialBackup.ts', import.meta.url), 'utf8')
   runInNewContext(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2023 } }).outputText, {
@@ -24,31 +24,77 @@ it('exports missing-date documents and authoritative identities through the real
       if (name === 'date-fns') return dateFns
       if (name === '../utils/financialExport.ts') return archiveHelpers
       if (name === 'firebase/firestore') return {
-        collection: (_db: unknown, ...path: string[]) => {
-          assert.equal(path[0], 'users'); assert.equal(path[1], 'owner')
-          return path.join('/')
-        },
+        collection: (_db: unknown, path: string) => { assert.ok(path.startsWith('users/owner/')); return path },
+        getDocs: () => assert.fail('Server-only reads required'),
         query: () => assert.fail('Archive reads must not filter documents by date'),
-        orderBy: () => assert.fail('Archive reads must not omit missing dates'),
-        getDocs: async (path: string) => ({ docs: [{ id: 'actual', ref: { path: `${path}/actual` }, data: () => raw }] }),
+        getDocsFromServer: async (path: string) => {
+          const pass = (reads.get(path) ?? 0) + 1
+          reads.set(path, pass)
+          if (path === options.failPath) throw new Error('Server read failed')
+          return {
+            metadata: { fromCache: !!options.cache, hasPendingWrites: !!options.pending },
+            docs: path === options.emptyPath ? [] : [{ id: 'actual', ref: { path: `${path}/actual` },
+              metadata: { fromCache: false, hasPendingWrites: !!options.pendingDocument },
+              data: () => path === options.changePath && pass === 2 ? { ...raw, changed: true } : raw }],
+          }
+        },
       }
       throw new Error(name)
     },
   })
-  const result = await exports.exportCompleteFinancialData('owner', {})
-  assert.equal(result.success, true)
-  assert.equal(result.transactionCount, 1)
-  assert.equal(clicks, 1)
-  const document = JSON.parse(await download!.text()) as archiveHelpers.FinancialExportDocument
+  return { raw, reads, run: () => exports.exportCompleteFinancialData('owner', {}), clicks: () => clicks,
+    archive: async () => JSON.parse(await download!.text()) as archiveHelpers.FinancialExportDocument }
+}
+
+it('exports every financial collection and nested import collection through two matching server passes', async () => {
+  const h = backupHarness()
+  assert.equal((await h.run()).transactionCount, 1)
+  assert.equal(h.clicks(), 1)
+  const archive = await h.archive()
   for (const collection of archiveHelpers.archiveCollections) {
-    const record = document.data[collection][0]
+    const record = archive.data[collection][0]
     assert.equal(record.id, 'actual')
     assert.equal(record.path, `users/owner/${collection}/actual`)
-    assert.deepEqual(archiveHelpers.deserializeValue(record.data), stored)
+    assert.deepEqual(archiveHelpers.deserializeValue(record.data), h.raw)
   }
-  assert.deepEqual(raw, stored)
+  for (const child of archiveHelpers.importArchiveCollections) {
+    const path = `users/owner/importOperations/actual/${child}`
+    assert.equal(archive.nestedCollections[path][0].path, `${path}/actual`)
+    assert.deepEqual(archiveHelpers.deserializeValue(archive.nestedCollections[path][0].data), h.raw)
+  }
+  assert.equal(archive.metadata.collectionManifests.length, 15)
+  assert.equal(h.reads.size, 15)
+  assert.ok([...h.reads.values()].every(count => count === 2))
+  assert.equal(archive.metadata.readVerification!.globallyAtomic, false)
 })
 
+it('includes manifests for empty root and nested collections', async () => {
+  for (const path of ['users/owner/trips', 'users/owner/importOperations/actual/trustedV2Trips']) {
+    const h = backupHarness({ emptyPath: path }); await h.run()
+    const manifest = (await h.archive()).metadata.collectionManifests.find(entry => entry.path === path)!
+    assert.equal(manifest.count, 0)
+    assert.deepEqual(manifest.documentPaths, [])
+  }
+})
+
+it('fails closed on root/nested read errors, cached snapshots and pending writes without initiating a download', async () => {
+  for (const options of [
+    { failPath: 'users/owner/budgets' }, { failPath: 'users/owner/importOperations/actual/chunks' },
+    { cache: true }, { pending: true }, { pendingDocument: true },
+  ]) {
+    const h = backupHarness(options)
+    await assert.rejects(h.run(), /Server read failed|cached data or pending/)
+    assert.equal(h.clicks(), 0)
+  }
+})
+
+it('rejects observed concurrent changes in root and nested documents', async () => {
+  for (const path of ['users/owner/transactions', 'users/owner/repaymentReceipts', 'users/owner/importOperations/actual/trustedV2State']) {
+    const h = backupHarness({ changePath: path })
+    await assert.rejects(h.run(), /records changed during export/)
+    assert.equal(h.clicks(), 0)
+  }
+})
 describe('financialBackup & Destructive Operation Safeguards (Phase 8.1)', () => {
   it('1. exportCompleteFinancialData rejects missing or invalid UID', async () => {
     await assert.rejects(

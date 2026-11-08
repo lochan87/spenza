@@ -45,7 +45,7 @@ service cloud.firestore {
 
         function hasRepaymentHistory(d) {
           return d.get('reimbursementStatus', 'none') in ['partial', 'settled']
-              || (d.get('splits', []) is list && splitsHaveRepayments(d.get('splits', [])));
+              || (d.get('splits', []).size() > 10 || splitsHaveRepayments(d.get('splits', [])));
         }
 
         function validPayment(d) {
@@ -74,11 +74,18 @@ service cloud.firestore {
         }
 
         function immutableFieldsPreserved(existing, incoming) {
-          return (!existing.keys().hasAny(['id']) || !incoming.keys().hasAny(['id']) || incoming.id == existing.id)
-              && (!existing.keys().hasAny(['createdAt']) || !incoming.keys().hasAny(['createdAt']) || incoming.createdAt == existing.createdAt)
-              && (!existing.keys().hasAny(['isImported']) || !incoming.keys().hasAny(['isImported']) || incoming.isImported == existing.isImported)
-              && (!existing.keys().hasAny(['importOperationId']) || !incoming.keys().hasAny(['importOperationId']) || incoming.importOperationId == existing.importOperationId)
-              && (!existing.keys().hasAny(['recurringItemId']) || !incoming.keys().hasAny(['recurringItemId']) || incoming.recurringItemId == existing.recurringItemId);
+          return (!existing.keys().hasAny(['id']) || (incoming.keys().hasAny(['id']) && incoming.id == existing.id))
+              && (!existing.keys().hasAny(['createdAt']) || (incoming.keys().hasAny(['createdAt']) && incoming.createdAt == existing.createdAt))
+              && (!existing.keys().hasAny(['isImported']) || (incoming.keys().hasAny(['isImported']) && incoming.isImported == existing.isImported))
+              && (!existing.keys().hasAny(['importOperationId']) || (incoming.keys().hasAny(['importOperationId']) && incoming.importOperationId == existing.importOperationId))
+              && (!existing.keys().hasAny(['recurringItemId']) || (incoming.keys().hasAny(['recurringItemId']) && incoming.recurringItemId == existing.recurringItemId));
+        }
+
+        function validCreation(d) {
+          return !hasRepaymentHistory(d)
+              && (d.get('recoverablePaise', 0) == 0
+                  ? (d.get('reimbursementStatus', 'none') == 'none' && d.get('splits', []).size() == 0)
+                  : (d.get('reimbursementStatus', 'none') == 'pending' && d.get('splits', []).size() > 0 && d.get('splits', []).size() <= 10));
         }
 
         allow read: if isOwner(uid);
@@ -88,7 +95,8 @@ service cloud.firestore {
         allow create: if isOwner(uid)
           && request.resource.data.get('amountPaise', 0) is int
           && request.resource.data.get('amountPaise', 0) > 0
-          && validTypes(request.resource.data);
+          && validTypes(request.resource.data)
+          && validCreation(request.resource.data);
 
         allow update: if isOwner(uid)
           && (resource == null || (

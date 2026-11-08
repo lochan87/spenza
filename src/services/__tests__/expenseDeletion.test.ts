@@ -220,7 +220,26 @@ it('Firestore emulator: deletion safety and bypass verification', { skip: !host 
   const repay = loadRepayment(sdk, otherDb)
   const seed = async (data: unknown = fixture()) => {
     const id = crypto.randomUUID(), ref = sdk.doc(db, 'users', 'owner', 'transactions', id)
-    await sdk.setDoc(ref, data as Transaction)
+    const d = data as Transaction
+    const status = d.reimbursementStatus
+    const split0 = d.splits?.[0]
+    if (status === 'settled' || status === 'partial' || (split0 && ((split0.repaidPaise ?? 0) > 0 || split0.settledAt != null))) {
+      const initial: Record<string, unknown> = { ...d }
+      if (status === 'settled' || status === 'partial') {
+        if (Array.isArray(d.splits) && d.splits.length > 0) {
+          initial.reimbursementStatus = 'pending'
+        } else {
+          delete initial.reimbursementStatus
+        }
+      }
+      if (Array.isArray(d.splits)) {
+        initial.splits = d.splits.map(s => ({ ...s, repaidPaise: 0, settledAt: null }))
+      }
+      await sdk.setDoc(ref, initial as unknown as Transaction)
+      await sdk.updateDoc(ref, { ...d } as unknown as Record<string, unknown>)
+    } else {
+      await sdk.setDoc(ref, d)
+    }
     return { id, ref }
   }
   try {
@@ -334,8 +353,9 @@ it('Firestore emulator: deletion safety and bypass verification', { skip: !host 
       await sdk.setDoc(cache, { stale: true })
       const batch = sdk.writeBatch(db)
       const ids = Array.from({ length: 401 }, () => crypto.randomUUID())
-      ids.forEach((id, i) => batch.set(sdk.doc(db, 'users', 'owner', 'transactions', id), fixture(i === 400 ? 5001 : 0)))
+      ids.forEach((id) => batch.set(sdk.doc(db, 'users', 'owner', 'transactions', id), fixture(0)))
       await batch.commit()
+      await sdk.updateDoc(sdk.doc(db, 'users', 'owner', 'transactions', ids[400]), { ...fixture(5001) })
       await assert.rejects(services.deleteTransactionsSafely('owner', ids), /Confirmed deletions: 400/)
       assert.equal((await sdk.getDoc(cache)).exists(), false, 'cache invalidation commits with earlier successful chunks')
       assert.equal((await sdk.getDoc(sdk.doc(db, 'users', 'owner', 'transactions', ids[0]))).exists(), false)

@@ -18,7 +18,8 @@ interface UseDashboardReturn {
  * Caches results; re-fetches only when the user changes or refetch() is called.
  *
  * Data strategy:
- *   ONE Firestore query (6-month date range) + two metadata queries (categories, accounts).
+ *   ONE full owner-history query + two metadata queries (categories, accounts).
+ *   All-time dues include historical/future records; recent analytics filter locally.
  *   All 8 dashboard sections are derived from this data via memoized computation.
  *   No redundant reads happen across sections.
  */

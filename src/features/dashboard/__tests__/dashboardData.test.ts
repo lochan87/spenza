@@ -1,5 +1,10 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { runInNewContext } from 'node:vm'
+import ts from 'typescript'
+import * as dateFns from 'date-fns'
+import * as splitMath from '../../../utils/splitMath.ts'
 import { subMonths } from 'date-fns'
 import { deriveDashboardData } from '../dashboardData.ts'
 import type { Transaction, Category, PaymentAccount } from '../../../types/index.ts'
@@ -41,6 +46,117 @@ describe('Dashboard Integration — Net Spending & Recoverables Ledger', () => {
       ...overrides,
     }
   }
+
+  function historicalSplit(id: string, repaidPaise: number): Transaction {
+    return createTx({
+      id, date: subMonths(dummyDate, 12) as unknown as Transaction['date'],
+      amountPaise: 15003, recoverablePaise: 10001,
+      splits: [{ personId: id, personName: id, amountPaise: 10001, repaidPaise,
+        settledAt: repaidPaise === 10001 ? dummyDate as unknown as Transaction['date'] : null }],
+    })
+  }
+
+  const history = () => [
+    historicalSplit('unpaid', 0),
+    historicalSplit('partial', 3333),
+    historicalSplit('settled', 10001),
+    createTx({ id: 'legacy', date: subMonths(dummyDate, 24) as unknown as Transaction['date'],
+      type: 'reimbursable', personId: 'legacy-person', amountPaise: 7003 }),
+  ]
+
+  for (const [label, repaid] of [['unpaid', 0], ['partially repaid', 3333], ['fully repaid', 10001]] as const) {
+    it(`includes an older ${label} split older than six months in all-time balances`, () => {
+      const data = deriveDashboardData([historicalSplit(label, repaid)], [], [])
+      assert.equal(data.allTimeRecoverableTotal, 10001)
+      assert.equal(data.allTimeRepaidTotal, repaid)
+      assert.equal(data.allTimePendingDuesTotal, 10001 - repaid)
+      assert.equal(data.thisMonthTotal, 0)
+    })
+  }
+
+  it('matches Friends full-history dues for multiple people, legacy records and future dates in integer paise', () => {
+    const future = historicalSplit('future', 0)
+    future.date = subMonths(dummyDate, -2) as unknown as Transaction['date']
+    const fullHistory = [...history(), future]
+    const data = deriveDashboardData(fullHistory, [], [])
+    assert.equal(data.allTimeRecoverableTotal, 47007)
+    assert.equal(data.allTimeRepaidTotal, 13334)
+    assert.equal(data.allTimePendingDuesTotal, 33673)
+    assert.deepEqual(data.peopleDues, splitMath.aggregatePeopleDues(fullHistory))
+    assert.equal(data.peopleDues.filter(person => person.pendingDuesPaise > 0).length, 4)
+    assert.equal(data.allTimeRecoverableTotal, data.allTimeRepaidTotal + data.allTimePendingDuesTotal)
+    const gross = fullHistory.reduce((sum, tx) => sum + tx.amountPaise, 0)
+    const net = fullHistory.reduce((sum, tx) => sum + splitMath.getNetSpendPaise(tx), 0)
+    assert.equal(gross, net + data.allTimeRecoverableTotal)
+    for (const value of [gross, net, data.allTimeRecoverableTotal, data.allTimeRepaidTotal, data.allTimePendingDuesTotal]) {
+      assert.ok(Number.isInteger(value))
+    }
+  })
+
+  it('keeps every recent-period analytic unchanged when older and future-month history is added', () => {
+    const recent = [0, 1, 3, 5].map(months => createTx({
+      date: subMonths(dummyDate, months) as unknown as Transaction['date'], amountPaise: 15003,
+    }))
+    const future = createTx({ date: subMonths(dummyDate, -2) as unknown as Transaction['date'] })
+    const baseline = deriveDashboardData(recent, mockCategories, mockAccounts)
+    const expanded = deriveDashboardData([...recent, ...history(), future], mockCategories, mockAccounts)
+    for (const key of Object.keys(baseline) as Array<keyof typeof baseline>) {
+      if (key.startsWith('allTime') || key === 'peopleDues') continue
+      assert.deepEqual(expanded[key], baseline[key], key)
+    }
+    assert.deepEqual(expanded.monthlyTotals.map(month => month.totalPaise), [15003, 0, 15003, 0, 15003, 15003])
+  })
+
+  it('fetches actual owner history without excluding old or future records and propagates read failures', async () => {
+    // Execute the production module with only its I/O replaced; no Firebase configuration
+    // or network access. CommonJS transpilation lets the dynamic import use the stub.
+    const source = readFileSync(new URL('../dashboardData.ts', import.meta.url), 'utf8')
+    const compiled = ts.transpileModule(source, {
+      compilerOptions: { target: ts.ScriptTarget.ES2023, module: ts.ModuleKind.CommonJS },
+    }).outputText
+    const records = [...history(), createTx({ id: 'current' }), createTx({
+      id: 'future', date: subMonths(dummyDate, -2) as unknown as Transaction['date'],
+    })]
+    type Constraint = { field: string; operator: string; value: Date }
+    type Reference = { path: string[]; constraints: Constraint[] }
+    let failure: Error | undefined
+    let configLoads = 0
+    const db = {}
+    const exports: { fetchDashboardTransactions?: (uid: string) => Promise<Transaction[]> } = {}
+    runInNewContext(compiled, { exports, require: (name: string) => {
+      if (name === '../../firebase/config.ts') { configLoads++; return { db } }
+      if (name === 'date-fns') return dateFns
+      if (name === '../../utils/splitMath.ts') return splitMath
+      assert.equal(name, 'firebase/firestore')
+      return {
+        collection: (database: unknown, ...path: string[]) => {
+          assert.equal(database, db)
+          assert.deepEqual(path, ['users', 'test-owner', 'transactions'])
+          return { path, constraints: [] }
+        },
+        query: (ref: Reference, ...constraints: Constraint[]) => ({ ...ref, constraints }),
+        where: (field: string, operator: string, value: Date) => ({ field, operator, value }),
+        Timestamp: { fromDate: (date: Date) => date },
+        getDocs: async (ref: Reference) => {
+          if (failure) throw failure
+          const matching = records.filter(tx => ref.constraints.every(({ field, operator, value }) => {
+            assert.equal(field, 'date')
+            const date = tx.date as unknown as Date
+            if (operator === '>=') return date >= value
+            if (operator === '<=') return date <= value
+            throw new Error(`Unexpected operator: ${operator}`)
+          }))
+          return { docs: matching.map(({ id, ...data }) => ({ id, data: () => data })) }
+        },
+      }
+    } })
+    assert.equal(configLoads, 0, 'configuration remains lazy')
+    const fetched = await exports.fetchDashboardTransactions!('test-owner')
+    assert.deepEqual(Array.from(fetched, tx => tx.id), records.map(tx => tx.id))
+    assert.deepEqual(deriveDashboardData(structuredClone(fetched), [], []), deriveDashboardData(records, [], []))
+    failure = new Error('read failed')
+    await assert.rejects(exports.fetchDashboardTransactions!('test-owner'), failure)
+  })
 
   it('1. calculates personal transactions where net spend equals gross outflow', () => {
     const tx1 = createTx({ amountPaise: 150000, categoryId: 'cat-food', type: 'everyday' }) // ₹1,500

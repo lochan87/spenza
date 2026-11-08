@@ -1,5 +1,5 @@
 import {
-  collection, query, where, getDocs, Timestamp,
+  collection, getDocs,
 } from 'firebase/firestore'
 import {
   startOfMonth, endOfMonth, subMonths, format,
@@ -101,27 +101,17 @@ export interface DashboardData {
 
 /**
  * DATA STRATEGY:
- * Fetch all transactions from 6 months ago to today in a single Firestore query.
- * This is correct and efficient for a single-user app with modest volume (hundreds/month).
- * All 8 dashboard sections are derived client-side from this one dataset.
- * We avoid monthly rollup documents because they'd require updating on every transaction
- * write/edit/delete — adding complexity for no meaningful perf gain at this scale.
+ * Fetch the owner's complete transaction history, including future-dated records,
+ * so all-time recoverables and people dues agree with Friends.
+ * Recent-period analytics filter this dataset client-side. Read cost grows with
+ * history size; all dashboard sections share this one fetch.
  */
 export async function fetchDashboardTransactions(
   uid: string
 ): Promise<Transaction[]> {
   const { db } = await import('../../firebase/config.ts')
-  const now = new Date()
-  const sixMonthsAgo = startOfMonth(subMonths(now, 5))
-
   const ref = collection(db, 'users', uid, 'transactions')
-  const q = query(
-    ref,
-    where('date', '>=', Timestamp.fromDate(sixMonthsAgo)),
-    where('date', '<=', Timestamp.fromDate(now))
-  )
-
-  const snap = await getDocs(q)
+  const snap = await getDocs(ref)
   return snap.docs.map(d => ({ id: d.id, ...d.data() }) as Transaction)
 }
 

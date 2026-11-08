@@ -573,6 +573,61 @@ it('Auth + Functions + Firestore emulators: executeSettlementV1 callable, concur
     const settledLegDoc = (await db.doc(`users/${uid}/transactions/${legTxId}`).get()).data()!
     assert.equal(settledLegDoc.reimbursementStatus, 'settled')
     assert.equal(settledLegDoc.splits[0].repaidPaise, 4500)
+
+    // ─── Test 18: Different parameters reusing key throws already-exists ───
+    const mismatchRes = await callSettlement(
+      { mode: 'personAllDues', personId: 'different-person-id', idempotencyKey: keyLegacy },
+      owner.idToken
+    )
+    assert.ok(mismatchRes.error, 'Expected error for parameter mismatch')
+    assert.equal(mismatchRes.error.status, 'ALREADY_EXISTS')
+
+    // ─── Test 19: Expired lease takeover increments fencing token ───
+    const recoverPersonId = `recov-${crypto.randomUUID()}`
+    const recoverKey = crypto.randomUUID()
+    const recovTxId = `recovtx-${crypto.randomUUID()}`
+    await db.doc(`users/${uid}/transactions/${recovTxId}`).create({
+      id: recovTxId,
+      amountPaise: 3500,
+      description: 'Recover test expense',
+      categoryId: 'travel',
+      type: 'reimbursable',
+      date: Timestamp.now(),
+      paymentMode: 'Cash',
+      paymentAccountId: null,
+      tripId: null,
+      personId: recoverPersonId,
+      recoverablePaise: 3500,
+      reimbursementStatus: 'pending',
+      splits: [{ personId: recoverPersonId, personName: 'Recov Friend', amountPaise: 3500, repaidPaise: 0, settledAt: null }],
+    })
+
+    // Create expired in_progress reservation
+    await db.doc(`users/${uid}/repaymentReceipts/${recoverKey}`).set({
+      idempotencyKey: recoverKey,
+      mode: 'personAllDues',
+      personId: recoverPersonId,
+      status: 'in_progress',
+      fencingToken: 1,
+      leaseExpiresAt: Timestamp.fromMillis(Date.now() - 5000),
+      settledCount: 0,
+      totalSettledPaise: 0,
+      updatedTxns: [],
+      createdAt: Timestamp.now(),
+    })
+
+    // Recovery runner takes over
+    const recovRes = await callSettlement(
+      { mode: 'personAllDues', personId: recoverPersonId, idempotencyKey: recoverKey },
+      owner.idToken
+    )
+    assert.ok(recovRes.result, JSON.stringify(recovRes.error))
+    assert.equal(recovRes.result.settledCount, 1)
+    assert.equal(recovRes.result.totalSettledPaise, 3500)
+
+    const recovReceipt = (await db.doc(`users/${uid}/repaymentReceipts/${recoverKey}`).get()).data()!
+    assert.equal(recovReceipt.status, 'completed')
+    assert.equal(recovReceipt.fencingToken, 2)
   } finally {
     await db.terminate()
     await deleteApp(app)

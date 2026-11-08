@@ -240,37 +240,120 @@ export async function executeTrustedSettleAllTransactionSplits(
   })
 }
 
+export interface SettlePersonAllDuesOptions {
+  leaseDurationMs?: number
+  pollTimeoutMs?: number
+  pollIntervalMs?: number
+}
+
 export async function executeTrustedSettlePersonAllDues(
   db: Firestore,
   uid: string,
-  input: z.infer<typeof settlePersonAllDuesSchema>
+  input: z.infer<typeof settlePersonAllDuesSchema>,
+  options?: SettlePersonAllDuesOptions
 ): Promise<SettlePersonAllDuesResult> {
   const { personId, idempotencyKey, maxTransactions } = input
   const receiptRef = db.doc(`users/${uid}/repaymentReceipts/${idempotencyKey}`)
-  const receiptSnap = await receiptRef.get()
 
-  if (receiptSnap.exists) {
-    const r = receiptSnap.data()
-    if (r?.mode !== 'personAllDues' || r?.personId !== personId) {
-      throw new HttpsError('already-exists', 'Idempotency key was already used for a different settlement request.')
+  const leaseDurationMs = options?.leaseDurationMs ?? 60_000
+  const pollTimeoutMs = options?.pollTimeoutMs ?? 15_000
+  const pollIntervalMs = options?.pollIntervalMs ?? 150
+
+  const startTime = Date.now()
+  let assignedFencingToken = 1
+
+  // 1. Upfront Atomic Reservation & Fencing
+  while (true) {
+    const reservation = await db.runTransaction(async txn => {
+      const snap = await txn.get(receiptRef)
+      if (!snap.exists) {
+        txn.set(receiptRef, {
+          idempotencyKey,
+          mode: 'personAllDues',
+          personId,
+          status: 'in_progress',
+          fencingToken: 1,
+          leaseExpiresAt: Timestamp.fromMillis(Date.now() + leaseDurationMs),
+          settledCount: 0,
+          totalSettledPaise: 0,
+          updatedTxns: [],
+          createdAt: FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp(),
+        })
+        return { type: 'acquired' as const, fencingToken: 1 }
+      }
+
+      const r = snap.data()!
+      if (r.mode !== 'personAllDues' || r.personId !== personId) {
+        throw new HttpsError('already-exists', 'Idempotency key was already used for a different settlement request.')
+      }
+
+      // Check if already completed (supports modern status: 'completed' and legacy receipts)
+      if (r.status === 'completed' || (r.status !== 'in_progress' && r.settledCount !== undefined)) {
+        return {
+          type: 'replayed' as const,
+          result: {
+            settledCount: r.settledCount ?? 0,
+            totalSettledPaise: r.totalSettledPaise ?? 0,
+            updatedTxns: r.updatedTxns ?? [],
+            complete: r.complete ?? true,
+            replayed: true,
+            failedTransactionId: r.failedTransactionId ?? null,
+            error: r.error ?? null,
+          },
+        }
+      }
+
+      // Reservation is currently in_progress. Check if lease has expired.
+      const expiresMillis =
+        r.leaseExpiresAt instanceof Timestamp
+          ? r.leaseExpiresAt.toMillis()
+          : typeof r.leaseExpiresAt?.toMillis === 'function'
+            ? r.leaseExpiresAt.toMillis()
+            : typeof r.leaseExpiresAt === 'number'
+              ? r.leaseExpiresAt
+              : 0
+
+      const now = Date.now()
+      if (now >= expiresMillis) {
+        // Lease expired! Previous runner timed out or crashed.
+        // Bump fencing token to safely supersede any timed-out or zombie runner.
+        const nextToken = (typeof r.fencingToken === 'number' ? r.fencingToken : 1) + 1
+        txn.update(receiptRef, {
+          status: 'in_progress',
+          fencingToken: nextToken,
+          leaseExpiresAt: Timestamp.fromMillis(now + leaseDurationMs),
+          updatedAt: FieldValue.serverTimestamp(),
+        })
+        return { type: 'acquired' as const, fencingToken: nextToken }
+      }
+
+      // Lease is actively held by another runner
+      return { type: 'wait' as const }
+    })
+
+    if (reservation.type === 'replayed') {
+      return reservation.result
     }
-    return {
-      settledCount: r.settledCount ?? 0,
-      totalSettledPaise: r.totalSettledPaise ?? 0,
-      updatedTxns: r.updatedTxns ?? [],
-      complete: r.complete ?? true,
-      replayed: true,
-      failedTransactionId: r.failedTransactionId ?? null,
-      error: r.error ?? null,
+
+    if (reservation.type === 'acquired') {
+      assignedFencingToken = reservation.fencingToken
+      break
     }
+
+    // Reservation is actively held by another runner. Wait and poll.
+    if (Date.now() - startTime >= pollTimeoutMs) {
+      throw new HttpsError(
+        'failed-precondition',
+        'Settlement is currently in progress for this request. Please wait or retry shortly.'
+      )
+    }
+
+    await new Promise(resolve => setTimeout(resolve, pollIntervalMs))
   }
 
+  // 2. Query Candidate Dues
   const txColl = db.collection(`users/${uid}/transactions`)
-
-  // Candidate queries: Avoid unbounded full-collection scan.
-  // Query 1: Active unsettled splits/reimbursables with pending or partial status.
-  // Query 2: Legacy reimbursable records (which may lack reimbursementStatus).
-  // Query 3: Records explicitly attributed to this personId (which may lack reimbursementStatus).
   const candidateDocs = new Map<string, FirebaseFirestore.QueryDocumentSnapshot>()
   const queries = [
     txColl.where('reimbursementStatus', 'in', ['pending', 'partial']),
@@ -306,60 +389,67 @@ export async function executeTrustedSettlePersonAllDues(
     return a.id.localeCompare(b.id)
   })
 
+  // 3. Handle Empty Dues
   if (matchingDocs.length === 0) {
-    // Concurrency-safe empty check: another concurrent request may have already completed settlement
-    const emptyResult = await db.runTransaction(async txn => {
+    return await db.runTransaction(async txn => {
       const snap = await txn.get(receiptRef)
-      if (snap.exists) {
-        const existing = snap.data()
-        if (existing?.mode !== 'personAllDues' || existing?.personId !== personId) {
-          throw new HttpsError('already-exists', 'Idempotency key was already used for a different settlement request.')
-        }
-        return {
-          settledCount: existing.settledCount ?? 0,
-          totalSettledPaise: existing.totalSettledPaise ?? 0,
-          updatedTxns: existing.updatedTxns ?? [],
-          complete: existing.complete ?? true,
-          replayed: true,
-          failedTransactionId: existing.failedTransactionId ?? null,
-          error: existing.error ?? null,
-        }
+      if (!snap.exists) {
+        throw new HttpsError('aborted', 'Settlement reservation receipt was missing.')
+      }
+      const existing = snap.data()!
+      if (existing.mode !== 'personAllDues' || existing.personId !== personId) {
+        throw new HttpsError('already-exists', 'Idempotency key was already used for a different settlement request.')
+      }
+      if (existing.fencingToken !== assignedFencingToken || existing.status !== 'in_progress') {
+        throw new HttpsError('aborted', 'Settlement runner was fenced out by newer settlement runner.')
       }
 
-      txn.set(receiptRef, {
-        idempotencyKey,
-        mode: 'personAllDues',
-        personId,
-        settledCount: 0,
-        totalSettledPaise: 0,
-        updatedTxns: [],
+      const settledCount = existing.settledCount ?? 0
+      const totalSettledPaise = existing.totalSettledPaise ?? 0
+      const updatedTxns = existing.updatedTxns ?? []
+
+      txn.update(receiptRef, {
+        status: 'completed',
         complete: true,
-        createdAt: FieldValue.serverTimestamp(),
+        settledCount,
+        totalSettledPaise,
+        updatedTxns,
+        failedTransactionId: null,
+        error: null,
+        completedAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
       })
 
       return {
-        settledCount: 0,
-        totalSettledPaise: 0,
-        updatedTxns: [],
+        settledCount,
+        totalSettledPaise,
+        updatedTxns,
         complete: true,
         replayed: false,
       }
     })
-    return emptyResult
   }
 
+  // 4. Process Candidate Dues with Fencing Guards
   const limit = Math.min(maxTransactions ?? 50, 100)
   const toProcess = matchingDocs.slice(0, limit)
   const hasRemainingAfterLimit = matchingDocs.length > limit
 
-  let totalSettled = 0
-  const updatedTxns: Transaction[] = []
   let failedTxId: string | null = null
   let failureError: string | null = null
 
   for (const docSnap of toProcess) {
     try {
-      const res = await db.runTransaction(async txn => {
+      await db.runTransaction(async txn => {
+        const rSnap = await txn.get(receiptRef)
+        if (!rSnap.exists) {
+          throw new Error('Settlement reservation receipt was missing.')
+        }
+        const rData = rSnap.data()!
+        if (rData.status !== 'in_progress' || rData.fencingToken !== assignedFencingToken) {
+          throw new Error('Settlement runner was fenced out by newer settlement runner.')
+        }
+
         const txRef = docSnap.ref
         const currentSnap = await txn.get(txRef)
         if (!currentSnap.exists) {
@@ -369,6 +459,13 @@ export async function executeTrustedSettlePersonAllDues(
         const update = applyFullSettlement(currentTx, personId, Timestamp.now())
         const newRecoverable = getRecoverablePaise({ ...currentTx, splits: update.splits })
 
+        const updatedTx: Transaction = {
+          ...currentTx,
+          recoverablePaise: newRecoverable,
+          splits: update.splits,
+          reimbursementStatus: update.reimbursementStatus,
+        }
+
         if (update.settledPaise > 0) {
           txn.update(txRef, {
             recoverablePaise: newRecoverable,
@@ -377,75 +474,61 @@ export async function executeTrustedSettlePersonAllDues(
             updatedAt: FieldValue.serverTimestamp(),
           })
           txn.delete(db.doc(`users/${uid}/insights/summary`))
-        }
 
-        return {
-          tx: {
-            ...currentTx,
-            recoverablePaise: newRecoverable,
-            splits: update.splits,
-            reimbursementStatus: update.reimbursementStatus,
-          },
-          settledPaise: update.settledPaise,
+          const nextCount = (rData.settledCount ?? 0) + 1
+          const nextTotal = (rData.totalSettledPaise ?? 0) + update.settledPaise
+          const nextTxns = [...(rData.updatedTxns ?? []), updatedTx]
+
+          txn.update(receiptRef, {
+            settledCount: nextCount,
+            totalSettledPaise: nextTotal,
+            updatedTxns: nextTxns,
+            updatedAt: FieldValue.serverTimestamp(),
+          })
         }
       })
-
-      if (res.settledPaise > 0) {
-        totalSettled += res.settledPaise
-        updatedTxns.push(res.tx)
-      }
     } catch (err: any) {
+      if (err?.message?.includes('fenced out')) {
+        throw new HttpsError('aborted', 'Settlement execution was superseded by a newer request.')
+      }
       failedTxId = docSnap.id
       failureError = err?.message || 'Settlement failed for transaction'
       break
     }
   }
 
+  // 5. Atomic Finalization
   const isComplete = !hasRemainingAfterLimit && !failedTxId
 
-  // Concurrency-safe finalization transaction:
-  // Never overwrite an existing successful/higher settlement receipt with a zero or lesser result.
   const finalResult = await db.runTransaction(async txn => {
     const snap = await txn.get(receiptRef)
-    if (snap.exists) {
-      const existing = snap.data()
-      if (existing?.mode !== 'personAllDues' || existing?.personId !== personId) {
-        throw new HttpsError('already-exists', 'Idempotency key was already used for a different settlement request.')
-      }
-
-      const existingSettled = existing.totalSettledPaise ?? 0
-      const existingCount = existing.settledCount ?? 0
-
-      if (existingSettled > totalSettled || (existingSettled === totalSettled && existingCount >= updatedTxns.length)) {
-        return {
-          settledCount: existingCount,
-          totalSettledPaise: existingSettled,
-          updatedTxns: existing.updatedTxns ?? [],
-          complete: existing.complete ?? true,
-          replayed: true,
-          failedTransactionId: existing.failedTransactionId ?? null,
-          error: existing.error ?? null,
-        }
-      }
+    if (!snap.exists) {
+      throw new HttpsError('aborted', 'Settlement reservation receipt was missing.')
+    }
+    const existing = snap.data()!
+    if (existing.mode !== 'personAllDues' || existing.personId !== personId) {
+      throw new HttpsError('already-exists', 'Idempotency key was already used for a different settlement request.')
+    }
+    if (existing.fencingToken !== assignedFencingToken || existing.status !== 'in_progress') {
+      throw new HttpsError('aborted', 'Settlement runner was fenced out by newer settlement runner.')
     }
 
-    const payload = {
-      idempotencyKey,
-      mode: 'personAllDues',
-      personId,
-      settledCount: updatedTxns.length,
-      totalSettledPaise: totalSettled,
-      updatedTxns,
+    const settledCount = existing.settledCount ?? 0
+    const totalSettledPaise = existing.totalSettledPaise ?? 0
+    const updatedTxns = existing.updatedTxns ?? []
+
+    txn.update(receiptRef, {
+      status: 'completed',
       complete: isComplete,
       failedTransactionId: failedTxId,
       error: failureError,
-      createdAt: FieldValue.serverTimestamp(),
-    }
-    txn.set(receiptRef, payload)
+      completedAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    })
 
     return {
-      settledCount: updatedTxns.length,
-      totalSettledPaise: totalSettled,
+      settledCount,
+      totalSettledPaise,
       updatedTxns,
       complete: isComplete,
       replayed: false,

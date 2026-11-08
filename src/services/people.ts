@@ -10,12 +10,13 @@ import {
   orderBy,
   runTransaction,
   serverTimestamp,
+  Timestamp,
 } from 'firebase/firestore'
-import { db } from '@/firebase/config'
+import { getFunctions, httpsCallable } from 'firebase/functions'
+import { app, db } from '@/firebase/config'
 import { invalidateInsightsCache } from '@/services/insights'
 import { PersonSchema } from '@/utils/schemas'
 import {
-  applyRepayment,
   applyFullSettlement,
   getRecoverablePaise,
   getNormalizedSplits,
@@ -23,6 +24,15 @@ import {
   UNASSIGNED_PERSON_ID,
 } from '@/utils/splitMath'
 import type { Person, Transaction } from '@/types'
+
+function toClientTimestamp(ts: any): Timestamp | null | undefined {
+  if (ts === null || ts === undefined) return ts
+  if (typeof ts.toMillis === 'function') return ts
+  if (typeof ts.seconds === 'number') return new Timestamp(ts.seconds, ts.nanoseconds ?? 0)
+  if (typeof ts._seconds === 'number') return new Timestamp(ts._seconds, ts._nanoseconds ?? 0)
+  if (typeof ts === 'string' || typeof ts === 'number') return Timestamp.fromDate(new Date(ts))
+  return ts
+}
 
 const peopleColl = (uid: string) => collection(db, 'users', uid, 'people')
 const personRef = (uid: string, id: string) => doc(db, 'users', uid, 'people', id)
@@ -196,16 +206,15 @@ export async function deletePerson(
 // ─── Repayment Operations ─────────────────────────────────────────────────────
 
 /**
- * Record a partial or full repayment of `repaymentPaise` (integer paise) from `personId`
- * against an existing transaction.
+ * Record a partial (or full) repayment against a person's split on an expense.
  *
- * Concurrency strategy:
- * - Uses atomic Firestore `runTransaction` to guarantee optimistic concurrency control (OCC).
- * - Reads latest transaction snapshot, validates repayment against current balance,
- *   updates splits and derived reimbursementStatus, and commits atomically.
- * - Does not use a blind read-modify-write setDoc fallback to prevent lost updates or
- *   silent erasure of concurrent repayments on multi-person splits.
- * - Automatically invalidates the insights cache on success.
+ * Architecture & Concurrency:
+ * - Migrated in Phase 7.2A to trusted Cloud Function execution (`executeRepaymentV1`).
+ * - Client performs fast offline validation, input sanitization and generates a UUID idempotency key.
+ * - Cloud Function executes in an Admin SDK transaction to verify participants, enforce
+ *   integer-paise balances, preserve repayment history, record a trusted idempotency receipt,
+ *   and atomically invalidate the insights cache.
+ * - Caller interface and return types are strictly preserved.
  */
 export async function recordSplitRepayment(
   uid: string,
@@ -213,7 +222,7 @@ export async function recordSplitRepayment(
   personId: string,
   repaymentPaise: number
 ): Promise<{ tx: Transaction; appliedPaise: number }> {
-  const cleanUid = validateUid(uid)
+  validateUid(uid)
   const cleanTxId = validateTransactionId(transactionId)
   const cleanPersonId = validatePersonId(personId)
   const paise = toNonNegativeIntPaise(repaymentPaise)
@@ -222,38 +231,42 @@ export async function recordSplitRepayment(
     throw new Error('Repayment amount must be a positive integer number of paise')
   }
 
-  const targetDocRef = txRef(cleanUid, cleanTxId)
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    throw new Error('You are offline. Recording a repayment requires an internet connection.')
+  }
 
-  const result = await runTransaction(db, async txn => {
-    const snap = await txn.get(targetDocRef)
-    if (!snap.exists()) {
-      throw new Error(`Transaction "${cleanTxId}" not found`)
-    }
+  const idempotencyKey = crypto.randomUUID()
+  const functions = getFunctions(app, 'us-central1')
+  const executeRepayment = httpsCallable<
+    { transactionId: string; personId: string; repaymentPaise: number; idempotencyKey: string },
+    { tx: any; appliedPaise: number; replayed?: boolean }
+  >(functions, 'executeRepaymentV1')
 
-    const currentTx = { id: snap.id, ...snap.data() } as Transaction
-    const update = applyRepayment(currentTx, cleanPersonId, paise)
-    const newRecoverable = getRecoverablePaise({ ...currentTx, splits: update.splits })
-
-    txn.update(targetDocRef, {
-      recoverablePaise: newRecoverable,
-      splits: update.splits,
-      reimbursementStatus: update.reimbursementStatus,
-      updatedAt: serverTimestamp(),
-    })
-
-    return {
-      tx: {
-        ...currentTx,
-        recoverablePaise: newRecoverable,
-        splits: update.splits,
-        reimbursementStatus: update.reimbursementStatus,
-      },
-      appliedPaise: update.appliedPaise,
-    }
+  const res = await executeRepayment({
+    transactionId: cleanTxId,
+    personId: cleanPersonId,
+    repaymentPaise: paise,
+    idempotencyKey,
   })
 
-  await invalidateInsightsCache(cleanUid)
-  return result
+  const rawTx = res.data.tx
+  const tx: Transaction = {
+    ...rawTx,
+    date: toClientTimestamp(rawTx.date)!,
+    createdAt: toClientTimestamp(rawTx.createdAt) ?? undefined,
+    updatedAt: toClientTimestamp(rawTx.updatedAt) ?? undefined,
+    splits: Array.isArray(rawTx.splits)
+      ? rawTx.splits.map((s: any) => ({
+          ...s,
+          settledAt: toClientTimestamp(s.settledAt),
+        }))
+      : rawTx.splits,
+  }
+
+  return {
+    tx,
+    appliedPaise: res.data.appliedPaise,
+  }
 }
 
 /**

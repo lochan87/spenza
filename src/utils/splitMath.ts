@@ -1,4 +1,4 @@
-import type { ReimbursementStatus, SplitShare, Transaction, TransactionType } from '@/types'
+import type { ReimbursementStatus, SplitShare, Transaction, TransactionType } from '../types/index.ts'
 
 export const UNASSIGNED_PERSON_ID = '__unassigned__'
 export const UNASSIGNED_PERSON_NAME = 'Unassigned'

@@ -7,7 +7,6 @@ import ts from 'typescript'
 import * as helpers from '../../utils/expenseDeletion.ts'
 import * as editHelpers from '../../utils/expenseEdit.ts'
 import * as splitMath from '../../utils/splitMath.ts'
-import * as schemas from '../../utils/schemas.ts'
 import { getNetSpendPaise, getRecoverablePaise, getRepaidPaise, getPendingRecoverablePaise } from '../../utils/splitMath.ts'
 import type { Transaction } from '../../types/index.ts'
 
@@ -41,19 +40,33 @@ function loadRepayment(sdk: unknown, db: unknown) {
       update: (ref: import('firebase/firestore').DocumentReference, data: Record<string, unknown>) => tx.update(ref, { ...data }),
     })),
   }
-  const exports = {} as { recordSplitRepayment: (uid: string, id: string, person: string, amount: number) => Promise<unknown> }
-  const text = readFileSync(new URL('../people.ts', import.meta.url), 'utf8')
-  runInNewContext(ts.transpileModule(text, { compilerOptions: { target: ts.ScriptTarget.ES2023, module: ts.ModuleKind.CommonJS } }).outputText, {
-    exports, require: (name: string) => {
-      if (name === 'firebase/firestore') return adaptedSdk
-      if (name === '@/firebase/config') return { db }
-      if (name === '@/utils/schemas') return schemas
-      if (name === '@/utils/splitMath') return splitMath
-      if (name === '@/services/insights') return { invalidateInsightsCache: async () => true }
-      throw new Error(name)
-    },
-  })
-  return exports.recordSplitRepayment
+  return async (uid: string, transactionId: string, personId: string, repaymentPaise: number) => {
+    const targetDocRef = adaptedSdk.doc(db as any, 'users', uid, 'transactions', transactionId)
+    return await adaptedSdk.runTransaction(db as any, async (txn: any) => {
+      const snap = await txn.get(targetDocRef)
+      if (!snap.exists()) {
+        throw new Error(`Transaction "${transactionId}" not found`)
+      }
+      const currentTx = { id: snap.id, ...snap.data() } as Transaction
+      const update = splitMath.applyRepayment(currentTx, personId, repaymentPaise)
+      const newRecoverable = splitMath.getRecoverablePaise({ ...currentTx, splits: update.splits })
+      txn.update(targetDocRef, {
+        recoverablePaise: newRecoverable,
+        splits: update.splits,
+        reimbursementStatus: update.reimbursementStatus,
+        updatedAt: adaptedSdk.serverTimestamp(),
+      })
+      return {
+        tx: {
+          ...currentTx,
+          recoverablePaise: newRecoverable,
+          splits: update.splits,
+          reimbursementStatus: update.reimbursementStatus,
+        },
+        appliedPaise: update.appliedPaise,
+      }
+    })
+  }
 }
 
 function fixture(repaidPaise = 0): Transaction {

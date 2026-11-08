@@ -137,6 +137,13 @@ service cloud.firestore {
         allow read, write: if isOwner(uid);
       }
 
+      // ── repaymentReceipts subcollection ──────────────────────────────────
+      // Receipts are server-owned; clients cannot forge or delete them.
+      match /repaymentReceipts/{receiptId} {
+        allow read: if isOwner(uid);
+        allow write: if false;
+      }
+
       // Import plans are immutable after preparation. All paths remain owner-only.
       match /importOperations/{operationId} {
         function validHeader(d) {

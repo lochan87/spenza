@@ -51,20 +51,25 @@ service cloud.firestore {
 
         function validPayment(d) {
           return (d.get('paymentMode', 'Cash') in ['Cash', 'Other'] && d.get('paymentAccountId', null) == null)
-              || (d.get('paymentMode', 'Cash') in ['UPI', 'Bank Transfer', 'Card'] && d.get('paymentAccountId', null) is string && d.paymentAccountId.size() > 0);
+              || (d.get('paymentMode', '') in ['UPI', 'Bank Transfer', 'Card']
+                  && d.get('paymentAccountId', null) is string
+                  && d.get('paymentAccountId', '').size() > 0
+                  && d.get('paymentAccountId', '').size() <= 200);
         }
 
         function validTypes(d) {
           return d.get('type', 'everyday') in ['everyday', 'recurring', 'one-time', 'trip', 'gift-event', 'reimbursable']
               && (d.get('description', '') is string && d.get('description', '').size() <= 500)
               && (d.get('categoryId', '') is string && d.get('categoryId', '').size() <= 200)
-              && (d.get('recoverablePaise', 0) is int && d.get('recoverablePaise', 0) >= 0 && d.get('recoverablePaise', 0) <= d.get('amountPaise', d.get('recoverablePaise', 0)))
+              && (d.get('recoverablePaise', 0) is int
+                  && d.get('recoverablePaise', 0) >= 0
+                  && d.get('recoverablePaise', 0) <= d.get('amountPaise', 0))
               && d.get('reimbursementStatus', 'none') in ['none', 'pending', 'partial', 'settled']
               && validPayment(d);
         }
 
         function validAmount(d) {
-          return d.get('amountPaise', 1) is int && d.get('amountPaise', 1) > 0;
+          return d.get('amountPaise', 0) is int && d.get('amountPaise', 0) > 0;
         }
 
         function immutableFieldsPreserved(existing, incoming) {
@@ -82,7 +87,8 @@ service cloud.firestore {
           return (existing.get('amountPaise', null) == null || incoming.get('amountPaise', null) != null)
               && (existing.get('recoverablePaise', null) == null || incoming.get('recoverablePaise', null) != null)
               && (existing.get('reimbursementStatus', null) == null || incoming.get('reimbursementStatus', null) != null)
-              && (existing.get('splits', null) == null || incoming.get('splits', null) != null);
+              && (existing.get('splits', null) == null || incoming.get('splits', null) != null)
+              && (!hasRepaymentHistory(existing) || existing.get('personId', null) == null || incoming.get('personId', null) != null);
         }
 
         function financialFieldsUnchanged(existing, incoming) {
@@ -90,14 +96,52 @@ service cloud.firestore {
               && incoming.get('recoverablePaise', 0) == existing.get('recoverablePaise', 0)
               && incoming.get('reimbursementStatus', 'none') == existing.get('reimbursementStatus', 'none')
               && incoming.get('splits', []) == existing.get('splits', [])
-              && incoming.get('settledAt', null) == existing.get('settledAt', null);
+              && incoming.get('settledAt', null) == existing.get('settledAt', null)
+              && incoming.get('personId', null) == existing.get('personId', null);
+        }
+
+        function validSplitItem(s) {
+          return s.get('amountPaise', 0) is int && s.get('amountPaise', 0) > 0
+              && s.get('repaidPaise', 0) is int && s.get('repaidPaise', 0) == 0
+              && s.get('settledAt', null) == null
+              && s.get('personId', '') is string && s.get('personId', '').size() > 0;
+        }
+
+        function validCreationSplits(splits) {
+          return (splits.size() > 0 && validSplitItem(splits[0]))
+              && (splits.size() < 2 || validSplitItem(splits[1]))
+              && (splits.size() < 3 || validSplitItem(splits[2]))
+              && (splits.size() < 4 || validSplitItem(splits[3]))
+              && (splits.size() < 5 || validSplitItem(splits[4]))
+              && (splits.size() < 6 || validSplitItem(splits[5]))
+              && (splits.size() < 7 || validSplitItem(splits[6]))
+              && (splits.size() < 8 || validSplitItem(splits[7]))
+              && (splits.size() < 9 || validSplitItem(splits[8]))
+              && (splits.size() < 10 || validSplitItem(splits[9]));
+        }
+
+        function splitSum(splits) {
+          return splits[0].get('amountPaise', 0)
+              + (splits.size() > 1 ? splits[1].get('amountPaise', 0) : 0)
+              + (splits.size() > 2 ? splits[2].get('amountPaise', 0) : 0)
+              + (splits.size() > 3 ? splits[3].get('amountPaise', 0) : 0)
+              + (splits.size() > 4 ? splits[4].get('amountPaise', 0) : 0)
+              + (splits.size() > 5 ? splits[5].get('amountPaise', 0) : 0)
+              + (splits.size() > 6 ? splits[6].get('amountPaise', 0) : 0)
+              + (splits.size() > 7 ? splits[7].get('amountPaise', 0) : 0)
+              + (splits.size() > 8 ? splits[8].get('amountPaise', 0) : 0)
+              + (splits.size() > 9 ? splits[9].get('amountPaise', 0) : 0);
         }
 
         function validCreation(d) {
           return !hasRepaymentHistory(d)
               && (d.get('recoverablePaise', 0) == 0
                   ? (d.get('reimbursementStatus', 'none') == 'none' && d.get('splits', []).size() == 0)
-                  : (d.get('reimbursementStatus', 'none') == 'pending' && d.get('splits', []).size() > 0 && d.get('splits', []).size() <= 10));
+                  : (d.get('reimbursementStatus', 'none') == 'pending'
+                     && d.get('splits', []).size() > 0
+                     && d.get('splits', []).size() <= 10
+                     && validCreationSplits(d.get('splits', []))
+                     && splitSum(d.get('splits', [])) == d.get('recoverablePaise', 0)));
         }
 
         allow read: if isOwner(uid);
@@ -105,8 +149,7 @@ service cloud.firestore {
         allow delete: if isOwner(uid) && resource != null && !hasRepaymentHistory(resource.data);
 
         allow create: if isOwner(uid)
-          && request.resource.data.get('amountPaise', 0) is int
-          && request.resource.data.get('amountPaise', 0) > 0
+          && validAmount(request.resource.data)
           && validTypes(request.resource.data)
           && validCreation(request.resource.data);
 
@@ -117,9 +160,11 @@ service cloud.firestore {
           && immutableFieldsPreserved(resource.data, request.resource.data)
           && financialFieldsNotRemoved(resource.data, request.resource.data)
           && (
-            hasRepaymentHistory(resource.data)
-              ? financialFieldsUnchanged(resource.data, request.resource.data)
-              : validCreation(request.resource.data)
+            financialFieldsUnchanged(resource.data, request.resource.data)
+            || (
+              !hasRepaymentHistory(resource.data)
+              && validCreation(request.resource.data)
+            )
           );
       }
 

@@ -688,6 +688,234 @@ it('Firestore emulator: transaction write security rules hardening', { skip: !ho
         /permission-denied/
       )
     })
+
+    // 25. Forged monetary values are rejected on create and update
+    await t.test('25. Forged monetary values are rejected on create and update', async () => {
+      // A: recoverablePaise > amountPaise on create
+      await assert.rejects(
+        sdk.setDoc(ownerTxRef('forged-rec-exceeds'), {
+          ...validExpenseFixture({
+            amountPaise: 5000,
+            recoverablePaise: 6000,
+            reimbursementStatus: 'pending',
+            splits: [{ personId: 'p1', personName: 'P1', amountPaise: 6000, repaidPaise: 0, settledAt: null }],
+          }),
+        }),
+        /permission-denied/
+      )
+
+      // B: Split item with zero or negative amountPaise on create
+      await assert.rejects(
+        sdk.setDoc(ownerTxRef('forged-zero-split'), {
+          ...validExpenseFixture({
+            amountPaise: 5000,
+            recoverablePaise: 5000,
+            reimbursementStatus: 'pending',
+            splits: [{ personId: 'p1', personName: 'P1', amountPaise: 0, repaidPaise: 0, settledAt: null }],
+          }),
+        }),
+        /permission-denied/
+      )
+      await assert.rejects(
+        sdk.setDoc(ownerTxRef('forged-neg-split'), {
+          ...validExpenseFixture({
+            amountPaise: 5000,
+            recoverablePaise: 5000,
+            reimbursementStatus: 'pending',
+            splits: [{ personId: 'p1', personName: 'P1', amountPaise: -2000, repaidPaise: 0, settledAt: null }],
+          }),
+        }),
+        /permission-denied/
+      )
+
+      // C: Split amounts sum does not match recoverablePaise
+      await assert.rejects(
+        sdk.setDoc(ownerTxRef('forged-mismatched-split-sum'), {
+          ...validExpenseFixture({
+            amountPaise: 10000,
+            recoverablePaise: 6000,
+            reimbursementStatus: 'pending',
+            splits: [
+              { personId: 'p1', personName: 'P1', amountPaise: 2000, repaidPaise: 0, settledAt: null },
+              { personId: 'p2', personName: 'P2', amountPaise: 2000, repaidPaise: 0, settledAt: null },
+            ],
+          }),
+        }),
+        /permission-denied/
+      )
+
+      // D: Non-integer recoverablePaise
+      await assert.rejects(
+        sdk.setDoc(ownerTxRef('forged-float-rec'), {
+          ...validExpenseFixture({
+            amountPaise: 5000,
+            recoverablePaise: 2500.5,
+            reimbursementStatus: 'pending',
+            splits: [{ personId: 'p1', personName: 'P1', amountPaise: 2500, repaidPaise: 0, settledAt: null }],
+          }),
+        }),
+        /permission-denied/
+      )
+    })
+
+    // 26. Legacy personId tampering on repaid transactions is rejected
+    await t.test('26. Legacy personId tampering on repaid transactions is rejected', async () => {
+      const legacyRepaid = {
+        id: 'legacy-person-repaid-' + crypto.randomUUID(),
+        amountPaise: 4000,
+        type: 'reimbursable',
+        personId: 'alice-original',
+        recoverablePaise: 0,
+        reimbursementStatus: 'settled',
+        settledAt: sdk.Timestamp.now(),
+        description: 'Original legacy business expense',
+      }
+      await seedRepaidTx(legacyRepaid)
+      const ref = ownerTxRef(legacyRepaid.id)
+
+      // Attempting to change personId to another person is rejected
+      await assert.rejects(
+        sdk.updateDoc(ref, { personId: 'bob-tampered' }),
+        /permission-denied/
+      )
+
+      // Attempting to remove personId via deleteField() is rejected
+      await assert.rejects(
+        sdk.updateDoc(ref, { personId: sdk.deleteField() }),
+        /permission-denied/
+      )
+
+      // Legitimate metadata edit preserving personId succeeds
+      await sdk.updateDoc(ref, { description: 'Updated legacy business expense description' })
+      const snap = await sdk.getDoc(ref)
+      assert.equal(snap.data()?.description, 'Updated legacy business expense description')
+      assert.equal(snap.data()?.personId, 'alice-original')
+    })
+
+    // 27. Valid metadata edits on legacy unpaid transactions succeed
+    await t.test('27. Valid metadata edits on legacy unpaid transactions succeed', async () => {
+      const legacyUnpaid = {
+        id: 'legacy-unpaid-' + crypto.randomUUID(),
+        amountPaise: 7500,
+        type: 'reimbursable',
+        personId: 'charlie-unpaid',
+        recoverablePaise: 7500,
+        reimbursementStatus: 'none',
+        splits: [],
+        description: 'Unpaid legacy reimbursable without splits',
+      }
+      await seedRepaidTx(legacyUnpaid)
+      const ref = ownerTxRef(legacyUnpaid.id)
+
+      // Metadata-only edit succeeds even though legacy record lacks splits
+      await sdk.updateDoc(ref, {
+        description: 'Updated unpaid legacy reimbursable description',
+        notes: 'Preserves legacy structure without failure',
+      })
+      const snap = await sdk.getDoc(ref)
+      assert.equal(snap.data()?.description, 'Updated unpaid legacy reimbursable description')
+      assert.equal(snap.data()?.notes, 'Preserves legacy structure without failure')
+      assert.equal(snap.data()?.recoverablePaise, 7500)
+    })
+
+    // 28. Invalid paymentMode and paymentAccountId combinations are rejected
+    await t.test('28. Invalid paymentMode and paymentAccountId combinations are rejected', async () => {
+      // Cash with non-null account
+      await assert.rejects(
+        sdk.setDoc(ownerTxRef('cash-invalid-' + crypto.randomUUID()), {
+          ...validExpenseFixture(),
+          paymentMode: 'Cash',
+          paymentAccountId: 'acc-123',
+        }),
+        /permission-denied/
+      )
+
+      // Other with non-null account
+      await assert.rejects(
+        sdk.setDoc(ownerTxRef('other-invalid-' + crypto.randomUUID()), {
+          ...validExpenseFixture(),
+          paymentMode: 'Other',
+          paymentAccountId: 'acc-123',
+        }),
+        /permission-denied/
+      )
+
+      // Card with null account
+      await assert.rejects(
+        sdk.setDoc(ownerTxRef('card-null-' + crypto.randomUUID()), {
+          ...validExpenseFixture(),
+          paymentMode: 'Card',
+          paymentAccountId: null,
+        }),
+        /permission-denied/
+      )
+
+      // Bank Transfer with null account
+      await assert.rejects(
+        sdk.setDoc(ownerTxRef('bt-null-' + crypto.randomUUID()), {
+          ...validExpenseFixture(),
+          paymentMode: 'Bank Transfer',
+          paymentAccountId: null,
+        }),
+        /permission-denied/
+      )
+
+      // Unsupported paymentMode
+      await assert.rejects(
+        sdk.setDoc(ownerTxRef('crypto-invalid-' + crypto.randomUUID()), {
+          ...validExpenseFixture(),
+          paymentMode: 'Cryptocurrency',
+          paymentAccountId: null,
+        }),
+        /permission-denied/
+      )
+
+      // Valid Card with account succeeds
+      const cardTx = validExpenseFixture({ paymentMode: 'Card', paymentAccountId: 'card-acc-9' })
+      await sdk.setDoc(ownerTxRef(cardTx.id), cardTx)
+      assert.equal((await sdk.getDoc(ownerTxRef(cardTx.id))).data()?.paymentMode, 'Card')
+
+      // Valid Bank Transfer with account succeeds
+      const btTx = validExpenseFixture({ paymentMode: 'Bank Transfer', paymentAccountId: 'bank-acc-9' })
+      await sdk.setDoc(ownerTxRef(btTx.id), btTx)
+      assert.equal((await sdk.getDoc(ownerTxRef(btTx.id))).data()?.paymentMode, 'Bank Transfer')
+
+      // Valid Other with null account succeeds
+      const otherTx = validExpenseFixture({ paymentMode: 'Other', paymentAccountId: null })
+      await sdk.setDoc(ownerTxRef(otherTx.id), otherTx)
+      assert.equal((await sdk.getDoc(ownerTxRef(otherTx.id))).data()?.paymentMode, 'Other')
+    })
+
+    // 29. Legitimate personal and split expense creations succeed
+    await t.test('29. Legitimate personal and split expense creations succeed', async () => {
+      // Personal expense
+      const personal = validExpenseFixture({
+        amountPaise: 2500,
+        recoverablePaise: 0,
+        reimbursementStatus: 'none',
+        splits: [],
+      })
+      await sdk.setDoc(ownerTxRef(personal.id), personal)
+      const personalSnap = await sdk.getDoc(ownerTxRef(personal.id))
+      assert.equal(personalSnap.exists(), true)
+      assert.equal(personalSnap.data()?.recoverablePaise, 0)
+
+      // Split expense with 2 participants summing to recoverablePaise
+      const splitTx = validExpenseFixture({
+        amountPaise: 9000,
+        recoverablePaise: 6000,
+        reimbursementStatus: 'pending',
+        splits: [
+          { personId: 'friend-a', personName: 'Friend A', amountPaise: 3000, repaidPaise: 0, settledAt: null },
+          { personId: 'friend-b', personName: 'Friend B', amountPaise: 3000, repaidPaise: 0, settledAt: null },
+        ],
+      })
+      await sdk.setDoc(ownerTxRef(splitTx.id), splitTx)
+      const splitSnap = await sdk.getDoc(ownerTxRef(splitTx.id))
+      assert.equal(splitSnap.exists(), true)
+      assert.equal(splitSnap.data()?.recoverablePaise, 6000)
+      assert.equal(splitSnap.data()?.splits.length, 2)
+    })
   } finally {
     await adminApp.delete()
     await sdk.terminate(ownerDb)

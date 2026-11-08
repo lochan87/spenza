@@ -1,10 +1,10 @@
-import { getDocs, collection, query, orderBy } from 'firebase/firestore'
+import { getDocs, collection, type QuerySnapshot, type Firestore } from 'firebase/firestore'
 import { format } from 'date-fns'
-import type { Transaction, Category, PaymentAccount, Person } from '../types/index.ts'
 import {
   buildFinancialExportDocument,
   validateExportIntegrity,
   type FinancialExportDocument,
+  type SourceDocument,
 } from '../utils/financialExport.ts'
 
 export interface FinancialExportResult {
@@ -30,11 +30,10 @@ function downloadBlob(content: string, filename: string, mimeType: string) {
 }
 
 /**
- * Perform a complete, lossless export of user financial records in raw integer paise.
- * Fetches transactions, categories, payment accounts, and people.
- * Fails closed if any fetch error occurs, never creating partial exports.
+ * Archive the fetched transactions, categories, payment accounts and people.
+ * Value fidelity is verified against these reads, not database snapshot completeness.
  */
-export async function exportCompleteFinancialData(uid: string, customDb?: any): Promise<FinancialExportResult> {
+export async function exportCompleteFinancialData(uid: string, customDb?: Firestore): Promise<FinancialExportResult> {
   if (!uid || typeof uid !== 'string' || uid.trim() === '') {
     throw new Error('User UID is required to export financial data.')
   }
@@ -47,41 +46,38 @@ export async function exportCompleteFinancialData(uid: string, customDb?: any): 
 
   // Fetch all collections in parallel; any single collection failure aborts the entire export.
   const [txSnap, catSnap, accSnap, peopleSnap] = await Promise.all([
-    getDocs(query(collection(firestore, 'users', uid, 'transactions'), orderBy('date', 'desc'))),
+    getDocs(collection(firestore, 'users', uid, 'transactions')),
     getDocs(collection(firestore, 'users', uid, 'categories')),
     getDocs(collection(firestore, 'users', uid, 'paymentAccounts')),
     getDocs(collection(firestore, 'users', uid, 'people')),
   ])
 
-  const transactions = txSnap.docs.map(d => ({ id: d.id, ...d.data() }) as Transaction)
-  const categories = catSnap.docs.map(d => ({ id: d.id, ...d.data() }) as Category)
-  const paymentAccounts = accSnap.docs.map(d => ({ id: d.id, ...d.data() }) as PaymentAccount)
-  const people = peopleSnap.docs.map(d => ({ id: d.id, ...d.data() }) as Person)
-
-  const doc: FinancialExportDocument = buildFinancialExportDocument({
+  const records = (snap: QuerySnapshot): SourceDocument[] => snap.docs.map(d => ({ id: d.id, path: d.ref.path, data: d.data() }))
+  const source = {
     uid,
-    transactions,
-    categories,
-    paymentAccounts,
-    people,
-  })
+    transactions: records(txSnap),
+    categories: records(catSnap),
+    paymentAccounts: records(accSnap),
+    people: records(peopleSnap),
+  }
+  const doc: FinancialExportDocument = buildFinancialExportDocument(source)
+  const jsonContent = JSON.stringify(doc, null, 2)
 
-  const integrity = validateExportIntegrity(doc)
+  const integrity = validateExportIntegrity(JSON.parse(jsonContent), source)
   if (!integrity.valid) {
     throw new Error(`Export integrity verification failed: ${integrity.errors.join('; ')}`)
   }
 
   const dateStr = format(new Date(), 'yyyy-MM-dd')
   const filename = `spenza-financial-archive-${dateStr}.json`
-  const jsonContent = JSON.stringify(doc, null, 2)
 
   downloadBlob(jsonContent, filename, 'application/json;charset=utf-8;')
 
   return {
     success: true,
     filename,
-    transactionCount: doc.metadata.transactionCount,
-    totalGrossPaise: doc.metadata.totalGrossPaise,
-    totalRecoverablePaise: doc.metadata.totalRecoverablePaise,
+    transactionCount: doc.metadata.counts.transactions,
+    totalGrossPaise: doc.metadata.derived.totalGrossPaise,
+    totalRecoverablePaise: doc.metadata.derived.totalRecoverablePaise,
   }
 }

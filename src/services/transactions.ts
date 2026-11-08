@@ -89,6 +89,38 @@ export async function deleteTransaction(uid: string, id: string): Promise<void> 
   }
 }
 
+/** Settings maintenance: each chunk is atomic; earlier chunks can already have committed. */
+export async function deleteTransactionsSafely(
+  uid: string,
+  ids: string[],
+  importedOnly = false
+): Promise<{ deleted: number; cacheInvalidated: boolean }> {
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    throw new ExpenseDeletionError('You are offline. Reconnect before clearing transactions so repayment history can be verified.')
+  }
+  let deleted = 0
+  const uniqueIds = [...new Set(ids)]
+  try {
+    for (let offset = 0; offset < uniqueIds.length; offset += 400) {
+      const refs = uniqueIds.slice(offset, offset + 400).map(id => doc(db, 'users', uid, 'transactions', id))
+      deleted += await runTransaction(db, async txn => {
+        const snapshots = await Promise.all(refs.map(ref => txn.get(ref)))
+        const eligible = snapshots.filter(snap => snap.exists() && (!importedOnly || snap.data().isImported === true))
+        // Check every document before staging any deletes; repeat on every retry.
+        for (const snap of eligible) assertExpenseCanBeDeleted(snap.data() as Transaction)
+        for (const snap of eligible) txn.delete(snap.ref)
+        if (eligible.length > 0) txn.delete(doc(db, 'users', uid, 'insights', 'summary'))
+        return eligible.length
+      })
+    }
+  } catch (error) {
+    const reason = error instanceof ExpenseDeletionError ? error.message : 'Deletion could not be verified. Check your connection.'
+    throw new ExpenseDeletionError(`Clear stopped. Confirmed deletions: ${deleted}. ${reason} Refresh to review remaining transactions.`)
+  }
+  // Cache invalidation commits with each successful chunk, including on partial completion.
+  return { deleted, cacheInvalidated: true }
+}
+
 export async function getTransaction(uid: string, id: string): Promise<Transaction | null> {
   const snap = await getDoc(doc(db, 'users', uid, 'transactions', id))
   if (!snap.exists()) return null

@@ -10,6 +10,7 @@ import { writeBatch, collection, getDocs, getCountFromServer, query, where } fro
 import { db } from '@/firebase/config'
 import { suggestCategory } from '@/utils/categoryKeywords'
 import { invalidateInsightsCache } from '@/services/insights'
+import { deleteTransactionsSafely } from '@/services/transactions'
 
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
@@ -718,79 +719,19 @@ export async function getImportedTransactionsCount(uid: string): Promise<number>
   }
 }
 
-/**
- * Delete all transactions that were created via Excel import (isImported === true).
- * Runs in batches of 500 to stay within Firestore write limits, and invalidates
- * the cached insights summary document (even if a partial batch failure occurs).
- * Returns the number of transactions deleted and whether cache invalidation succeeded.
- */
+/** Clear imported records through repayment-protected transactional chunks. */
 export async function clearImportedTransactions(
   uid: string
 ): Promise<{ deleted: number; cacheInvalidated: boolean }> {
   const txnColl = collection(db, 'users', uid, 'transactions')
   const snap = await getDocs(query(txnColl, where('isImported', '==', true)))
-  if (snap.empty) {
-    const cacheInvalidated = await invalidateInsightsCache(uid)
-    return { deleted: 0, cacheInvalidated }
-  }
-
-  let deleted = 0
-  let cacheInvalidated = true
-  const chunks: typeof snap.docs[] = []
-  for (let i = 0; i < snap.docs.length; i += 500) {
-    chunks.push(snap.docs.slice(i, i + 500))
-  }
-
-  try {
-    for (const chunk of chunks) {
-      const batch = writeBatch(db)
-      chunk.forEach(d => batch.delete(d.ref))
-      await batch.commit()
-      deleted += chunk.length
-    }
-  } finally {
-    if (deleted > 0) {
-      cacheInvalidated = await invalidateInsightsCache(uid)
-    }
-  }
-
-  return { deleted, cacheInvalidated }
+  return deleteTransactionsSafely(uid, snap.docs.map(d => d.id), true)
 }
 
-/**
- * Delete ALL transactions (both imported and manually entered) and invalidate
- * the cached insights summary document (even if a partial batch failure occurs).
- * Returns the number of transactions deleted and whether cache invalidation succeeded.
- */
+/** Clear all records through repayment-protected transactional chunks. */
 export async function clearAllTransactions(
   uid: string
 ): Promise<{ deleted: number; cacheInvalidated: boolean }> {
-  const txnColl = collection(db, 'users', uid, 'transactions')
-  const snap = await getDocs(txnColl)
-  if (snap.empty) {
-    const cacheInvalidated = await invalidateInsightsCache(uid)
-    return { deleted: 0, cacheInvalidated }
-  }
-
-  let deleted = 0
-  let cacheInvalidated = true
-  const chunks: typeof snap.docs[] = []
-  for (let i = 0; i < snap.docs.length; i += 500) {
-    chunks.push(snap.docs.slice(i, i + 500))
-  }
-
-  try {
-    for (const chunk of chunks) {
-      const batch = writeBatch(db)
-      chunk.forEach(d => batch.delete(d.ref))
-      await batch.commit()
-      deleted += chunk.length
-    }
-  } finally {
-    if (deleted > 0) {
-      cacheInvalidated = await invalidateInsightsCache(uid)
-    }
-  }
-
-  return { deleted, cacheInvalidated }
+  const snap = await getDocs(collection(db, 'users', uid, 'transactions'))
+  return deleteTransactionsSafely(uid, snap.docs.map(d => d.id))
 }

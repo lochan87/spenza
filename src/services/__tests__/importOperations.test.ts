@@ -561,6 +561,7 @@ describe('Spreadsheet import parsing and normalization', () => {
       if (name === '@/firebase/config') return { db: {} }
       if (name === '@/utils/categoryKeywords') return { suggestCategory: () => null }
       if (name === '@/services/insights') return { invalidateInsightsCache: () => { throw new Error('Parsing cannot write') } }
+      if (name === '@/services/transactions') return { deleteTransactionsSafely: () => { throw new Error('Parsing cannot delete') } }
       throw new Error(name)
     },
   })

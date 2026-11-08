@@ -24,6 +24,7 @@ import {
   Users,
 } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
+import { ExpenseDeletionError } from '@/utils/expenseDeletion'
 import { useTheme } from '@/hooks/useTheme'
 import { signOut } from '@/firebase/auth'
 import {
@@ -350,7 +351,7 @@ export function SettingsPage() {
       console.error('[Spenza Settings] Clear imports error:', err)
       setStatusBanner({
         type: 'error',
-        message: 'Failed to clear imported transactions. Check console for details.',
+        message: err instanceof ExpenseDeletionError ? err.message : 'Failed to clear imported transactions. Refresh to review remaining records.',
       })
     } finally {
       setClearingImports(false)
@@ -384,7 +385,7 @@ export function SettingsPage() {
       console.error('[Spenza Settings] Clear all error:', err)
       setStatusBanner({
         type: 'error',
-        message: 'Failed to clear transactions. Check console for details.',
+        message: err instanceof ExpenseDeletionError ? err.message : 'Failed to clear transactions. Refresh to review remaining records.',
       })
     } finally {
       setClearingAll(false)

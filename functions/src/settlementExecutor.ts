@@ -266,9 +266,26 @@ export async function executeTrustedSettlePersonAllDues(
   }
 
   const txColl = db.collection(`users/${uid}/transactions`)
-  const snap = await txColl.get()
 
-  const matchingDocs = snap.docs.filter(d => {
+  // Candidate queries: Avoid unbounded full-collection scan.
+  // Query 1: Active unsettled splits/reimbursables with pending or partial status.
+  // Query 2: Legacy reimbursable records (which may lack reimbursementStatus).
+  // Query 3: Records explicitly attributed to this personId (which may lack reimbursementStatus).
+  const candidateDocs = new Map<string, FirebaseFirestore.QueryDocumentSnapshot>()
+  const queries = [
+    txColl.where('reimbursementStatus', 'in', ['pending', 'partial']),
+    txColl.where('type', '==', 'reimbursable'),
+    txColl.where('personId', '==', personId),
+  ]
+
+  const snapshots = await Promise.all(queries.map(q => q.get()))
+  for (const snap of snapshots) {
+    for (const d of snap.docs) {
+      candidateDocs.set(d.id, d)
+    }
+  }
+
+  const matchingDocs = Array.from(candidateDocs.values()).filter(d => {
     const data = d.data() as Transaction
     const splits = getNormalizedSplits(data)
     const share = splits.find(
@@ -279,23 +296,54 @@ export async function executeTrustedSettlePersonAllDues(
     return share && share.amountPaise > share.repaidPaise
   })
 
+  // Deterministic order: oldest transactions first (chronological settlement priority)
+  matchingDocs.sort((a, b) => {
+    const aData = a.data() as Transaction
+    const bData = b.data() as Transaction
+    const aSec = aData.date?.seconds ?? 0
+    const bSec = bData.date?.seconds ?? 0
+    if (aSec !== bSec) return aSec - bSec
+    return a.id.localeCompare(b.id)
+  })
+
   if (matchingDocs.length === 0) {
-    const emptyResult: SettlePersonAllDuesResult = {
-      settledCount: 0,
-      totalSettledPaise: 0,
-      updatedTxns: [],
-      complete: true,
-      replayed: false,
-    }
-    await receiptRef.set({
-      idempotencyKey,
-      mode: 'personAllDues',
-      personId,
-      settledCount: 0,
-      totalSettledPaise: 0,
-      updatedTxns: [],
-      complete: true,
-      createdAt: FieldValue.serverTimestamp(),
+    // Concurrency-safe empty check: another concurrent request may have already completed settlement
+    const emptyResult = await db.runTransaction(async txn => {
+      const snap = await txn.get(receiptRef)
+      if (snap.exists) {
+        const existing = snap.data()
+        if (existing?.mode !== 'personAllDues' || existing?.personId !== personId) {
+          throw new HttpsError('already-exists', 'Idempotency key was already used for a different settlement request.')
+        }
+        return {
+          settledCount: existing.settledCount ?? 0,
+          totalSettledPaise: existing.totalSettledPaise ?? 0,
+          updatedTxns: existing.updatedTxns ?? [],
+          complete: existing.complete ?? true,
+          replayed: true,
+          failedTransactionId: existing.failedTransactionId ?? null,
+          error: existing.error ?? null,
+        }
+      }
+
+      txn.set(receiptRef, {
+        idempotencyKey,
+        mode: 'personAllDues',
+        personId,
+        settledCount: 0,
+        totalSettledPaise: 0,
+        updatedTxns: [],
+        complete: true,
+        createdAt: FieldValue.serverTimestamp(),
+      })
+
+      return {
+        settledCount: 0,
+        totalSettledPaise: 0,
+        updatedTxns: [],
+        complete: true,
+        replayed: false,
+      }
     })
     return emptyResult
   }
@@ -355,37 +403,67 @@ export async function executeTrustedSettlePersonAllDues(
 
   const isComplete = !hasRemainingAfterLimit && !failedTxId
 
-  await receiptRef.set({
-    idempotencyKey,
-    mode: 'personAllDues',
-    personId,
-    settledCount: updatedTxns.length,
-    totalSettledPaise: totalSettled,
-    updatedTxns,
-    complete: isComplete,
-    failedTransactionId: failedTxId,
-    error: failureError,
-    createdAt: FieldValue.serverTimestamp(),
+  // Concurrency-safe finalization transaction:
+  // Never overwrite an existing successful/higher settlement receipt with a zero or lesser result.
+  const finalResult = await db.runTransaction(async txn => {
+    const snap = await txn.get(receiptRef)
+    if (snap.exists) {
+      const existing = snap.data()
+      if (existing?.mode !== 'personAllDues' || existing?.personId !== personId) {
+        throw new HttpsError('already-exists', 'Idempotency key was already used for a different settlement request.')
+      }
+
+      const existingSettled = existing.totalSettledPaise ?? 0
+      const existingCount = existing.settledCount ?? 0
+
+      if (existingSettled > totalSettled || (existingSettled === totalSettled && existingCount >= updatedTxns.length)) {
+        return {
+          settledCount: existingCount,
+          totalSettledPaise: existingSettled,
+          updatedTxns: existing.updatedTxns ?? [],
+          complete: existing.complete ?? true,
+          replayed: true,
+          failedTransactionId: existing.failedTransactionId ?? null,
+          error: existing.error ?? null,
+        }
+      }
+    }
+
+    const payload = {
+      idempotencyKey,
+      mode: 'personAllDues',
+      personId,
+      settledCount: updatedTxns.length,
+      totalSettledPaise: totalSettled,
+      updatedTxns,
+      complete: isComplete,
+      failedTransactionId: failedTxId,
+      error: failureError,
+      createdAt: FieldValue.serverTimestamp(),
+    }
+    txn.set(receiptRef, payload)
+
+    return {
+      settledCount: updatedTxns.length,
+      totalSettledPaise: totalSettled,
+      updatedTxns,
+      complete: isComplete,
+      replayed: false,
+      failedTransactionId: failedTxId,
+      error: failureError,
+    }
   })
 
-  if (failedTxId && updatedTxns.length === 0) {
-    throw new HttpsError('failed-precondition', failureError!, {
+  if (finalResult.failedTransactionId && finalResult.settledCount === 0) {
+    throw new HttpsError('failed-precondition', finalResult.error || 'Settlement failed for transaction', {
       settledCount: 0,
       totalSettledPaise: 0,
       updatedTxns: [],
-      failedTransactionId: failedTxId,
+      failedTransactionId: finalResult.failedTransactionId,
     })
   }
 
-  return {
-    settledCount: updatedTxns.length,
-    totalSettledPaise: totalSettled,
-    updatedTxns,
-    complete: isComplete,
-    replayed: false,
-    failedTransactionId: failedTxId,
-    error: failureError,
-  }
+  return finalResult
 }
 
 export async function executeTrustedSettlement(

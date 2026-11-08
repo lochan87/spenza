@@ -473,6 +473,106 @@ it('Auth + Functions + Firestore emulators: executeSettlementV1 callable, concur
     assert.equal(partialDirectRes.totalSettledPaise, 2000)
     assert.equal(partialDirectRes.complete, true)
     assert.equal((await part1DocRef.get()).data()!.splits[0].repaidPaise, 2000)
+
+    // ─── Test 16: Concurrent duplicate requests (F5 concurrency safety) ─────
+    const concurPersonId = `concur-${crypto.randomUUID()}`
+    const concurTxId = `ctx-${crypto.randomUUID()}`
+    await db.doc(`users/${uid}/transactions/${concurTxId}`).create({
+      id: concurTxId,
+      amountPaise: 5000,
+      description: 'Concur test meal',
+      categoryId: 'food',
+      type: 'everyday',
+      date: Timestamp.now(),
+      paymentMode: 'Cash',
+      paymentAccountId: null,
+      tripId: null,
+      personId: null,
+      recoverablePaise: 5000,
+      reimbursementStatus: 'pending',
+      splits: [{ personId: concurPersonId, personName: 'Concur Friend', amountPaise: 5000, repaidPaise: 0, settledAt: null }],
+    })
+
+    const keyDuplicate = crypto.randomUUID()
+    const [dupRes1, dupRes2] = await Promise.all([
+      callSettlement(
+        { mode: 'personAllDues', personId: concurPersonId, idempotencyKey: keyDuplicate },
+        owner.idToken
+      ),
+      callSettlement(
+        { mode: 'personAllDues', personId: concurPersonId, idempotencyKey: keyDuplicate },
+        owner.idToken
+      ),
+    ])
+
+    assert.ok(dupRes1.result, JSON.stringify(dupRes1.error))
+    assert.ok(dupRes2.result, JSON.stringify(dupRes2.error))
+    // Neither concurrent request should report 0 or overwrite with 0!
+    assert.equal(dupRes1.result.settledCount, 1)
+    assert.equal(dupRes1.result.totalSettledPaise, 5000)
+    assert.equal(dupRes2.result.settledCount, 1)
+    assert.equal(dupRes2.result.totalSettledPaise, 5000)
+
+    // Stored receipt must preserve the winning settlement
+    const dupReceipt = (await db.doc(`users/${uid}/repaymentReceipts/${keyDuplicate}`).get()).data()!
+    assert.equal(dupReceipt.settledCount, 1)
+    assert.equal(dupReceipt.totalSettledPaise, 5000)
+
+    // ─── Test 17: Large history & Legacy dues without reimbursementStatus ───
+    const legacyPersonId = `legp-${crypto.randomUUID()}`
+    const legTxId = `legtx-${crypto.randomUUID()}`
+
+    // Seed legacy record without reimbursementStatus
+    await db.doc(`users/${uid}/transactions/${legTxId}`).create({
+      id: legTxId,
+      amountPaise: 4500,
+      description: 'Legacy office expense without status',
+      categoryId: 'work',
+      type: 'reimbursable',
+      date: Timestamp.now(),
+      paymentMode: 'Cash',
+      paymentAccountId: null,
+      tripId: null,
+      personId: legacyPersonId,
+      recoverablePaise: 4500,
+    })
+
+    // Seed 25 everyday personal transactions (large history simulation)
+    const personalBatch = db.batch()
+    for (let i = 0; i < 25; i++) {
+      const pId = `personal-${i}-${crypto.randomUUID()}`
+      personalBatch.create(db.doc(`users/${uid}/transactions/${pId}`), {
+        id: pId,
+        amountPaise: 1000 + i * 100,
+        description: `Personal item ${i}`,
+        categoryId: 'groceries',
+        type: 'everyday',
+        date: Timestamp.now(),
+        paymentMode: 'Cash',
+        paymentAccountId: null,
+        tripId: null,
+        personId: null,
+        recoverablePaise: 0,
+        reimbursementStatus: 'none',
+        splits: [],
+      })
+    }
+    await personalBatch.commit()
+
+    const keyLegacy = crypto.randomUUID()
+    const legacyRes = await callSettlement(
+      { mode: 'personAllDues', personId: legacyPersonId, idempotencyKey: keyLegacy },
+      owner.idToken
+    )
+
+    assert.ok(legacyRes.result, JSON.stringify(legacyRes.error))
+    assert.equal(legacyRes.result.settledCount, 1)
+    assert.equal(legacyRes.result.totalSettledPaise, 4500)
+    assert.equal(legacyRes.result.complete, true)
+
+    const settledLegDoc = (await db.doc(`users/${uid}/transactions/${legTxId}`).get()).data()!
+    assert.equal(settledLegDoc.reimbursementStatus, 'settled')
+    assert.equal(settledLegDoc.splits[0].repaidPaise, 4500)
   } finally {
     await db.terminate()
     await deleteApp(app)

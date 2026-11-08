@@ -286,6 +286,130 @@ describe('Client settlement service & retry safety (Phase 7.2B)', () => {
     )
   })
 
+  it('partial failure clears pending key so immediate retry generates a fresh key', async () => {
+    let callCount = 0
+    const capturedKeys: string[] = []
+
+    const { service } = loadPeopleService({
+      callableImpl: async (data: any) => {
+        callCount++
+        capturedKeys.push(data.idempotencyKey)
+        if (callCount === 1) {
+          // First attempt: partial failure (1 succeeded, 1 failed)
+          return {
+            settledCount: 1,
+            totalSettledPaise: 3000,
+            updatedTxns: [
+              { id: 'tx-1', amountPaise: 3000, recoverablePaise: 3000, reimbursementStatus: 'settled', date: { _seconds: 1700000000, _nanoseconds: 0 }, splits: [] },
+            ],
+            complete: false,
+            failedTransactionId: 'tx-2',
+            error: 'Transaction "tx-2" temporarily locked',
+          }
+        }
+        // Second attempt (retry): succeeds settling the remaining transaction
+        return {
+          settledCount: 1,
+          totalSettledPaise: 2000,
+          updatedTxns: [
+            { id: 'tx-2', amountPaise: 2000, recoverablePaise: 2000, reimbursementStatus: 'settled', date: { _seconds: 1700000000, _nanoseconds: 0 }, splits: [] },
+          ],
+          complete: true,
+        }
+      },
+    })
+
+    // First attempt rejects with MultiSettlementPartialError
+    await assert.rejects(
+      service.settlePersonAllDues('user-1', 'person-bob'),
+      (err: any) => {
+        assert.equal(err.name, 'MultiSettlementPartialError')
+        assert.equal(err.settledCount, 1)
+        assert.equal(err.totalSettledPaise, 3000)
+        return true
+      }
+    )
+
+    // User immediately retries settlement: because the partial failure was confirmed,
+    // the pending key was cleared, so the retry generates a fresh idempotency key!
+    const retryRes = await service.settlePersonAllDues('user-1', 'person-bob')
+    assert.equal(retryRes.settledCount, 1)
+    assert.equal(retryRes.totalSettledPaise, 2000)
+    assert.equal(retryRes.complete, true)
+
+    assert.equal(capturedKeys.length, 2)
+    assert.notEqual(capturedKeys[0], capturedKeys[1]) // Fresh key generated on retry!
+  })
+
+  it('uncertain network timeout preserves pending key for safe replay on retry', async () => {
+    let callCount = 0
+    const capturedKeys: string[] = []
+
+    const { service } = loadPeopleService({
+      callableImpl: async (data: any) => {
+        callCount++
+        capturedKeys.push(data.idempotencyKey)
+        if (callCount === 1) {
+          // Simulate network drop before response reached client
+          throw new Error('Network connection lost (uncertain response)')
+        }
+        // Second call: server returns replay of the earlier completed settlement
+        return {
+          settledCount: 2,
+          totalSettledPaise: 5000,
+          updatedTxns: [
+            { id: 'tx-1', amountPaise: 3000, recoverablePaise: 3000, reimbursementStatus: 'settled', date: { _seconds: 1700000000, _nanoseconds: 0 }, splits: [] },
+            { id: 'tx-2', amountPaise: 2000, recoverablePaise: 2000, reimbursementStatus: 'settled', date: { _seconds: 1700000000, _nanoseconds: 0 }, splits: [] },
+          ],
+          complete: true,
+          replayed: true,
+        }
+      },
+    })
+
+    // First attempt throws network error
+    await assert.rejects(
+      service.settlePersonAllDues('user-1', 'person-alice'),
+      /Network connection lost/
+    )
+
+    // Client retries after network recovers: the pending key is preserved!
+    const retryRes = await service.settlePersonAllDues('user-1', 'person-alice')
+    assert.equal(retryRes.settledCount, 2)
+    assert.equal(retryRes.totalSettledPaise, 5000)
+
+    assert.equal(capturedKeys.length, 2)
+    assert.equal(capturedKeys[0], capturedKeys[1]) // Same key preserved and sent on retry!
+  })
+
+  it('clean multi-settlement completion clears pending key so subsequent operations use fresh keys', async () => {
+    const capturedKeys: string[] = []
+
+    const { service } = loadPeopleService({
+      callableImpl: async (data: any) => {
+        capturedKeys.push(data.idempotencyKey)
+        return {
+          settledCount: 1,
+          totalSettledPaise: 1000,
+          updatedTxns: [
+            { id: 'tx-1', amountPaise: 1000, recoverablePaise: 1000, reimbursementStatus: 'settled', date: { _seconds: 1700000000, _nanoseconds: 0 }, splits: [] },
+          ],
+          complete: true,
+        }
+      },
+    })
+
+    const res1 = await service.settlePersonAllDues('user-1', 'person-charlie')
+    assert.equal(res1.settledCount, 1)
+
+    // Subsequent settlement on the same person gets a new key
+    const res2 = await service.settlePersonAllDues('user-1', 'person-charlie')
+    assert.equal(res2.settledCount, 1)
+
+    assert.equal(capturedKeys.length, 2)
+    assert.notEqual(capturedKeys[0], capturedKeys[1])
+  })
+
   it('verifies Phase 7.2B security boundary (direct client write still exists until Phase 7.3)', () => {
     // Phase 7.2B migrates all frontend settlement services to trusted Cloud Functions.
     // However, direct Firestore writes on `transactions` are not yet restricted to read-only for splits.

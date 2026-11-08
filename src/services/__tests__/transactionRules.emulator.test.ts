@@ -35,6 +35,34 @@ it('Firestore emulator: transaction write security rules hardening', { skip: !ho
   const ownerTxRef = (id: string) => sdk.doc(ownerDb, 'users', 'owner-uid', 'transactions', id)
   const otherTxRef = (id: string) => sdk.doc(otherDb, 'users', 'owner-uid', 'transactions', id)
 
+  const { createRequire } = await import('node:module')
+  const require = createRequire(import.meta.url)
+  const admin = require('../../../functions/node_modules/firebase-admin')
+  const adminAppName = `admin-${Date.now()}`
+  process.env.FIRESTORE_EMULATOR_HOST = host
+  const adminApp = admin.initializeApp({ projectId }, adminAppName)
+  const adminDb = admin.firestore(adminApp)
+  const toAdminTimestamp = (val: unknown): unknown => {
+    if (val && typeof val === 'object' && 'toMillis' in val && typeof (val as { toMillis: () => number }).toMillis === 'function') {
+      return admin.firestore.Timestamp.fromMillis((val as { toMillis: () => number }).toMillis())
+    }
+    if (Array.isArray(val)) {
+      return val.map(toAdminTimestamp)
+    }
+    if (val && typeof val === 'object') {
+      const res: Record<string, unknown> = {}
+      for (const [k, v] of Object.entries(val)) {
+        res[k] = toAdminTimestamp(v)
+      }
+      return res
+    }
+    return val
+  }
+  const seedRepaidTx = async (tx: any) => {
+    const clean = toAdminTimestamp(tx) as Record<string, unknown>
+    await adminDb.doc(`users/owner-uid/transactions/${clean.id}`).set(clean)
+  }
+
   const validExpenseFixture = (overrides: Partial<Transaction> = {}): Transaction => ({
     id: 'tx-' + crypto.randomUUID(),
     amountPaise: 10000,
@@ -100,17 +128,11 @@ it('Firestore emulator: transaction write security rules hardening', { skip: !ho
     await t.test('4. Owner cannot delete a partially repaid expense', async () => {
       const initial = validExpenseFixture({
         recoverablePaise: 5000,
-        reimbursementStatus: 'pending',
-        splits: [{ personId: 'friend-1', personName: 'Friend', amountPaise: 5000, repaidPaise: 0, settledAt: null }],
-      })
-      const ref = ownerTxRef(initial.id)
-      await sdk.setDoc(ref, initial)
-      // Legitimate repayment update advances status to partial
-      await sdk.updateDoc(ref, {
-        recoverablePaise: 3000,
         reimbursementStatus: 'partial',
         splits: [{ personId: 'friend-1', personName: 'Friend', amountPaise: 5000, repaidPaise: 2000, settledAt: null }],
       })
+      await seedRepaidTx(initial)
+      const ref = ownerTxRef(initial.id)
 
       await assert.rejects(sdk.deleteDoc(ref), /permission-denied/)
       assert.equal((await sdk.getDoc(ref)).exists(), true)
@@ -119,18 +141,12 @@ it('Firestore emulator: transaction write security rules hardening', { skip: !ho
     // 5. Owner cannot delete a fully repaid expense
     await t.test('5. Owner cannot delete a fully repaid expense', async () => {
       const initial = validExpenseFixture({
-        recoverablePaise: 5000,
-        reimbursementStatus: 'pending',
-        splits: [{ personId: 'friend-1', personName: 'Friend', amountPaise: 5000, repaidPaise: 0, settledAt: null }],
-      })
-      const ref = ownerTxRef(initial.id)
-      await sdk.setDoc(ref, initial)
-      // Legitimate settlement update advances status to settled
-      await sdk.updateDoc(ref, {
         recoverablePaise: 0,
         reimbursementStatus: 'settled',
         splits: [{ personId: 'friend-1', personName: 'Friend', amountPaise: 5000, repaidPaise: 5000, settledAt: sdk.Timestamp.now() }],
       })
+      await seedRepaidTx(initial)
+      const ref = ownerTxRef(initial.id)
 
       await assert.rejects(sdk.deleteDoc(ref), /permission-denied/)
       assert.equal((await sdk.getDoc(ref)).exists(), true)
@@ -143,10 +159,10 @@ it('Firestore emulator: transaction write security rules hardening', { skip: !ho
         id: 'legacy-settled-' + crypto.randomUUID(),
         amountPaise: 5000,
         type: 'reimbursable',
+        reimbursementStatus: 'settled',
       }
+      await seedRepaidTx(legacySettled)
       const refA = ownerTxRef(legacySettled.id)
-      await sdk.setDoc(refA, legacySettled)
-      await sdk.updateDoc(refA, { reimbursementStatus: 'settled' })
       await assert.rejects(sdk.deleteDoc(refA), /permission-denied/)
 
       // Legacy Case B: settledAt marker on split item with status none
@@ -154,39 +170,29 @@ it('Firestore emulator: transaction write security rules hardening', { skip: !ho
         id: 'legacy-marker-' + crypto.randomUUID(),
         amountPaise: 5000,
         type: 'everyday',
+        splits: [{ settledAt: sdk.Timestamp.now() }],
       }
+      await seedRepaidTx(legacySplitMarker)
       const refB = ownerTxRef(legacySplitMarker.id)
-      await sdk.setDoc(refB, legacySplitMarker)
-      await sdk.updateDoc(refB, { splits: [{ settledAt: sdk.Timestamp.now() }] })
       await assert.rejects(sdk.deleteDoc(refB), /permission-denied/)
     })
 
     // 7. Direct reimbursement-status demotion is rejected
     await t.test('7. Direct reimbursement-status demotion is rejected', async () => {
-      // Seed pending, update to partial
       const initial = validExpenseFixture({
-        recoverablePaise: 5000,
-        reimbursementStatus: 'pending',
-        splits: [{ personId: 'f1', personName: 'F1', amountPaise: 5000, repaidPaise: 0, settledAt: null }],
-      })
-      const ref1 = ownerTxRef(initial.id)
-      await sdk.setDoc(ref1, initial)
-      await sdk.updateDoc(ref1, {
         recoverablePaise: 3000,
         reimbursementStatus: 'partial',
         splits: [{ personId: 'f1', personName: 'F1', amountPaise: 5000, repaidPaise: 2000, settledAt: null }],
       })
+      await seedRepaidTx(initial)
+      const ref1 = ownerTxRef(initial.id)
 
       // Cannot demote partial to none or pending
       await assert.rejects(sdk.updateDoc(ref1, { reimbursementStatus: 'none' }), /permission-denied/)
       await assert.rejects(sdk.updateDoc(ref1, { reimbursementStatus: 'pending' }), /permission-denied/)
 
-      // Advance to settled
-      await sdk.updateDoc(ref1, {
-        recoverablePaise: 0,
-        reimbursementStatus: 'settled',
-        splits: [{ personId: 'f1', personName: 'F1', amountPaise: 5000, repaidPaise: 5000, settledAt: sdk.Timestamp.now() }],
-      })
+      // Advance to settled via admin
+      await seedRepaidTx({ ...initial, reimbursementStatus: 'settled', recoverablePaise: 0 })
 
       // Cannot demote settled to partial, pending, or none
       await assert.rejects(sdk.updateDoc(ref1, { reimbursementStatus: 'partial' }), /permission-denied/)
@@ -246,21 +252,15 @@ it('Firestore emulator: transaction write security rules hardening', { skip: !ho
         settledAt: null,
       }))
       const txId = 'tx-11splits-' + crypto.randomUUID()
-      const ref = ownerTxRef(txId)
-
-      // Seed as unpaid first
-      await sdk.setDoc(ref, {
+      await seedRepaidTx({
         id: txId,
         amountPaise: 20000,
         type: 'everyday',
-      })
-      // Update with 11 splits containing repayment at index 10
-      await sdk.updateDoc(ref, {
         recoverablePaise: 11000,
         reimbursementStatus: 'partial',
         splits: splits11,
       })
-
+      const ref = ownerTxRef(txId)
       // Deletion must be rejected because rules fail closed when splits.size() > 10
       await assert.rejects(sdk.deleteDoc(ref), /permission-denied/)
       assert.equal((await sdk.getDoc(ref)).exists(), true)
@@ -382,8 +382,8 @@ it('Firestore emulator: transaction write security rules hardening', { skip: !ho
       )
     })
 
-    // 13. Valid repayment and settlement transactions still succeed
-    await t.test('13. Valid repayment and settlement transactions still succeed', async () => {
+    // 13. Direct client repayment and settlement manipulation is rejected
+    await t.test('13. Direct client repayment and settlement manipulation is rejected', async () => {
       const initial = validExpenseFixture({
         recoverablePaise: 5000,
         reimbursementStatus: 'pending',
@@ -392,25 +392,33 @@ it('Firestore emulator: transaction write security rules hardening', { skip: !ho
       const ref = ownerTxRef(initial.id)
       await sdk.setDoc(ref, initial)
 
-      // Repayment transaction update: pending -> partial
-      await sdk.updateDoc(ref, {
+      // Direct client attempt to advance pending -> partial is rejected
+      await assert.rejects(
+        sdk.updateDoc(ref, {
+          recoverablePaise: 2500,
+          reimbursementStatus: 'partial',
+          splits: [{ personId: 'p1', personName: 'Person 1', amountPaise: 5000, repaidPaise: 2500, settledAt: null }],
+        }),
+        /permission-denied/
+      )
+
+      // Seed repaid state via Admin SDK (as trusted Cloud Functions do)
+      await seedRepaidTx({
+        ...initial,
         recoverablePaise: 2500,
         reimbursementStatus: 'partial',
         splits: [{ personId: 'p1', personName: 'Person 1', amountPaise: 5000, repaidPaise: 2500, settledAt: null }],
       })
-      const snap1 = await sdk.getDoc(ref)
-      assert.equal(snap1.data()?.reimbursementStatus, 'partial')
-      assert.equal(snap1.data()?.splits[0].repaidPaise, 2500)
 
-      // Settlement transaction update: partial -> settled
-      await sdk.updateDoc(ref, {
-        recoverablePaise: 0,
-        reimbursementStatus: 'settled',
-        splits: [{ personId: 'p1', personName: 'Person 1', amountPaise: 5000, repaidPaise: 5000, settledAt: sdk.Timestamp.now() }],
-      })
-      const snap2 = await sdk.getDoc(ref)
-      assert.equal(snap2.data()?.reimbursementStatus, 'settled')
-      assert.equal(snap2.data()?.splits[0].repaidPaise, 5000)
+      // Direct client attempt to advance partial -> settled is rejected
+      await assert.rejects(
+        sdk.updateDoc(ref, {
+          recoverablePaise: 0,
+          reimbursementStatus: 'settled',
+          splits: [{ personId: 'p1', personName: 'Person 1', amountPaise: 5000, repaidPaise: 5000, settledAt: sdk.Timestamp.now() }],
+        }),
+        /permission-denied/
+      )
     })
 
     // 14. Recurring expense creation still succeeds
@@ -495,40 +503,193 @@ it('Firestore emulator: transaction write security rules hardening', { skip: !ho
       assert.equal(snap.data()?.notes, 'Bought organic items')
     })
 
-    // 17. Negative test demonstrating remaining split-history overwrite bypass
-    await t.test('17. Remaining split-history overwrite bypass (requires Cloud Functions Phase 7.2)', async () => {
-      // Seed an unpaid split expense legitimately
+    // 17. Matrix 1: Direct reduction of repaidPaise rejected
+    await t.test('17. Matrix 1: Direct reduction of repaidPaise rejected', async () => {
       const initial = validExpenseFixture({
+        recoverablePaise: 5000,
+        reimbursementStatus: 'partial',
+        splits: [{ personId: 'p1', personName: 'Person 1', amountPaise: 5000, repaidPaise: 2500, settledAt: null }],
+      })
+      await seedRepaidTx(initial)
+      const ref = ownerTxRef(initial.id)
+
+      await assert.rejects(
+        sdk.updateDoc(ref, {
+          splits: [{ personId: 'p1', personName: 'Person 1', amountPaise: 5000, repaidPaise: 1000, settledAt: null }],
+        }),
+        /permission-denied/
+      )
+    })
+
+    // 18. Matrix 2: Direct increase of repaidPaise rejected
+    await t.test('18. Matrix 2: Direct increase of repaidPaise rejected', async () => {
+      // A: On repaid expense
+      const initialRepaid = validExpenseFixture({
+        recoverablePaise: 5000,
+        reimbursementStatus: 'partial',
+        splits: [{ personId: 'p1', personName: 'Person 1', amountPaise: 5000, repaidPaise: 2500, settledAt: null }],
+      })
+      await seedRepaidTx(initialRepaid)
+      const repaidRef = ownerTxRef(initialRepaid.id)
+      await assert.rejects(
+        sdk.updateDoc(repaidRef, {
+          splits: [{ personId: 'p1', personName: 'Person 1', amountPaise: 5000, repaidPaise: 4000, settledAt: null }],
+        }),
+        /permission-denied/
+      )
+
+      // B: On unpaid expense
+      const initialUnpaid = validExpenseFixture({
         recoverablePaise: 5000,
         reimbursementStatus: 'pending',
         splits: [{ personId: 'p1', personName: 'Person 1', amountPaise: 5000, repaidPaise: 0, settledAt: null }],
       })
-      const ref = ownerTxRef(initial.id)
-      await sdk.setDoc(ref, initial)
+      const unpaidRef = ownerTxRef(initialUnpaid.id)
+      await sdk.setDoc(unpaidRef, initialUnpaid)
+      await assert.rejects(
+        sdk.updateDoc(unpaidRef, {
+          splits: [{ personId: 'p1', personName: 'Person 1', amountPaise: 5000, repaidPaise: 2000, settledAt: null }],
+        }),
+        /permission-denied/
+      )
+    })
 
-      // Legitimate repayment update advances status to partial
-      await sdk.updateDoc(ref, {
-        recoverablePaise: 2500,
+    // 19. Matrix 3: Removal or replacement of splits rejected on repaid expense
+    await t.test('19. Matrix 3: Removal or replacement of splits rejected on repaid expense', async () => {
+      const initial = validExpenseFixture({
+        recoverablePaise: 5000,
         reimbursementStatus: 'partial',
         splits: [{ personId: 'p1', personName: 'Person 1', amountPaise: 5000, repaidPaise: 2500, settledAt: null }],
       })
+      await seedRepaidTx(initial)
+      const ref = ownerTxRef(initial.id)
 
-      // An authenticated owner can directly overwrite the splits array while keeping
-      // reimbursementStatus as 'partial' (e.g. reducing repaidPaise from 2500 to 1).
-      // Because Firestore security rules cannot iterate across dynamic arrays of maps
-      // to assert incoming[i].repaidPaise >= existing[i].repaidPaise, this client write succeeds.
-      await sdk.updateDoc(ref, {
-        splits: [{ personId: 'p1', personName: 'Person 1', amountPaise: 5000, repaidPaise: 1, settledAt: null }],
-        recoverablePaise: 4999,
+      // Clear splits
+      await assert.rejects(sdk.updateDoc(ref, { splits: [] }), /permission-denied/)
+
+      // Replace with different participant
+      await assert.rejects(
+        sdk.updateDoc(ref, {
+          splits: [{ personId: 'p2', personName: 'Person 2', amountPaise: 5000, repaidPaise: 0, settledAt: null }],
+        }),
+        /permission-denied/
+      )
+    })
+
+    // 20. Matrix 4: Settlement marker removal rejected
+    await t.test('20. Matrix 4: Settlement marker removal rejected', async () => {
+      const initial = validExpenseFixture({
+        recoverablePaise: 0,
+        reimbursementStatus: 'settled',
+        splits: [{ personId: 'p1', personName: 'Person 1', amountPaise: 5000, repaidPaise: 5000, settledAt: sdk.Timestamp.now() }],
       })
+      await seedRepaidTx(initial)
+      const ref = ownerTxRef(initial.id)
 
-      const forgedSnap = await sdk.getDoc(ref)
-      // Confirmed bypass: repaidPaise was altered from 2500 down to 1 via direct client write.
-      // Phase 7.2 will eliminate this bypass by moving repayment/settlement writes to Cloud Functions.
-      assert.equal(forgedSnap.data()?.splits[0].repaidPaise, 1)
-      assert.equal(forgedSnap.data()?.reimbursementStatus, 'partial')
+      // Removing settledAt timestamp from split
+      await assert.rejects(
+        sdk.updateDoc(ref, {
+          splits: [{ personId: 'p1', personName: 'Person 1', amountPaise: 5000, repaidPaise: 5000, settledAt: null }],
+        }),
+        /permission-denied/
+      )
+    })
+
+    // 21. Matrix 5: Reimbursement-status forgery rejected
+    await t.test('21. Matrix 5: Reimbursement-status forgery rejected', async () => {
+      // On unpaid expense, forge partial or settled
+      const unpaid = validExpenseFixture({
+        recoverablePaise: 5000,
+        reimbursementStatus: 'pending',
+        splits: [{ personId: 'p1', personName: 'Person 1', amountPaise: 5000, repaidPaise: 0, settledAt: null }],
+      })
+      const unpaidRef = ownerTxRef(unpaid.id)
+      await sdk.setDoc(unpaidRef, unpaid)
+      await assert.rejects(sdk.updateDoc(unpaidRef, { reimbursementStatus: 'partial' }), /permission-denied/)
+      await assert.rejects(sdk.updateDoc(unpaidRef, { reimbursementStatus: 'settled' }), /permission-denied/)
+    })
+
+    // 22. Matrix 6: Recoverable principal manipulation rejected on repaid expense
+    await t.test('22. Matrix 6: Recoverable principal manipulation rejected on repaid expense', async () => {
+      const initial = validExpenseFixture({
+        recoverablePaise: 5000,
+        reimbursementStatus: 'partial',
+        splits: [{ personId: 'p1', personName: 'Person 1', amountPaise: 5000, repaidPaise: 2500, settledAt: null }],
+      })
+      await seedRepaidTx(initial)
+      const ref = ownerTxRef(initial.id)
+
+      // Direct reduction of recoverablePaise
+      await assert.rejects(sdk.updateDoc(ref, { recoverablePaise: 2500 }), /permission-denied/)
+      // Direct increase of recoverablePaise
+      await assert.rejects(sdk.updateDoc(ref, { recoverablePaise: 8000 }), /permission-denied/)
+      // Changing expense amountPaise
+      await assert.rejects(sdk.updateDoc(ref, { amountPaise: 15000 }), /permission-denied/)
+    })
+
+    // 23. Matrix 7: Metadata-only edits remain allowed on both unpaid and repaid expenses
+    await t.test('23. Matrix 7: Metadata-only edits remain allowed on both unpaid and repaid expenses', async () => {
+      // Unpaid expense metadata edit
+      const unpaid = validExpenseFixture({
+        recoverablePaise: 5000,
+        reimbursementStatus: 'pending',
+        splits: [{ personId: 'p1', personName: 'Person 1', amountPaise: 5000, repaidPaise: 0, settledAt: null }],
+      })
+      const unpaidRef = ownerTxRef(unpaid.id)
+      await sdk.setDoc(unpaidRef, unpaid)
+      await sdk.updateDoc(unpaidRef, {
+        description: 'New unpaid description',
+        categoryId: 'travel',
+        notes: 'Unpaid note',
+      })
+      const snap1 = await sdk.getDoc(unpaidRef)
+      assert.equal(snap1.data()?.description, 'New unpaid description')
+      assert.equal(snap1.data()?.categoryId, 'travel')
+
+      // Repaid expense metadata edit
+      const repaid = validExpenseFixture({
+        recoverablePaise: 5000,
+        reimbursementStatus: 'partial',
+        splits: [{ personId: 'p1', personName: 'Person 1', amountPaise: 5000, repaidPaise: 2500, settledAt: null }],
+      })
+      await seedRepaidTx(repaid)
+      const repaidRef = ownerTxRef(repaid.id)
+      await sdk.updateDoc(repaidRef, {
+        description: 'New repaid description',
+        categoryId: 'dining',
+        notes: 'Repaid note',
+      })
+      const snap2 = await sdk.getDoc(repaidRef)
+      assert.equal(snap2.data()?.description, 'New repaid description')
+      assert.equal(snap2.data()?.categoryId, 'dining')
+      assert.equal(snap2.data()?.notes, 'Repaid note')
+      assert.equal(snap2.data()?.splits[0].repaidPaise, 2500)
+    })
+
+    // 24. Matrix 16: Attempts to remove protected fields using deleteField or setDoc replacement rejected
+    await t.test('24. Matrix 16: Attempts to remove protected fields using deleteField or setDoc replacement rejected', async () => {
+      const expense = validExpenseFixture({
+        recoverablePaise: 5000,
+        reimbursementStatus: 'pending',
+        splits: [{ personId: 'p1', personName: 'Person 1', amountPaise: 5000, repaidPaise: 0, settledAt: null }],
+      })
+      const ref = ownerTxRef(expense.id)
+      await sdk.setDoc(ref, expense)
+
+      // Removing financial fields via deleteField() rejected
+      await assert.rejects(sdk.updateDoc(ref, { amountPaise: sdk.deleteField() }), /permission-denied/)
+      await assert.rejects(sdk.updateDoc(ref, { recoverablePaise: sdk.deleteField() }), /permission-denied/)
+      await assert.rejects(sdk.updateDoc(ref, { reimbursementStatus: sdk.deleteField() }), /permission-denied/)
+      await assert.rejects(sdk.updateDoc(ref, { splits: sdk.deleteField() }), /permission-denied/)
+
+      // Replacing document via setDoc omitting protected fields rejected
+      await assert.rejects(
+        sdk.setDoc(ref, { description: 'Forged document drop all fields' }),
+        /permission-denied/
+      )
     })
   } finally {
+    await adminApp.delete()
     await sdk.terminate(ownerDb)
     await sdk.terminate(otherDb)
     await deleteApp(ownerApp)

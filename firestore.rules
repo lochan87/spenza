@@ -26,8 +26,8 @@ service cloud.firestore {
       // ── transactions subcollection ────────────────────────────────────────
       match /transactions/{transactionId} {
         function splitHasRepayment(s) {
-          return s.get('settledAt', null) != null
-              || (s.get('repaidPaise', 0) is int && s.get('repaidPaise', 0) > 0);
+          return ('settledAt' in s && s.settledAt != null)
+              || ('repaidPaise' in s && s.repaidPaise is int && s.repaidPaise > 0);
         }
 
         function splitsHaveRepayments(splits) {
@@ -44,41 +44,53 @@ service cloud.firestore {
         }
 
         function hasRepaymentHistory(d) {
-          return d.get('reimbursementStatus', 'none') in ['partial', 'settled']
+          return d.get('settledAt', null) != null
+              || d.get('reimbursementStatus', 'none') in ['partial', 'settled']
               || (d.get('splits', []).size() > 10 || splitsHaveRepayments(d.get('splits', [])));
         }
 
         function validPayment(d) {
-          return !d.keys().hasAny(['paymentMode'])
-              || (d.paymentMode in ['Cash', 'Other'] && d.get('paymentAccountId', null) == null)
-              || (d.paymentMode in ['UPI', 'Bank Transfer', 'Card'] && d.get('paymentAccountId', null) is string && d.paymentAccountId.size() > 0);
+          return (d.get('paymentMode', 'Cash') in ['Cash', 'Other'] && d.get('paymentAccountId', null) == null)
+              || (d.get('paymentMode', 'Cash') in ['UPI', 'Bank Transfer', 'Card'] && d.get('paymentAccountId', null) is string && d.paymentAccountId.size() > 0);
         }
 
         function validTypes(d) {
-          return (!d.keys().hasAny(['type']) || d.type in ['everyday', 'recurring', 'one-time', 'trip', 'gift-event', 'reimbursable'])
-              && (!d.keys().hasAny(['description']) || (d.description is string && d.description.size() <= 500))
-              && (!d.keys().hasAny(['categoryId']) || (d.categoryId is string && d.categoryId.size() <= 200))
-              && (!d.keys().hasAny(['recoverablePaise']) || (d.recoverablePaise is int && d.recoverablePaise >= 0 && (!d.keys().hasAny(['amountPaise']) || d.recoverablePaise <= d.amountPaise)))
-              && (!d.keys().hasAny(['reimbursementStatus']) || d.reimbursementStatus in ['none', 'pending', 'partial', 'settled'])
+          return d.get('type', 'everyday') in ['everyday', 'recurring', 'one-time', 'trip', 'gift-event', 'reimbursable']
+              && (d.get('description', '') is string && d.get('description', '').size() <= 500)
+              && (d.get('categoryId', '') is string && d.get('categoryId', '').size() <= 200)
+              && (d.get('recoverablePaise', 0) is int && d.get('recoverablePaise', 0) >= 0 && d.get('recoverablePaise', 0) <= d.get('amountPaise', d.get('recoverablePaise', 0)))
+              && d.get('reimbursementStatus', 'none') in ['none', 'pending', 'partial', 'settled']
               && validPayment(d);
         }
 
         function validAmount(d) {
-          return !d.keys().hasAny(['amountPaise']) || (d.amountPaise is int && d.amountPaise > 0);
-        }
-
-        function validStatusTransition(existing, incoming) {
-          return !hasRepaymentHistory(existing)
-              || (incoming.get('reimbursementStatus', 'none') in ['partial', 'settled'] &&
-                  !(existing.get('reimbursementStatus', 'none') == 'settled' && incoming.get('reimbursementStatus', 'none') != 'settled'));
+          return d.get('amountPaise', 1) is int && d.get('amountPaise', 1) > 0;
         }
 
         function immutableFieldsPreserved(existing, incoming) {
-          return (!existing.keys().hasAny(['id']) || (incoming.keys().hasAny(['id']) && incoming.id == existing.id))
-              && (!existing.keys().hasAny(['createdAt']) || (incoming.keys().hasAny(['createdAt']) && incoming.createdAt == existing.createdAt))
-              && (!existing.keys().hasAny(['isImported']) || (incoming.keys().hasAny(['isImported']) && incoming.isImported == existing.isImported))
-              && (!existing.keys().hasAny(['importOperationId']) || (incoming.keys().hasAny(['importOperationId']) && incoming.importOperationId == existing.importOperationId))
-              && (!existing.keys().hasAny(['recurringItemId']) || (incoming.keys().hasAny(['recurringItemId']) && incoming.recurringItemId == existing.recurringItemId));
+          return incoming.get('id', null) == existing.get('id', null)
+              && incoming.get('createdAt', null) == existing.get('createdAt', null)
+              && incoming.get('isImported', null) == existing.get('isImported', null)
+              && incoming.get('importSource', null) == existing.get('importSource', null)
+              && incoming.get('importOperationId', null) == existing.get('importOperationId', null)
+              && incoming.get('importSourceRowId', null) == existing.get('importSourceRowId', null)
+              && incoming.get('recurringItemId', null) == existing.get('recurringItemId', null)
+              && incoming.get('recurringOccurrenceDate', null) == existing.get('recurringOccurrenceDate', null);
+        }
+
+        function financialFieldsNotRemoved(existing, incoming) {
+          return (existing.get('amountPaise', null) == null || incoming.get('amountPaise', null) != null)
+              && (existing.get('recoverablePaise', null) == null || incoming.get('recoverablePaise', null) != null)
+              && (existing.get('reimbursementStatus', null) == null || incoming.get('reimbursementStatus', null) != null)
+              && (existing.get('splits', null) == null || incoming.get('splits', null) != null);
+        }
+
+        function financialFieldsUnchanged(existing, incoming) {
+          return incoming.get('amountPaise', 0) == existing.get('amountPaise', 0)
+              && incoming.get('recoverablePaise', 0) == existing.get('recoverablePaise', 0)
+              && incoming.get('reimbursementStatus', 'none') == existing.get('reimbursementStatus', 'none')
+              && incoming.get('splits', []) == existing.get('splits', [])
+              && incoming.get('settledAt', null) == existing.get('settledAt', null);
         }
 
         function validCreation(d) {
@@ -99,12 +111,16 @@ service cloud.firestore {
           && validCreation(request.resource.data);
 
         allow update: if isOwner(uid)
-          && (resource == null || (
-              validAmount(request.resource.data)
-              && validTypes(request.resource.data)
-              && immutableFieldsPreserved(resource.data, request.resource.data)
-              && validStatusTransition(resource.data, request.resource.data)
-          ));
+          && resource != null
+          && validAmount(request.resource.data)
+          && validTypes(request.resource.data)
+          && immutableFieldsPreserved(resource.data, request.resource.data)
+          && financialFieldsNotRemoved(resource.data, request.resource.data)
+          && (
+            hasRepaymentHistory(resource.data)
+              ? financialFieldsUnchanged(resource.data, request.resource.data)
+              : validCreation(request.resource.data)
+          );
       }
 
       // ── categories subcollection ──────────────────────────────────────────

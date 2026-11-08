@@ -4,6 +4,7 @@ import { subMonths } from 'date-fns'
 import {
   deriveInsightsData,
   calculateSpendingPace,
+  getInsightsDate,
 } from '../insightsMath.ts'
 import type { Category, Transaction } from '../../types/index.ts'
 
@@ -37,6 +38,67 @@ describe('insightsMath — Net Spending Analytics, Trends & Pacing Invariants', 
       ...overrides,
     }
   }
+
+  it('excludes tomorrow and later today from current metrics while keeping inclusive boundaries and completed months', () => {
+    const now = new Date(2026, 10, 15, 12)
+    const at = (date: Date) => date as unknown as Transaction['date']
+    const valid = [
+      createTx({ date: at(new Date(2026, 10, 1)), amountPaise: 15001 }),
+      createTx({ date: at(now), amountPaise: 30002, recoverablePaise: 10001 }),
+      createTx({ date: at(new Date(2026, 9, 31, 23, 59)), amountPaise: 90003 }),
+    ]
+    const baseline = deriveInsightsData(valid, mockCategories, now)!
+    const summary = deriveInsightsData([...valid,
+      createTx({ date: at(new Date(2026, 10, 16)), amountPaise: 999999, categoryId: 'future-only' }),
+      createTx({ date: at(new Date(now.getTime() + 1)), amountPaise: 999999, categoryId: 'future-only' }),
+    ], mockCategories, now)!
+    assert.equal(summary.monthComparison!.thisMonthPaise, 35002)
+    assert.equal(summary.monthComparison!.lastMonthPaise, 90003)
+    assert.deepEqual(summary.monthComparison, baseline.monthComparison)
+    assert.deepEqual(summary.monthlyTrend, baseline.monthlyTrend)
+    assert.deepEqual(summary.categoryMonthlyTrends, baseline.categoryMonthlyTrends)
+    const pace = calculateSpendingPace(summary.monthComparison!.thisMonthPaise, now)
+    assert.equal(pace.dailyPacePaise, Math.round(35002 / 15))
+    assert.equal(pace.projectedMonthEndPaise, Math.round(35002 / 15) * 30)
+    assert.ok(Number.isInteger(summary.monthComparison!.thisMonthPaise))
+    assert.equal(15001 + 30002, summary.monthComparison!.thisMonthPaise + 10001)
+  })
+
+  it('keeps malformed dates out of all date buckets without losing date-independent all-time spending', () => {
+    const valid = [
+      createTx({ amountPaise: 10001 }),
+      createTx({ date: lastMonthDate as any, amountPaise: 20003 }),
+      createTx({ date: new Date('2020-03-10T12:00:00Z') as any, type: 'reimbursable', amountPaise: 70001, personId: 'legacy' }),
+    ]
+    const badDates = [undefined, null, 'not-a-date', new Date(NaN), {}, true,
+      { toDate: () => null }, { toDate: () => { throw new Error('bad timestamp') } }]
+    const invalid = badDates.map(date => createTx({ date: date as any, amountPaise: 90001, type: 'trip', recoverablePaise: 30001 }))
+    const baseline = deriveInsightsData(valid, mockCategories, dummyNow)!
+    const summary = deriveInsightsData([...valid, ...invalid], mockCategories, dummyNow)!
+    assert.deepEqual(summary.monthlyTrend, baseline.monthlyTrend)
+    assert.deepEqual(summary.yearlyTotals, baseline.yearlyTotals)
+    assert.deepEqual(summary.dayOfWeekStats, baseline.dayOfWeekStats)
+    assert.deepEqual(summary.longestStreak, baseline.longestStreak)
+    assert.deepEqual(summary.highestSpendingDay, baseline.highestSpendingDay)
+    assert.equal(summary.tripTotalPaise, 8 * 60000)
+    assert.equal(summary.transactionCount, 11)
+    assert.equal(summary.avgTransactionSize!.allTimeAvgPaise, Math.round((30004 + 8 * 60000) / 11))
+    assert.equal(summary.largestSingleExpense!.date, null)
+    assert.equal(summary.yearlyTotals.find(y => y.year === 2020)?.totalPaise, 0)
+    for (const value of badDates) assert.equal(getInsightsDate(value), null)
+    const onlyInvalid = deriveInsightsData(invalid, mockCategories, dummyNow)!
+    assert.ok(onlyInvalid.monthlyTrend!.every(month => month.totalPaise === 0))
+    assert.deepEqual(onlyInvalid.yearlyTotals, [])
+  })
+
+  it('retains historical trend anchoring with unsorted valid legacy records', () => {
+    const txns = [3, 1, 2].map(month => createTx({ date: new Date(2020, month, 10) as any, amountPaise: 10001 }))
+    txns.push(createTx({ date: new Date(2020, 3, 11) as any, type: 'reimbursable', personId: 'legacy', amountPaise: 50001 }))
+    const summary = deriveInsightsData(txns, mockCategories, dummyNow)!
+    assert.equal(summary.monthlyTrend!.at(-1)!.monthKey, '2020-04')
+    assert.equal(summary.monthComparison!.thisMonthPaise, 10001)
+    assert.equal(summary.yearlyTotals[0].totalPaise, 30003)
+  })
 
   it('1. excludes 100% recoverable expenses from monthly trend totals and all-time spend', () => {
     // Current month: 2 personal expenses + 1 large 100% fronted bill

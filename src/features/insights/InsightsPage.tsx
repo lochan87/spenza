@@ -295,6 +295,7 @@ export function InsightsPage() {
   const [insights, setInsights] = useState<InsightsSummary | null>(null)
   const [currentBudget, setCurrentBudget] = useState<Budget | null>(null)
   const [liveCurrentMonthPaise, setLiveCurrentMonthPaise] = useState<number>(0)
+  const [referenceNow, setReferenceNow] = useState(() => new Date())
   const [selectedCategoryId, setSelectedCategoryId] = useState<string>('')
   const [loading, setLoading] = useState(true)
   const [computing, setComputing] = useState(false)
@@ -314,11 +315,13 @@ export function InsightsPage() {
 
   const loadInsights = async (forceRefresh = false) => {
     if (!user) return
+    const now = new Date()
+    setReferenceNow(now)
     setError(null)
     setLoading(true)
     try {
       const budgetPromise = getCurrentBudget(user.uid).catch(() => null)
-      const currentMonthSpendPromise = getCurrentMonthSpendTotal(user.uid).catch(() => 0)
+      const currentMonthSpendPromise = getCurrentMonthSpendTotal(user.uid, now).catch(() => 0)
 
       if (!forceRefresh) {
         const [cached, liveCount, budgetDoc, monthSpendPaise] = await Promise.all([
@@ -332,7 +335,7 @@ export function InsightsPage() {
 
         if (
           cached &&
-          isCacheFresh(cached) &&
+          isCacheFresh(cached, now) &&
           !isCacheStaleAgainstCount(cached, liveCount)
         ) {
           setInsights(cached)
@@ -341,7 +344,7 @@ export function InsightsPage() {
           }
           const computed = (cached.computedAt as any).toDate
             ? (cached.computedAt as any).toDate()
-            : new Date()
+            : now
           setCacheAge(`Updated ${format(computed, 'd MMM, h:mm a')}`)
           setLoading(false)
           return
@@ -357,7 +360,7 @@ export function InsightsPage() {
 
       // Compute fresh summary
       setComputing(true)
-      const fresh = await computeAndCacheInsights(user.uid)
+      const fresh = await computeAndCacheInsights(user.uid, now)
       if (fresh === null) {
         setInsights(null)
         setError('not-enough-data')
@@ -497,7 +500,7 @@ export function InsightsPage() {
   const activeCatMeta = activeCatTrend ? getCategoryMeta(activeCatTrend.name) : null
 
   // Section 5: Current Month Spending Velocity / Pace (uses live query of this month's transactions)
-  const now = new Date()
+  const now = referenceNow
   const daysElapsed = Math.max(1, now.getDate())
   const daysInMonth = getDaysInMonth(now)
   const hasEnoughDaysForPace = daysElapsed >= 3

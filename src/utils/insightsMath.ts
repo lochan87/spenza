@@ -28,7 +28,27 @@ import type {
 import { getNetSpendPaise } from './splitMath.ts'
 import { formatINR } from './format.ts'
 
-export const INSIGHTS_SCHEMA_VERSION = 4
+// Bumped when date-bucketing semantics change so previously cached summaries
+// (which may include future-dated records) are recomputed instead of served.
+export const INSIGHTS_SCHEMA_VERSION = 5
+
+/** Validate once before a transaction participates in any date-dependent metric. */
+export function getInsightsDate(value: unknown): Date | null {
+  if (value == null) return null
+  try {
+    let date: unknown
+    if (typeof value === 'object' && 'toDate' in value && typeof value.toDate === 'function') {
+      date = value.toDate()
+    } else if (value instanceof Date) {
+      date = value
+    } else if (typeof value === 'string' || typeof value === 'number') {
+      date = new Date(value)
+    }
+    return date instanceof Date && Number.isFinite(date.getTime()) ? date : null
+  } catch {
+    return null
+  }
+}
 
 const DAY_META: Array<{ index: number; shortName: string; fullName: string; isWeekend: boolean }> = [
   { index: 1, shortName: 'Mon', fullName: 'Monday', isWeekend: false },
@@ -58,7 +78,19 @@ export function deriveInsightsData(
   if (allTxns.length < 3) return null
 
   const catMap = new Map(categories.map(c => [c.id, c.name]))
-  const toDate = (ts: any): Date => (ts?.toDate ? ts.toDate() : new Date(ts))
+
+  // Invalid, missing or unparseable dates are excluded from date-dependent
+  // analytics instead of throwing. Those records still contribute to all-time
+  // monetary metrics below, so no principal is silently discarded.
+  const dateOf = new Map<Transaction, Date>()
+  for (const tx of allTxns) {
+    const d = getInsightsDate(tx.date)
+    if (d) dateOf.set(tx, d)
+  }
+  const datedTxns = allTxns.filter(tx => dateOf.has(tx))
+  // Windows that mean "so far" stop at the reference time, so future-dated
+  // records cannot inflate current-month analytics or any other up-to-now view.
+  const pastTxns = datedTxns.filter(tx => dateOf.get(tx)! <= now)
 
   const currentMonthKey = format(now, 'yyyy-MM')
   const lastMonthDate = subMonths(now, 1)
@@ -72,8 +104,8 @@ export function deriveInsightsData(
   const monthTxCounts = new Map<string, number>()
   const monthCatTotals = new Map<string, Map<string, number>>()
 
-  for (const tx of allTxns) {
-    const d = toDate(tx.date)
+  for (const tx of pastTxns) {
+    const d = dateOf.get(tx)!
     const k = format(d, 'yyyy-MM')
     const net = getNetSpendPaise(tx)
 
@@ -105,8 +137,9 @@ export function deriveInsightsData(
     if (net > 0) {
       catTotalPaise.set(tx.categoryId, (catTotalPaise.get(tx.categoryId) ?? 0) + net)
     }
-    if (!catFirstDate.has(tx.categoryId)) {
-      catFirstDate.set(tx.categoryId, toDate(tx.date))
+    const d = dateOf.get(tx)
+    if (d && d <= now && (!catFirstDate.has(tx.categoryId) || d < catFirstDate.get(tx.categoryId)!)) {
+      catFirstDate.set(tx.categoryId, d)
     }
   }
 
@@ -156,15 +189,15 @@ export function deriveInsightsData(
         id: tx.id,
         description: tx.description,
         amountPaise: net,
-        date: tx.date as any,
+        date: (dateOf.has(tx) ? tx.date : null) as any,
       }
     }
   }
 
   // ── 5. Year-over-Year Totals (Net Spend) ───────────────────────────────────
   const yearTotals = new Map<number, number>()
-  for (const tx of allTxns) {
-    const y = getYear(toDate(tx.date))
+  for (const tx of datedTxns) {
+    const y = getYear(dateOf.get(tx)!)
     yearTotals.set(y, (yearTotals.get(y) ?? 0) + getNetSpendPaise(tx))
   }
   const yearlyTotals = [...yearTotals.entries()]
@@ -187,7 +220,7 @@ export function deriveInsightsData(
   )
   let highestYearInsight = ''
   if (highestYear) {
-    const txnsInYear = allTxns.filter(t => getYear(toDate(t.date)) === highestYear.year)
+    const txnsInYear = datedTxns.filter(t => getYear(dateOf.get(t)!) === highestYear.year)
     const specialTxns = txnsInYear.filter(t => ['one-time', 'trip', 'gift-event'].includes(t.type))
     const specialTotal = specialTxns.reduce((s, t) => s + getNetSpendPaise(t), 0)
     const specialPct = highestYear.totalPaise > 0 ? specialTotal / highestYear.totalPaise : 0
@@ -233,8 +266,11 @@ export function deriveInsightsData(
     format(subMonths(now, idx), 'yyyy-MM')
   ).some(k => (monthTotals.get(k) ?? 0) > 0)
 
-  const latestTxDate = toDate(allTxns[allTxns.length - 1].date)
-  const anchorDate = hasAnyInLast12M ? now : latestTxDate
+  const latestTxDate = pastTxns.reduce<Date | null>((latest, tx) => {
+    const d = dateOf.get(tx)!
+    return !latest || d > latest ? d : latest
+  }, null)
+  const anchorDate = hasAnyInLast12M || !latestTxDate ? now : latestTxDate
 
   const raw12Months = Array.from({ length: 12 }, (_, idx) => {
     const d = subMonths(anchorDate, 11 - idx)
@@ -440,8 +476,8 @@ export function deriveInsightsData(
   const dowCats = new Map<number, Map<string, number>>()
   const weekendCats = new Map<string, number>()
 
-  for (const tx of allTxns) {
-    const d = toDate(tx.date)
+  for (const tx of pastTxns) {
+    const d = dateOf.get(tx)!
     const dayIdx = d.getDay()
     const net = getNetSpendPaise(tx)
 
@@ -461,8 +497,19 @@ export function deriveInsightsData(
     }
   }
 
-  const firstTxDay = startOfDay(toDate(allTxns[0].date))
-  const lastTxDay = startOfDay(toDate(allTxns[allTxns.length - 1].date))
+  let firstTxDay = startOfDay(now)
+  let lastTxDay = startOfDay(now)
+  if (pastTxns.length > 0) {
+    let minDate = dateOf.get(pastTxns[0])!
+    let maxDate = minDate
+    for (const tx of pastTxns) {
+      const d = dateOf.get(tx)!
+      if (d < minDate) minDate = d
+      if (d > maxDate) maxDate = d
+    }
+    firstTxDay = startOfDay(minDate)
+    lastTxDay = startOfDay(maxDate)
+  }
   const totalSpanDays = Math.max(1, differenceInCalendarDays(lastTxDay, firstTxDay) + 1)
   const fullWeeks = Math.floor(totalSpanDays / 7)
   const remainderDays = totalSpanDays % 7
@@ -509,7 +556,10 @@ export function deriveInsightsData(
   )
 
   const weekendTotalPaise = (dowTotals.get(0) ?? 0) + (dowTotals.get(6) ?? 0)
-  const weekdayTotalPaise = totalAllTimePaise - weekendTotalPaise
+  const weekdayTotalPaise = [1, 2, 3, 4, 5].reduce(
+    (sum, dayIdx) => sum + (dowTotals.get(dayIdx) ?? 0),
+    0
+  )
   const weekendCalendarDays = Math.max(
     1,
     getCalendarOccurrences(0) + getCalendarOccurrences(6)
@@ -567,10 +617,10 @@ export function deriveInsightsData(
     string,
     { totalPaise: number; txCount: number; topTx: Transaction }
   >()
-  for (const tx of allTxns) {
+  for (const tx of pastTxns) {
     const net = getNetSpendPaise(tx)
     if (net === 0) continue
-    const dateStr = format(toDate(tx.date), 'yyyy-MM-dd')
+    const dateStr = format(dateOf.get(tx)!, 'yyyy-MM-dd')
     const existing = dayMap.get(dateStr)
     if (!existing) {
       dayMap.set(dateStr, { totalPaise: net, txCount: 1, topTx: tx })
@@ -597,7 +647,7 @@ export function deriveInsightsData(
   }
 
   // ── 13. Longest Daily Logging Streak (Habit Tracker: All Logged Txns) ───────
-  const loggingDates = new Set(allTxns.map(tx => format(toDate(tx.date), 'yyyy-MM-dd')))
+  const loggingDates = new Set(pastTxns.map(tx => format(dateOf.get(tx)!, 'yyyy-MM-dd')))
   const sortedDates = [...loggingDates.values()].sort()
   let longestDays = 0
   let longestStartDate: string | null = null
@@ -647,7 +697,7 @@ export function deriveInsightsData(
   // ── 14. Average Transaction Size (Net Personal Spend) ───────────────────────
   const allTimeAvgPaise = Math.round(totalAllTimePaise / allTxns.length)
   const threeMonthsAgo = subMonths(now, 3)
-  const last3mTxns = allTxns.filter(t => toDate(t.date) >= threeMonthsAgo)
+  const last3mTxns = pastTxns.filter(t => dateOf.get(t)! >= threeMonthsAgo)
   const last3MonthsAvgPaise =
     last3mTxns.length > 0
       ? Math.round(last3mTxns.reduce((s, t) => s + getNetSpendPaise(t), 0) / last3mTxns.length)
@@ -683,8 +733,14 @@ export function deriveInsightsData(
   const dominantSharePct = Math.round((dominantCount / paymentPool.length) * 100)
 
   const sixMonthsAgo = subMonths(now, 6)
-  const earlierPool = paymentPool.filter(t => toDate(t.date) < sixMonthsAgo)
-  const recentPool = paymentPool.filter(t => toDate(t.date) >= sixMonthsAgo)
+  const earlierPool = paymentPool.filter(t => {
+    const d = dateOf.get(t)
+    return d != null && d < sixMonthsAgo
+  })
+  const recentPool = paymentPool.filter(t => {
+    const d = dateOf.get(t)
+    return d != null && d >= sixMonthsAgo && d <= now
+  })
 
   const topModeIn = (list: Transaction[]): PaymentMode | null => {
     if (list.length < 2) return null

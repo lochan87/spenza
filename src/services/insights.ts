@@ -8,13 +8,11 @@ import {
   getCountFromServer,
   query,
   where,
-  orderBy,
   Timestamp,
 } from 'firebase/firestore'
 import {
   format,
   startOfMonth,
-  endOfMonth,
 } from 'date-fns'
 import { db } from '@/firebase/config'
 import { getCategories } from '@/services/transactions'
@@ -22,6 +20,7 @@ import { getNetSpendPaise } from '@/utils/splitMath'
 import {
   deriveInsightsData,
   INSIGHTS_SCHEMA_VERSION,
+  getInsightsDate,
 } from '@/utils/insightsMath'
 import type {
   Transaction,
@@ -73,11 +72,12 @@ export async function getLiveTransactionCount(uid: string): Promise<number> {
   }
 }
 
-/** Live query of the current calendar month's total spend in paise (for the Spending Pace card) */
-export async function getCurrentMonthSpendTotal(uid: string): Promise<number> {
-  const now = new Date()
-  const start = Timestamp.fromDate(startOfMonth(now))
-  const end = Timestamp.fromDate(endOfMonth(now))
+/** Live query of the current calendar month's total spend in paise (for the Spending Pace card).
+ * Ends at the reference time so future-dated records cannot inflate the pace. */
+export async function getCurrentMonthSpendTotal(uid: string, now: Date = new Date()): Promise<number> {
+  const monthStart = startOfMonth(now)
+  const start = Timestamp.fromDate(monthStart)
+  const end = Timestamp.fromDate(now)
   const snap = await getDocs(
     query(
       collection(db, 'users', uid, 'transactions'),
@@ -85,14 +85,18 @@ export async function getCurrentMonthSpendTotal(uid: string): Promise<number> {
       where('date', '<=', end)
     )
   )
-  return snap.docs.reduce((sum, d) => sum + getNetSpendPaise(d.data() as Transaction), 0)
+  return snap.docs.reduce((sum, d) => {
+    const tx = d.data() as Transaction
+    const date = getInsightsDate(tx.date)
+    return date && date >= monthStart && date <= now ? sum + getNetSpendPaise(tx) : sum
+  }, 0)
 }
 
 /** True if the cached summary is fresh (computed within last 7 days and in the same calendar month) */
-export function isCacheFresh(summary: InsightsSummary): boolean {
+export function isCacheFresh(summary: InsightsSummary, now: Date = new Date()): boolean {
   const computed = summary.computedAt.toDate()
-  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
-  const currentMonthKey = format(new Date(), 'yyyy-MM')
+  const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
+  const currentMonthKey = format(now, 'yyyy-MM')
   if (summary.computedMonthKey && summary.computedMonthKey !== currentMonthKey) {
     return false
   }
@@ -119,11 +123,20 @@ export function isCacheStaleAgainstCount(summary: InsightsSummary, liveCount: nu
 
 /** Fetch all transactions and compute + persist the insights summary.
  * Returns null (and deletes any stale cached doc) if there are fewer than 3 transactions. */
-export async function computeAndCacheInsights(uid: string): Promise<InsightsSummary | null> {
-  const snap = await getDocs(
-    query(collection(db, 'users', uid, 'transactions'), orderBy('date', 'asc'))
-  )
+export async function computeAndCacheInsights(
+  uid: string,
+  now: Date = new Date()
+): Promise<InsightsSummary | null> {
+  // No orderBy: Firestore excludes documents missing the ordered field. Keep
+  // those records for count validation and date-independent all-time metrics.
+  const snap = await getDocs(collection(db, 'users', uid, 'transactions'))
   const allTxns = snap.docs.map(d => ({ id: d.id, ...d.data() }) as Transaction)
+  // Preserve chronological tie-breaking from the former ordered query, with
+  // undated records last rather than omitted.
+  allTxns.sort((a, b) =>
+    (getInsightsDate(a.date)?.getTime() ?? Infinity) -
+    (getInsightsDate(b.date)?.getTime() ?? Infinity)
+  )
 
   // Not enough data to generate meaningful insights — ensure any stale cached summary is removed
   if (allTxns.length < 3) {
@@ -132,7 +145,7 @@ export async function computeAndCacheInsights(uid: string): Promise<InsightsSumm
   }
 
   const categories = await getCategories(uid)
-  const summary = deriveInsightsData(allTxns, categories, new Date())
+  const summary = deriveInsightsData(allTxns, categories, now)
   if (!summary) {
     await invalidateInsightsCache(uid)
     return null

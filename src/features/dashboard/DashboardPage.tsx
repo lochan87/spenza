@@ -25,7 +25,7 @@ import type { Transaction } from '@/types'
  * Loading: per-section skeletons (not one full-page spinner).
  */
 export function DashboardPage() {
-  const { data, categories, loading, error, refetch } = useDashboardData()
+  const { data, categories, loading, error, refetch, isStale, isFromCache, isOnline } = useDashboardData()
   const [editTx, setEditTx] = useState<Transaction | null>(null)
   const [formOpen, setFormOpen] = useState(false)
 
@@ -71,7 +71,12 @@ export function DashboardPage() {
   return (
     <div className="flex flex-col gap-5">
       {/* Section 1 — Summary Header */}
-      <SummaryHeader data={data} />
+      <SummaryHeader
+        data={data}
+        isStale={isStale}
+        isFromCache={isFromCache}
+        isOffline={!isOnline}
+      />
 
       {/* Empty state banner — shown when no transactions exist yet */}
       {isEmpty && (

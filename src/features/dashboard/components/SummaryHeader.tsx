@@ -1,14 +1,17 @@
 import { format } from 'date-fns'
-import { TrendingDown, TrendingUp, Minus } from 'lucide-react'
+import { TrendingDown, TrendingUp, Minus, WifiOff, RefreshCw } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
 import { formatINR, formatPct, getGreeting } from '@/utils/format'
 import type { DashboardData } from '../dashboardData'
 
 interface SummaryHeaderProps {
   data: DashboardData
+  isStale?: boolean
+  isFromCache?: boolean
+  isOffline?: boolean
 }
 
-export function SummaryHeader({ data }: SummaryHeaderProps) {
+export function SummaryHeader({ data, isStale, isFromCache, isOffline }: SummaryHeaderProps) {
   const { user } = useAuth()
   const firstName = user?.displayName?.split(' ')[0] ?? 'there'
   const monthName = format(new Date(), 'MMMM yyyy')
@@ -28,10 +31,26 @@ export function SummaryHeader({ data }: SummaryHeaderProps) {
         aria-hidden
       />
 
-      {/* Greeting */}
-      <p className="mb-1 text-sm font-medium text-[var(--text-muted)]">
-        {getGreeting()}, {firstName} · {monthName}
-      </p>
+      {/* Greeting and Sync Status */}
+      <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+        <p className="text-sm font-medium text-[var(--text-muted)]">
+          {getGreeting()}, {firstName} · {monthName}
+        </p>
+        {isStale ? (
+          <span className="inline-flex items-center gap-1 rounded-full bg-[var(--warning-muted)] px-2 py-0.5 text-xs font-medium text-[var(--warning)]">
+            <RefreshCw className="h-3 w-3 animate-spin" />
+            Updating balances…
+          </span>
+        ) : (isOffline || isFromCache) ? (
+          <span
+            className="inline-flex items-center gap-1 rounded-full bg-[var(--warning-muted)] px-2 py-0.5 text-xs font-medium text-[var(--warning)]"
+            title="Balances reflect local offline cache. Fresh data will sync when online."
+          >
+            <WifiOff className="h-3 w-3" />
+            Cached offline balances
+          </span>
+        ) : null}
+      </div>
 
       {/* Big total */}
       <p className="text-4xl font-extrabold tracking-tight text-[var(--text-primary)]">

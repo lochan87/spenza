@@ -106,13 +106,27 @@ export interface DashboardData {
  * Recent-period analytics filter this dataset client-side. Read cost grows with
  * history size; all dashboard sections share this one fetch.
  */
-export async function fetchDashboardTransactions(
+export interface DashboardTransactionsResult {
+  transactions: Transaction[]
+  fromCache: boolean
+}
+
+export async function fetchDashboardTransactionsWithMeta(
   uid: string
-): Promise<Transaction[]> {
+): Promise<DashboardTransactionsResult> {
   const { db } = await import('../../firebase/config.ts')
   const ref = collection(db, 'users', uid, 'transactions')
   const snap = await getDocs(ref)
-  return snap.docs.map(d => ({ id: d.id, ...d.data() }) as Transaction)
+  const transactions = snap.docs.map(d => ({ id: d.id, ...d.data() }) as Transaction)
+  const fromCache = snap.metadata ? Boolean(snap.metadata.fromCache) : false
+  return { transactions, fromCache }
+}
+
+export async function fetchDashboardTransactions(
+  uid: string
+): Promise<Transaction[]> {
+  const res = await fetchDashboardTransactionsWithMeta(uid)
+  return res.transactions
 }
 
 // ─── Derive dashboard data ────────────────────────────────────────────────────

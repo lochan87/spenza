@@ -17,6 +17,20 @@ import { PersonSchema } from '@/utils/schemas'
 import { toNonNegativeIntPaise } from '@/utils/splitMath'
 import type { Person, Transaction } from '@/types'
 
+function notifyFinancialChange(type: string, uid: string, entityId?: string) {
+  if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+    try {
+      window.dispatchEvent(
+        new CustomEvent('spenza_financial_mutation', {
+          detail: { type, uid, entityId, timestamp: Date.now() },
+        })
+      )
+    } catch {
+      // Ignore
+    }
+  }
+}
+
 function toClientTimestamp(ts: any): Timestamp | null | undefined {
   if (ts === null || ts === undefined) return ts
   if (typeof ts.toMillis === 'function') return ts
@@ -159,6 +173,7 @@ export async function addPerson(
   }
 
   await setDoc(ref, newPerson)
+  notifyFinancialChange('person_changed', cleanUid, ref.id)
   return newPerson as Person
 }
 
@@ -202,6 +217,7 @@ export async function updatePerson(
   }
 
   await setDoc(personRef(cleanUid, cleanPersonId), data, { merge: true })
+  notifyFinancialChange('person_changed', cleanUid, cleanPersonId)
 }
 
 /**
@@ -256,6 +272,7 @@ export async function deletePerson(
   }
 
   await deleteDoc(personRef(cleanUid, cleanPersonId))
+  notifyFinancialChange('person_changed', cleanUid, cleanPersonId)
   return { deleted: true, archived: false }
 }
 
@@ -279,7 +296,7 @@ export async function recordSplitRepayment(
   repaymentPaise: number,
   customIdempotencyKey?: string
 ): Promise<{ tx: Transaction; appliedPaise: number }> {
-  validateUid(uid)
+  const cleanUid = validateUid(uid)
   const cleanTxId = validateTransactionId(transactionId)
   const cleanPersonId = validatePersonId(personId)
   const paise = toNonNegativeIntPaise(repaymentPaise)
@@ -311,6 +328,7 @@ export async function recordSplitRepayment(
     })
 
     clearPendingKey('repay', opKey, String(paise))
+    notifyFinancialChange('repayment_recorded', cleanUid, cleanTxId)
 
     return {
       tx: hydrateTransaction(res.data.tx),
@@ -332,7 +350,7 @@ export async function settleSplitShare(
   personId: string,
   customIdempotencyKey?: string
 ): Promise<{ tx: Transaction; settledPaise: number }> {
-  validateUid(uid)
+  const cleanUid = validateUid(uid)
   const cleanTxId = validateTransactionId(transactionId)
   const cleanPersonId = validatePersonId(personId)
 
@@ -359,6 +377,7 @@ export async function settleSplitShare(
     })
 
     clearPendingKey('settleSplit', opKey)
+    notifyFinancialChange('settlement_completed', cleanUid, cleanTxId)
 
     return {
       tx: hydrateTransaction(res.data.tx),
@@ -379,7 +398,7 @@ export async function settleAllTransactionSplits(
   transactionId: string,
   customIdempotencyKey?: string
 ): Promise<{ tx: Transaction; settledPaise: number }> {
-  validateUid(uid)
+  const cleanUid = validateUid(uid)
   const cleanTxId = validateTransactionId(transactionId)
 
   if (typeof navigator !== 'undefined' && !navigator.onLine) {
@@ -404,6 +423,7 @@ export async function settleAllTransactionSplits(
     })
 
     clearPendingKey('settleTx', opKey)
+    notifyFinancialChange('settlement_completed', cleanUid, cleanTxId)
 
     return {
       tx: hydrateTransaction(res.data.tx),
@@ -449,7 +469,7 @@ export async function settlePersonAllDues(
   personId: string,
   customIdempotencyKey?: string
 ): Promise<{ settledCount: number; totalSettledPaise: number; updatedTxns: Transaction[]; complete?: boolean }> {
-  validateUid(uid)
+  const cleanUid = validateUid(uid)
   const cleanPersonId = validatePersonId(personId)
 
   if (typeof navigator !== 'undefined' && !navigator.onLine) {
@@ -495,6 +515,9 @@ export async function settlePersonAllDues(
     }
 
     clearPendingKey('settlePerson', opKey)
+    if (data.settledCount > 0) {
+      notifyFinancialChange('settlement_completed', cleanUid, cleanPersonId)
+    }
 
     return {
       settledCount: data.settledCount,

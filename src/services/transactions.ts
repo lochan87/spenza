@@ -19,6 +19,20 @@ import type { Transaction, PaymentAccount, Category } from '@/types'
 import { prepareExpenseEdit, ExpenseEditError, type ExpenseEdit } from '@/utils/expenseEdit'
 import { assertExpenseCanBeDeleted, ExpenseDeletionError } from '@/utils/expenseDeletion'
 
+function notifyFinancialChange(type: string, uid: string, entityId?: string) {
+  if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+    try {
+      window.dispatchEvent(
+        new CustomEvent('spenza_financial_mutation', {
+          detail: { type, uid, entityId, timestamp: Date.now() },
+        })
+      )
+    } catch {
+      // Ignore
+    }
+  }
+}
+
 const PAGE_SIZE = 30
 
 // ─── Transactions ─────────────────────────────────────────────────────────────
@@ -38,6 +52,7 @@ export async function addTransaction(
   if (!cacheOk) {
     console.warn('[Spenza Transactions] Added transaction, but failed to invalidate insights cache.')
   }
+  notifyFinancialChange('transaction_created', uid, ref.id)
   return ref.id
 }
 
@@ -65,6 +80,7 @@ export async function updateTransaction(
   if (!cacheOk) {
     console.warn('[Spenza Transactions] Updated transaction, but failed to invalidate insights cache.')
   }
+  notifyFinancialChange('transaction_updated', uid, id)
 }
 
 export async function deleteTransaction(uid: string, id: string): Promise<void> {
@@ -87,6 +103,7 @@ export async function deleteTransaction(uid: string, id: string): Promise<void> 
   if (!cacheOk) {
     console.warn('[Spenza Transactions] Deleted transaction, but failed to invalidate insights cache.')
   }
+  notifyFinancialChange('transaction_deleted', uid, id)
 }
 
 /** Settings maintenance: each chunk is atomic; earlier chunks can already have committed. */
@@ -117,6 +134,9 @@ export async function deleteTransactionsSafely(
     const reason = error instanceof ExpenseDeletionError ? error.message : 'Deletion could not be verified. Check your connection.'
     throw new ExpenseDeletionError(`Clear stopped. Confirmed deletions: ${deleted}. ${reason} Refresh to review remaining transactions.`)
   }
+  if (deleted > 0) {
+    notifyFinancialChange('bulk_cleared', uid)
+  }
   // Cache invalidation commits with each successful chunk, including on partial completion.
   return { deleted, cacheInvalidated: true }
 }
@@ -144,6 +164,26 @@ export async function getTransactions(
   }
 }
 
+export interface AllTransactionsResult {
+  transactions: Transaction[]
+  fromCache: boolean
+}
+
+export async function getAllTransactionsWithMeta(uid: string): Promise<AllTransactionsResult> {
+  const ref = collection(db, 'users', uid, 'transactions')
+  const snap = await getDocs(query(ref, orderBy('date', 'desc')))
+  const list = snap.docs.map(d => ({ id: d.id, ...d.data() }) as Transaction)
+  const sorted = list.sort((a, b) => {
+    const dDiff = (b.date?.seconds ?? 0) - (a.date?.seconds ?? 0)
+    if (dDiff !== 0) return dDiff
+    const cDiff = (b.createdAt?.seconds ?? 0) - (a.createdAt?.seconds ?? 0)
+    if (cDiff !== 0) return cDiff
+    return a.id.localeCompare(b.id)
+  })
+  const fromCache = snap.metadata ? Boolean(snap.metadata.fromCache) : false
+  return { transactions: sorted, fromCache }
+}
+
 /**
  * Fetch all transactions for a user ordered newest-first with a deterministic tie-breaker
  * (createdAt desc, then id) so same-day transactions maintain a stable order across edits
@@ -153,13 +193,17 @@ export async function getAllTransactions(uid: string): Promise<Transaction[]> {
   const ref = collection(db, 'users', uid, 'transactions')
   const snap = await getDocs(query(ref, orderBy('date', 'desc')))
   const list = snap.docs.map(d => ({ id: d.id, ...d.data() }) as Transaction)
-  return list.sort((a, b) => {
+  const sorted = list.sort((a, b) => {
     const dDiff = (b.date?.seconds ?? 0) - (a.date?.seconds ?? 0)
     if (dDiff !== 0) return dDiff
     const cDiff = (b.createdAt?.seconds ?? 0) - (a.createdAt?.seconds ?? 0)
     if (cDiff !== 0) return cDiff
     return a.id.localeCompare(b.id)
   })
+  if (snap.metadata?.fromCache) {
+    (sorted as any).fromCache = true
+  }
+  return sorted
 }
 
 /** Get past descriptions for autocomplete (limited to recent 100) */

@@ -17,9 +17,12 @@ import {
   AlertCircle,
   AlertTriangle,
   RotateCcw,
+  WifiOff,
+  RefreshCw,
 } from 'lucide-react'
 
 import { useAuth } from '@/hooks/useAuth'
+import { useFinancialSync } from '@/hooks/useFinancialSync'
 import {
   getPeople,
   addPerson,
@@ -264,6 +267,7 @@ export function PeoplePage() {
   const [transactions, setTransactions] = useState<Transaction[]>([])
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
+  const [isFromCache, setIsFromCache] = useState(false)
 
   const [searchQuery, setSearchQuery] = useState('')
   const [activeTab, setActiveTab] = useState<'dues' | 'all' | 'archived'>('dues')
@@ -290,6 +294,9 @@ export function PeoplePage() {
       ])
       setPeople(peopleList)
       setTransactions(txnsList)
+      if (typeof setIsFromCache === 'function') {
+        setIsFromCache(Boolean((txnsList as any)?.fromCache))
+      }
     } catch (err: unknown) {
       console.error('[Spenza] Error loading people & split ledger:', err)
       setLoadError(
@@ -301,6 +308,12 @@ export function PeoplePage() {
       setLoading(false)
     }
   }, [user])
+
+  const { isOnline, isStale } = useFinancialSync({
+    uid: user?.uid,
+    onRefresh: loadAll,
+    isFromCache,
+  })
 
   useEffect(() => {
     loadAll()
@@ -478,9 +491,25 @@ export function PeoplePage() {
               <Users className="h-5 w-5" />
             </div>
             <div>
-              <h1 className="text-xl font-bold tracking-tight text-[var(--text-primary)]">
-                Friends & Split Book
-              </h1>
+              <div className="flex flex-wrap items-center gap-2">
+                <h1 className="text-xl font-bold tracking-tight text-[var(--text-primary)]">
+                  Friends & Split Book
+                </h1>
+                {isStale ? (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-[var(--warning-muted)] px-2 py-0.5 text-xs font-medium text-[var(--warning)]">
+                    <RefreshCw className="h-3 w-3 animate-spin" />
+                    Updating…
+                  </span>
+                ) : (!isOnline || isFromCache) ? (
+                  <span
+                    className="inline-flex items-center gap-1 rounded-full bg-[var(--warning-muted)] px-2 py-0.5 text-xs font-medium text-[var(--warning)]"
+                    title="Ledger reflects local offline cache. Fresh data will sync when online."
+                  >
+                    <WifiOff className="h-3 w-3" />
+                    Cached split ledger
+                  </span>
+                ) : null}
+              </div>
               <p className="text-xs text-[var(--text-muted)]">
                 Track shared expenses, dues owed, and settle balances across all transactions
               </p>

@@ -5,10 +5,11 @@ import { Timestamp } from 'firebase/firestore'
 import {
   Plus, Trash2, Pencil, Loader2, Receipt, Search, X,
   ChevronDown, ChevronUp, ExternalLink, Layers, RotateCcw,
-  Users, Check, AlertTriangle,
+  Users, Check, AlertTriangle, WifiOff, RefreshCw,
 } from 'lucide-react'
 
 import { useAuth } from '@/hooks/useAuth'
+import { useFinancialSync } from '@/hooks/useFinancialSync'
 import { assertExpenseCanBeDeleted, ExpenseDeletionError } from '@/utils/expenseDeletion'
 import {
   getAllTransactions,
@@ -1126,6 +1127,7 @@ export function TransactionsPage() {
   const [settleAllTarget, setSettleAllTarget] = useState<Transaction | null>(null)
   const [settlePersonTarget, setSettlePersonTarget] = useState<PersonDuesSummary | null>(null)
   const [toast, setToast] = useState<string | null>(null)
+  const [isFromCache, setIsFromCache] = useState(false)
 
   const showToast = useCallback((msg: string) => {
     setToast(msg)
@@ -1155,6 +1157,9 @@ export function TransactionsPage() {
         getTrips(user.uid),
       ])
       setTransactions(txs)
+      if (typeof setIsFromCache === 'function') {
+        setIsFromCache(Boolean((txs as any)?.fromCache))
+      }
       setCategories(cats)
       setAccounts(accs)
       setTrips(tripList)
@@ -1162,6 +1167,12 @@ export function TransactionsPage() {
       setLoading(false)
     }
   }, [user])
+
+  const { isOnline, isStale } = useFinancialSync({
+    uid: user?.uid,
+    onRefresh: loadAll,
+    isFromCache,
+  })
 
   useEffect(() => {
     loadAll()
@@ -1390,7 +1401,23 @@ export function TransactionsPage() {
       {/* Header row */}
       <div className="mb-4 flex items-center justify-between gap-3">
         <div>
-          <h1 className="text-xl font-bold text-[var(--text-primary)]">Transactions</h1>
+          <div className="flex flex-wrap items-center gap-2">
+            <h1 className="text-xl font-bold text-[var(--text-primary)]">Transactions</h1>
+            {isStale ? (
+              <span className="inline-flex items-center gap-1 rounded-full bg-[var(--warning-muted)] px-2 py-0.5 text-xs font-medium text-[var(--warning)]">
+                <RefreshCw className="h-3 w-3 animate-spin" />
+                Updating…
+              </span>
+            ) : (!isOnline || isFromCache) ? (
+              <span
+                className="inline-flex items-center gap-1 rounded-full bg-[var(--warning-muted)] px-2 py-0.5 text-xs font-medium text-[var(--warning)]"
+                title="Ledger reflects local offline cache. Fresh data will sync when online."
+              >
+                <WifiOff className="h-3 w-3" />
+                Cached offline ledger
+              </span>
+            ) : null}
+          </div>
           {!loading && (
             <p className="mt-0.5 text-sm text-[var(--text-muted)]">
               {filteredTransactions.length.toLocaleString('en-IN')}{' '}

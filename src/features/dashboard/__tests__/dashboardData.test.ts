@@ -14,6 +14,12 @@ describe('Dashboard Integration — Net Spending & Recoverables Ledger', () => {
   const lastMonthDate = subMonths(dummyDate, 1)
   const threeMonthsAgoDate = subMonths(dummyDate, 3)
 
+  // Deterministic clock for the date-boundary regressions (8 Nov 2026, local time).
+  const fixedNow = new Date(2026, 10, 8, 12, 0, 0, 0)
+  const fixedTomorrow = new Date(2026, 10, 9, 9, 0, 0, 0)
+  const fixedLastMonth = new Date(2026, 9, 15, 12, 0, 0, 0)
+  const fixedLastYear = new Date(2025, 10, 8, 12, 0, 0, 0)
+
   const mockCategories: Category[] = [
     { id: 'cat-food', name: 'Food & Dining', color: '#ff5722', icon: 'utensils', isArchived: false },
     { id: 'cat-groceries', name: 'Groceries', color: '#4caf50', icon: 'shopping-cart', isArchived: false },
@@ -53,6 +59,29 @@ describe('Dashboard Integration — Net Spending & Recoverables Ledger', () => {
       amountPaise: 15003, recoverablePaise: 10001,
       splits: [{ personId: id, personName: id, amountPaise: 10001, repaidPaise,
         settledAt: repaidPaise === 10001 ? dummyDate as unknown as Transaction['date'] : null }],
+    })
+  }
+
+  function splitAt(
+    id: string,
+    date: Date,
+    amountPaise: number,
+    recoverablePaise: number,
+    personId: string,
+    repaidPaise = 0
+  ): Transaction {
+    return createTx({
+      id,
+      date: date as unknown as Transaction['date'],
+      amountPaise,
+      recoverablePaise,
+      splits: [{
+        personId,
+        personName: personId,
+        amountPaise: recoverablePaise,
+        repaidPaise,
+        settledAt: repaidPaise === recoverablePaise ? date as unknown as Transaction['date'] : null,
+      }],
     })
   }
 
@@ -412,5 +441,96 @@ describe('Dashboard Integration — Net Spending & Recoverables Ledger', () => {
     assert.equal(data.allTimeRecoverableTotal, 700000)
     assert.equal(data.allTimeRepaidTotal, 200000)
     assert.equal(data.allTimePendingDuesTotal, 500000)
+  })
+
+  it('9. excludes a future-dated transaction tomorrow within the current month from current-month analytics', () => {
+    const current = splitAt('current', fixedNow, 30000, 10000, 'person-current')
+    const previous = createTx({
+      id: 'previous',
+      date: fixedLastMonth as unknown as Transaction['date'],
+      amountPaise: 50000,
+    })
+    const future = splitAt('future', fixedTomorrow, 20000, 15000, 'person-future')
+
+    const baseline = deriveDashboardData([current, previous], mockCategories, mockAccounts, fixedNow)
+    const withFuture = deriveDashboardData(
+      [current, previous, future],
+      mockCategories,
+      mockAccounts,
+      fixedNow
+    )
+
+    for (const key of Object.keys(baseline) as Array<keyof typeof baseline>) {
+      if (key.startsWith('allTime') || key === 'peopleDues') continue
+      assert.deepEqual(withFuture[key], baseline[key], key)
+    }
+
+    assert.equal(withFuture.thisMonthTxns.some(tx => tx.id === 'future'), false)
+    assert.equal(withFuture.monthlyTotals[withFuture.monthlyTotals.length - 1].totalPaise, 20000)
+    assert.equal(withFuture.allTimeRecoverableTotal, baseline.allTimeRecoverableTotal + 15000)
+    assert.equal(withFuture.allTimeRepaidTotal, baseline.allTimeRepaidTotal)
+    assert.equal(withFuture.allTimePendingDuesTotal, baseline.allTimePendingDuesTotal + 15000)
+    assert.equal(
+      withFuture.allTimeRecoverableTotal,
+      withFuture.allTimeRepaidTotal + withFuture.allTimePendingDuesTotal
+    )
+    assert.deepEqual(withFuture.peopleDues, splitMath.aggregatePeopleDues([current, previous, future]))
+  })
+
+  it('10. ignores missing and unparseable dates in analytics without dropping their all-time principal', () => {
+    const valid = createTx({
+      id: 'valid',
+      date: fixedNow as unknown as Transaction['date'],
+      amountPaise: 50000,
+    })
+    const missing = splitAt('missing-date', fixedNow, 30000, 12000, 'person-missing')
+    missing.date = undefined as unknown as Transaction['date']
+    const invalid = splitAt('invalid-date', fixedNow, 40000, 8000, 'person-invalid')
+    invalid.date = 'not-a-date' as unknown as Transaction['date']
+
+    const baseline = deriveDashboardData([valid], mockCategories, mockAccounts, fixedNow)
+    const data = deriveDashboardData([valid, missing, invalid], mockCategories, mockAccounts, fixedNow)
+
+    for (const key of Object.keys(baseline) as Array<keyof typeof baseline>) {
+      if (key.startsWith('allTime') || key === 'peopleDues') continue
+      assert.deepEqual(data[key], baseline[key], key)
+    }
+
+    assert.equal(data.thisMonthTxns.length, 1)
+    assert.equal(data.thisMonthTxns[0].id, 'valid')
+    assert.equal(data.allTimeRecoverableTotal, 20000)
+    assert.equal(data.allTimeRepaidTotal, 0)
+    assert.equal(data.allTimePendingDuesTotal, 20000)
+    assert.equal(
+      data.allTimeRecoverableTotal,
+      data.allTimeRepaidTotal + data.allTimePendingDuesTotal
+    )
+    assert.deepEqual(data.peopleDues, splitMath.aggregatePeopleDues([valid, missing, invalid]))
+  })
+
+  it('11. keeps deterministic historical and legacy records in all-time balances', () => {
+    const historical = splitAt('historical', fixedLastYear, 15003, 10001, 'person-historical', 3333)
+    const legacy = createTx({
+      id: 'legacy-fixed',
+      date: fixedLastYear as unknown as Transaction['date'],
+      amountPaise: 7003,
+      type: 'reimbursable',
+      personId: 'legacy-person-fixed',
+      recoverablePaise: undefined,
+      splits: undefined,
+    })
+
+    const data = deriveDashboardData([historical, legacy], [], [], fixedNow)
+
+    assert.equal(data.thisMonthTotal, 0)
+    assert.deepEqual(data.monthlyTotals.map(month => month.totalPaise), [0, 0, 0, 0, 0, 0])
+    assert.equal(data.allTimeRecoverableTotal, 17004)
+    assert.equal(data.allTimeRepaidTotal, 3333)
+    assert.equal(data.allTimePendingDuesTotal, 13671)
+    assert.equal(
+      data.allTimeRecoverableTotal,
+      data.allTimeRepaidTotal + data.allTimePendingDuesTotal
+    )
+    assert.deepEqual(data.peopleDues, splitMath.aggregatePeopleDues([historical, legacy]))
   })
 })

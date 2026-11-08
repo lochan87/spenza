@@ -120,27 +120,28 @@ export async function fetchDashboardTransactions(
 export function deriveDashboardData(
   allTxns: Transaction[],
   categories: Category[],
-  accounts: PaymentAccount[]
+  accounts: PaymentAccount[],
+  now: Date = new Date()
 ): DashboardData {
-  const now = new Date()
   const monthStart = startOfMonth(now)
-  const monthEnd = endOfMonth(now)
   const lastMonthStart = startOfMonth(subMonths(now, 1))
   const lastMonthEnd = endOfMonth(subMonths(now, 1))
 
-  const toDate = (ts: any): Date => {
-    if (ts?.toDate) return ts.toDate()
-    if (ts instanceof Date) return ts
-    return new Date(ts)
+  const toDate = (ts: any): Date | null => {
+    if (ts == null) return null
+    const date = typeof ts?.toDate === 'function'
+      ? ts.toDate()
+      : ts instanceof Date ? ts : new Date(ts)
+    return date instanceof Date && !Number.isNaN(date.getTime()) ? date : null
   }
 
   const isInRange = (ts: any, start: Date, end: Date) => {
     const d = toDate(ts)
-    return d >= start && d <= end
+    return d !== null && d >= start && d <= end
   }
 
-  // Split by month
-  const thisMonthTxns = allTxns.filter(tx => isInRange(tx.date, monthStart, monthEnd))
+  // Current-month analytics stop at `now`; all-time dues still use complete history.
+  const thisMonthTxns = allTxns.filter(tx => isInRange(tx.date, monthStart, now))
   const lastMonthTxns = allTxns.filter(tx => isInRange(tx.date, lastMonthStart, lastMonthEnd))
 
   // ── Scalars (Net personal spend) ──────────────────────────────────────────────
@@ -258,6 +259,7 @@ export function deriveDashboardData(
   }
   for (const tx of allTxns) {
     const d = toDate(tx.date)
+    if (d === null || d > now) continue
     const key = format(d, 'yyyy-MM')
     if (monthTotalsRaw.has(key)) {
       monthTotalsRaw.set(key, (monthTotalsRaw.get(key) ?? 0) + getNetSpendPaise(tx))

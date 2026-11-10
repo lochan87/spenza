@@ -5,6 +5,7 @@ import {
   collection,
   getDocs,
   serverTimestamp,
+  writeBatch,
   query,
   limit,
 } from 'firebase/firestore'
@@ -73,15 +74,17 @@ export async function seedCategories(uid: string): Promise<string[]> {
     return existing.docs.map(d => d.id)
   }
 
+  const batch = writeBatch(db)
   const ids: string[] = []
   for (const cat of DEFAULT_CATEGORIES) {
     const newRef = doc(categoriesRef)
-    await setDoc(newRef, {
+    batch.set(newRef, {
       ...cat,
       id: newRef.id,
     })
     ids.push(newRef.id)
   }
+  await batch.commit()
 
   console.log('[Spenza Seed] ✅ Seeded', ids.length, 'categories')
   return ids
@@ -101,16 +104,18 @@ export async function seedPaymentAccounts(uid: string): Promise<string[]> {
     return existing.docs.map(d => d.id)
   }
 
+  const batch = writeBatch(db)
   const ids: string[] = []
   for (const account of DEFAULT_PAYMENT_ACCOUNTS) {
     const newRef = doc(accountsRef)
-    await setDoc(newRef, {
+    batch.set(newRef, {
       ...account,
       id: newRef.id,
       createdAt: serverTimestamp(),
     })
     ids.push(newRef.id)
   }
+  await batch.commit()
 
   console.log('[Spenza Seed] ✅ Seeded', ids.length, 'payment accounts')
   return ids
@@ -130,9 +135,9 @@ export async function seedUserProfile(uid: string, displayName: string | null, e
 
   await setDoc(profileRef, {
     uid,
-    displayName,
-    email,
-    photoURL,
+    displayName: displayName ?? null,
+    email: email ?? null,
+    photoURL: photoURL ?? null,
     defaultPaymentAccountId: null,
     onboardingComplete: false,
     createdAt: serverTimestamp(),

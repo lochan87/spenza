@@ -42,7 +42,12 @@ export function LoginPage() {
     setError(null)
     setLoading(true)
     try {
-      await signInAsTestUser()
+      const emailInput = (document.getElementById('emulator-test-email-input') as HTMLInputElement)?.value?.trim()
+      const email = emailInput || 'testuser@example.com'
+      const name = email.split('@')[0]
+      const user = await signInAsTestUser(email, name)
+      localStorage.setItem(`spenza_people_onboarding_${user.uid}`, 'true')
+      localStorage.setItem('spenza_people_onboarding_test', 'true')
       navigate(from, { replace: true })
     } catch (err) {
       console.error('[Spenza] Emulator sign-in error:', err)
@@ -120,15 +125,23 @@ export function LoginPage() {
           </button>
 
           {import.meta.env.VITE_USE_FIREBASE_EMULATOR === 'true' && (
-            <button
-              id="emulator-test-sign-in-btn"
-              type="button"
-              onClick={handleEmulatorSignIn}
-              disabled={loading}
-              className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-[var(--primary)] bg-[var(--primary-muted)] px-5 py-2.5 text-xs font-semibold text-[var(--primary)] shadow-[var(--shadow-sm)] transition-all hover:opacity-90 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              <span>Sign in with Emulator Test User</span>
-            </button>
+            <div className="mt-3 flex flex-col gap-2">
+              <input
+                id="emulator-test-email-input"
+                type="email"
+                placeholder="testuser@example.com"
+                className="w-full rounded-xl border border-[var(--border)] bg-[var(--surface-2)] px-3 py-1.5 text-xs text-[var(--text-primary)] outline-none"
+              />
+              <button
+                id="emulator-test-sign-in-btn"
+                type="button"
+                onClick={handleEmulatorSignIn}
+                disabled={loading}
+                className="flex w-full items-center justify-center gap-2 rounded-xl border border-[var(--primary)] bg-[var(--primary-muted)] px-5 py-2.5 text-xs font-semibold text-[var(--primary)] shadow-[var(--shadow-sm)] transition-all hover:opacity-90 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <span>Sign in with Emulator Test User</span>
+              </button>
+            </div>
           )}
 
           {error && (

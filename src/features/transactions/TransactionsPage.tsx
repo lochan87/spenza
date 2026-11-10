@@ -34,6 +34,7 @@ import {
   type PersonDuesSummary,
 } from '@/utils/splitMath'
 import { ThemedSelect } from '@/components/ui/ThemedSelect'
+import { seedCategories, seedPaymentAccounts } from '@/services/seed'
 import { AddExpenseForm } from './AddExpenseForm'
 import { Drawer } from '@/components/layout/Drawer'
 import {
@@ -1156,12 +1157,20 @@ export function TransactionsPage() {
     setLoading(true)
     try {
       // Loading the ledger must never clean up or delete persisted transactions.
-      const [txs, cats, accs, tripList] = await Promise.all([
+      let [txs, cats, accs, tripList] = await Promise.all([
         getAllTransactions(user.uid),
         getCategories(user.uid),
         getPaymentAccounts(user.uid),
         getTrips(user.uid),
       ])
+      if (cats.length === 0) {
+        await seedCategories(user.uid)
+        cats = await getCategories(user.uid)
+      }
+      if (accs.length === 0) {
+        await seedPaymentAccounts(user.uid)
+        accs = await getPaymentAccounts(user.uid)
+      }
       setTransactions(txs)
       if (typeof setIsFromCache === 'function') {
         setIsFromCache(Boolean((txs as any)?.fromCache))

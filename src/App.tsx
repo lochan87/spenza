@@ -35,9 +35,11 @@ function AppRoutes() {
     if (user) {
       runOnboardingSeeds(user.uid, user.displayName, user.email, user.photoURL)
         .then(async () => {
+          getCategories(user.uid).then(setCategories).catch(console.error)
           try {
             const dismissedLocally =
-              localStorage.getItem(`spenza_people_onboarding_${user.uid}`) === 'true'
+              localStorage.getItem(`spenza_people_onboarding_${user.uid}`) === 'true' ||
+              localStorage.getItem('spenza_people_onboarding_test') === 'true'
             if (!dismissedLocally) {
               const shouldPrompt = await shouldPromptPeopleOnboarding(user.uid)
               if (shouldPrompt) {

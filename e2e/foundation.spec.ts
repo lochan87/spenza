@@ -4,7 +4,7 @@ test.describe('Spenza E2E Foundation', () => {
   test.beforeEach(async ({ page }) => {
     // Pre-dismiss people onboarding in localStorage to avoid modal race conditions
     await page.addInitScript(() => {
-      localStorage.setItem('spenza_people_onboarding_test-user-testuser_example_com', 'true')
+      localStorage.setItem('spenza_people_onboarding_test', 'true')
     })
     // Navigate to root
     await page.goto('/')
@@ -49,7 +49,8 @@ test.describe('Spenza E2E Foundation', () => {
     await page.locator('#description-input').fill('Coffee & Snacks')
 
     // Select category 'Food & Drinks'
-    await page.locator('button[title="Food & Drinks"]').click()
+    await expect(page.locator('button[title="Food & Drinks"]').first()).toBeVisible({ timeout: 10000 })
+    await page.locator('button[title="Food & Drinks"]').first().click()
 
     // Submit expense
     await page.locator('#submit-expense-btn').click()
@@ -74,6 +75,7 @@ test.describe('Spenza E2E Foundation', () => {
 
     await page.locator('#amount-input').fill('1000')
     await page.locator('#description-input').fill('Dinner with Rahul')
+    await expect(page.locator('button[title="Food & Drinks"]')).toBeVisible({ timeout: 10000 })
     await page.locator('button[title="Food & Drinks"]').click()
 
     // Enable sharing

@@ -4,6 +4,8 @@ import {
   setDoc,
   getDoc,
   getDocs,
+  getDocsFromServer,
+  getDocFromServer,
   deleteDoc,
   query,
   where,
@@ -233,6 +235,12 @@ export async function archivePerson(
 
 /**
  * Delete a person if they have no historical transactions; archive them instead if referenced.
+ * Reference check queries authoritative server data to prevent deleting people with un-synced transactions.
+ *
+ * Concurrency note:
+ * Client-side reference checks are not atomic with deleteDoc; a concurrent split or transaction creation
+ * after getDocsFromServer could produce a dangling reference. Where absolute safety against races
+ * is required, records are preserved via archivePerson rather than hard deletion.
  */
 export async function deletePerson(
   uid: string,
@@ -245,22 +253,31 @@ export async function deletePerson(
     throw new Error('Cannot delete person while offline')
   }
 
-  const existing = await getPerson(cleanUid, cleanPersonId)
+  // Verify person exists on server authoritatively
+  let existing = await getPerson(cleanUid, cleanPersonId)
+  try {
+    const serverSnap = await getDocFromServer(personRef(cleanUid, cleanPersonId))
+    if (serverSnap.exists()) {
+      existing = { id: serverSnap.id, ...serverSnap.data() } as Person
+    }
+  } catch {
+    // If server doc cannot be fetched, fail closed via subsequent getDocsFromServer
+  }
   if (!existing) {
     throw new Error(`Person "${cleanPersonId}" not found`)
   }
 
-  // Check if referenced in transactions
+  // Check if referenced in transactions using authoritative server data
   const txQuery = query(
     collection(db, 'users', cleanUid, 'transactions'),
     where('personId', '==', cleanPersonId)
   )
-  const snap = await getDocs(txQuery)
+  const snap = await getDocsFromServer(txQuery)
 
   let isReferenced = !snap.empty
   if (!isReferenced) {
-    // Also check transactions where splits or legacy names reference this person
-    const allTxSnap = await getDocs(collection(db, 'users', cleanUid, 'transactions'))
+    // Also check transactions where splits or legacy names reference this person on server
+    const allTxSnap = await getDocsFromServer(collection(db, 'users', cleanUid, 'transactions'))
     const cleanName = existing.name.trim().toLowerCase()
     for (const d of allTxSnap.docs) {
       const data = d.data() as Transaction

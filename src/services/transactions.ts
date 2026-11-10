@@ -4,6 +4,7 @@ import {
   setDoc,
   getDoc,
   getDocs,
+  getDocsFromServer,
   deleteDoc,
   query,
   where,
@@ -283,7 +284,13 @@ export async function archivePaymentAccount(
 
 /**
  * Delete a payment account if no transactions or recurring items reference it.
+ * Reference check queries authoritative server data to prevent deleting accounts with un-synced transactions.
  * If references exist, safely archive the account instead to protect financial integrity.
+ *
+ * Concurrency note:
+ * Client-side reference checks are not atomic with deleteDoc; a concurrent transaction creation
+ * after getDocsFromServer could produce a dangling reference. Where absolute safety against races
+ * is required, records are preserved via archivePaymentAccount rather than hard deletion.
  */
 export async function deletePaymentAccount(
   uid: string,
@@ -296,8 +303,8 @@ export async function deletePaymentAccount(
     throw new Error('Cannot delete payment account while offline')
   }
 
-  // Check transactions referencing this payment account
-  const txSnap = await getDocs(
+  // Check transactions referencing this payment account using authoritative server data
+  const txSnap = await getDocsFromServer(
     query(
       collection(db, 'users', cleanUid, 'transactions'),
       where('paymentAccountId', '==', cleanId)
@@ -306,8 +313,8 @@ export async function deletePaymentAccount(
 
   let isReferenced = !txSnap.empty
   if (!isReferenced) {
-    // Check recurring items referencing this payment account
-    const recSnap = await getDocs(
+    // Check recurring items referencing this payment account on server
+    const recSnap = await getDocsFromServer(
       query(
         collection(db, 'users', cleanUid, 'recurring'),
         where('paymentAccountId', '==', cleanId)
@@ -364,7 +371,13 @@ export async function archiveCategory(
 
 /**
  * Delete a category if no transactions, recurring items, or budgets reference it.
+ * Reference check queries authoritative server data to prevent deleting categories with un-synced transactions.
  * If references exist, safely archive the category instead to protect financial integrity.
+ *
+ * Concurrency note:
+ * Client-side reference checks are not atomic with deleteDoc; a concurrent transaction creation
+ * after getDocsFromServer could produce a dangling reference. Where absolute safety against races
+ * is required, records are preserved via archiveCategory rather than hard deletion.
  */
 export async function deleteCategory(
   uid: string,
@@ -377,8 +390,8 @@ export async function deleteCategory(
     throw new Error('Cannot delete category while offline')
   }
 
-  // Check transactions referencing this category
-  const txSnap = await getDocs(
+  // Check transactions referencing this category using authoritative server data
+  const txSnap = await getDocsFromServer(
     query(
       collection(db, 'users', cleanUid, 'transactions'),
       where('categoryId', '==', cleanId)
@@ -387,8 +400,8 @@ export async function deleteCategory(
 
   let isReferenced = !txSnap.empty
   if (!isReferenced) {
-    // Check recurring items referencing this category
-    const recSnap = await getDocs(
+    // Check recurring items referencing this category on server
+    const recSnap = await getDocsFromServer(
       query(
         collection(db, 'users', cleanUid, 'recurring'),
         where('categoryId', '==', cleanId)
@@ -398,8 +411,8 @@ export async function deleteCategory(
   }
 
   if (!isReferenced) {
-    // Check monthly budgets referencing this category
-    const budgetSnap = await getDocs(collection(db, 'users', cleanUid, 'budgets'))
+    // Check monthly budgets referencing this category on server
+    const budgetSnap = await getDocsFromServer(collection(db, 'users', cleanUid, 'budgets'))
     for (const bDoc of budgetSnap.docs) {
       const bData = bDoc.data()
       if (bData?.categoryBudgets && Object.prototype.hasOwnProperty.call(bData.categoryBudgets, cleanId)) {

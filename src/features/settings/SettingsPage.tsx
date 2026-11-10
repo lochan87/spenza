@@ -33,6 +33,7 @@ import {
   getPaymentAccounts,
   addPaymentAccount,
   updatePaymentAccount,
+  archivePaymentAccount,
 } from '@/services/transactions'
 import {
   clearImportedTransactions,
@@ -604,9 +605,7 @@ export function SettingsPage() {
                 onEdit={a => setEditingAcc(a.id)}
                 onSetDefault={handleSetDefaultAccount}
                 onArchive={async a => {
-                  await updatePaymentAccount(user!.uid, a.id, {
-                    isArchived: !a.isArchived,
-                  })
+                  await archivePaymentAccount(user!.uid, a.id, !a.isArchived)
                   reloadData()
                 }}
               />

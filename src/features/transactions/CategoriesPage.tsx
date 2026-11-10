@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Plus, Archive, ArchiveRestore, Pencil, Check, X } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
-import { getCategories, addCategory, updateCategory } from '@/services/transactions'
+import { getCategories, addCategory, updateCategory, archiveCategory } from '@/services/transactions'
 import { invalidateInsightsCache } from '@/services/insights'
 import { getCategoryMeta, DEFAULT_CATEGORY_ORDER } from '@/utils/categoryColors'
 import type { Category } from '@/types'
@@ -248,7 +248,7 @@ export function CategoriesPage() {
                 onEdit={c => setEditingCat(c.id)}
                 onArchive={async c => {
                   setErrorMsg(null)
-                  await updateCategory(user!.uid, c.id, { isArchived: !c.isArchived })
+                  await archiveCategory(user!.uid, c.id, !c.isArchived)
                   const cacheOk = await invalidateInsightsCache(user!.uid)
                   if (!cacheOk) {
                     setErrorMsg('Category updated, but failed to invalidate Insights cache.')

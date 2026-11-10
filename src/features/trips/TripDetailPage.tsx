@@ -5,9 +5,9 @@ import { Timestamp } from 'firebase/firestore'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer
 } from 'recharts'
-import { ArrowLeft, Pencil, Calendar, Users, CheckCircle2 } from 'lucide-react'
+import { ArrowLeft, Pencil, Calendar, Users, CheckCircle2, Archive, ArchiveRestore } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
-import { getTrip, getTripTransactions } from '@/services/trips'
+import { getTrip, getTripTransactions, archiveTrip } from '@/services/trips'
 import { getCategories, getPaymentAccounts } from '@/services/transactions'
 import { formatINR, formatINRCompact } from '@/utils/format'
 import { getCategoryMeta } from '@/utils/categoryColors'
@@ -145,19 +145,47 @@ export function TripDetailPage() {
               {trip.coverEmoji}
             </div>
             <div>
-              <h1 className="text-xl font-bold text-[var(--text-primary)]">{trip.name}</h1>
+              <div className="flex items-center gap-2">
+                <h1 className="text-xl font-bold text-[var(--text-primary)]">{trip.name}</h1>
+                {trip.isArchived && (
+                  <span className="rounded-full bg-[var(--surface-2)] px-2 py-0.5 text-[10px] font-semibold text-[var(--text-muted)] border border-[var(--border)]">
+                    Archived
+                  </span>
+                )}
+              </div>
               <p className="flex items-center gap-1 text-sm text-[var(--text-muted)]">
                 <Calendar className="h-3.5 w-3.5" />
                 {format(startDate, 'd MMM')} – {format(endDate, 'd MMM yyyy')} · {days} days
               </p>
             </div>
           </div>
-          <button
-            onClick={() => setEditOpen(true)}
-            className="flex h-9 w-9 items-center justify-center rounded-xl border border-[var(--border)] hover:bg-[var(--surface-2)]"
-          >
-            <Pencil className="h-3.5 w-3.5 text-[var(--text-muted)]" />
-          </button>
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={async () => {
+                if (!user || !trip) return
+                const nextArchived = !trip.isArchived
+                await archiveTrip(user.uid, trip.id, nextArchived)
+                setTrip({ ...trip, isArchived: nextArchived })
+              }}
+              title={trip.isArchived ? 'Restore trip' : 'Archive trip'}
+              aria-label={trip.isArchived ? 'Restore trip' : 'Archive trip'}
+              className="flex h-9 w-9 items-center justify-center rounded-xl border border-[var(--border)] hover:bg-[var(--surface-2)] transition-colors"
+            >
+              {trip.isArchived ? (
+                <ArchiveRestore className="h-3.5 w-3.5 text-[var(--text-muted)]" />
+              ) : (
+                <Archive className="h-3.5 w-3.5 text-[var(--text-muted)]" />
+              )}
+            </button>
+            <button
+              onClick={() => setEditOpen(true)}
+              title="Edit trip"
+              aria-label="Edit trip"
+              className="flex h-9 w-9 items-center justify-center rounded-xl border border-[var(--border)] hover:bg-[var(--surface-2)] transition-colors"
+            >
+              <Pencil className="h-3.5 w-3.5 text-[var(--text-muted)]" />
+            </button>
+          </div>
         </div>
 
         <div className="mt-4 grid grid-cols-3 gap-3">

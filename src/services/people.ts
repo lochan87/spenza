@@ -14,7 +14,7 @@ import {
 import { getFunctions, httpsCallable } from 'firebase/functions'
 import { app, db } from '@/firebase/config'
 import { PersonSchema } from '@/utils/schemas'
-import { toNonNegativeIntPaise } from '@/utils/splitMath'
+import { toNonNegativeIntPaise, UNASSIGNED_PERSON_ID } from '@/utils/splitMath'
 import type { Person, Transaction } from '@/types'
 
 function notifyFinancialChange(type: string, uid: string, entityId?: string) {
@@ -241,6 +241,10 @@ export async function deletePerson(
   const cleanUid = validateUid(uid)
   const cleanPersonId = validatePersonId(personId)
 
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    throw new Error('Cannot delete person while offline')
+  }
+
   const existing = await getPerson(cleanUid, cleanPersonId)
   if (!existing) {
     throw new Error(`Person "${cleanPersonId}" not found`)
@@ -255,11 +259,35 @@ export async function deletePerson(
 
   let isReferenced = !snap.empty
   if (!isReferenced) {
-    // Also check transactions where splits might reference this person
+    // Also check transactions where splits or legacy names reference this person
     const allTxSnap = await getDocs(collection(db, 'users', cleanUid, 'transactions'))
+    const cleanName = existing.name.trim().toLowerCase()
     for (const d of allTxSnap.docs) {
       const data = d.data() as Transaction
+      // Direct split match by personId
       if (data.splits?.some(s => s.personId === cleanPersonId)) {
+        isReferenced = true
+        break
+      }
+      // Legacy split match: unassigned or missing personId with matching name
+      if (
+        data.splits?.some(
+          s =>
+            (!s.personId || s.personId === UNASSIGNED_PERSON_ID) &&
+            s.personName &&
+            s.personName.trim().toLowerCase() === cleanName
+        )
+      ) {
+        isReferenced = true
+        break
+      }
+      // Legacy top-level personName match
+      const legacyPersonName = (data as any).personName
+      if (
+        (!data.personId || data.personId === UNASSIGNED_PERSON_ID) &&
+        typeof legacyPersonName === 'string' &&
+        legacyPersonName.trim().toLowerCase() === cleanName
+      ) {
         isReferenced = true
         break
       }

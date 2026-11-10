@@ -5,6 +5,20 @@ import {
 import { db } from '@/firebase/config'
 import type { Trip } from '@/types'
 
+function notifyFinancialChange(type: string, uid: string, entityId?: string) {
+  if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+    try {
+      window.dispatchEvent(
+        new CustomEvent('spenza_financial_mutation', {
+          detail: { type, uid, entityId, timestamp: Date.now() },
+        })
+      )
+    } catch {
+      // Ignore
+    }
+  }
+}
+
 const tripsColl = (uid: string) => collection(db, 'users', uid, 'trips')
 const tripRef   = (uid: string, id: string) => doc(db, 'users', uid, 'trips', id)
 
@@ -29,6 +43,7 @@ export async function addTrip(
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   })
+  notifyFinancialChange('trip_changed', uid, ref.id)
   return ref.id
 }
 
@@ -38,10 +53,43 @@ export async function updateTrip(
   data: Partial<Omit<Trip, 'id' | 'createdAt'>>
 ): Promise<void> {
   await setDoc(tripRef(uid, id), { ...data, updatedAt: serverTimestamp() }, { merge: true })
+  notifyFinancialChange('trip_changed', uid, id)
 }
 
-export async function deleteTrip(uid: string, id: string): Promise<void> {
-  await deleteDoc(tripRef(uid, id))
+export async function archiveTrip(
+  uid: string,
+  id: string,
+  isArchived = true
+): Promise<void> {
+  const cleanUid = uid.trim()
+  const cleanId = id.trim()
+  await updateTrip(cleanUid, cleanId, { isArchived })
+}
+
+/**
+ * Delete a trip if no transactions reference it.
+ * If transactions exist, safely archive the trip instead to preserve financial history.
+ */
+export async function deleteTrip(
+  uid: string,
+  id: string
+): Promise<{ deleted: boolean; archived: boolean }> {
+  const cleanUid = uid.trim()
+  const cleanId = id.trim()
+
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    throw new Error('Cannot delete trip while offline')
+  }
+
+  const txns = await getTripTransactions(cleanUid, cleanId)
+  if (txns.length > 0) {
+    await archiveTrip(cleanUid, cleanId, true)
+    return { deleted: false, archived: true }
+  }
+
+  await deleteDoc(tripRef(cleanUid, cleanId))
+  notifyFinancialChange('trip_changed', cleanUid, cleanId)
+  return { deleted: true, archived: false }
 }
 
 /** Get all transactions that belong to this trip */

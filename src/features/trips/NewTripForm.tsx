@@ -68,7 +68,7 @@ export function NewTripForm({ onSuccess, onClose, editTrip }: NewTripFormProps) 
         coverEmoji: data.coverEmoji,
         coverColor: pickedColor,
         budgetPaise: data.budgetPaise,
-        isArchived: false,
+        isArchived: editTrip?.isArchived ?? false,
         notes: data.notes ?? '',
       }
       if (editTrip) {

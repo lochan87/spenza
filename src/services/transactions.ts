@@ -4,7 +4,9 @@ import {
   setDoc,
   getDoc,
   getDocs,
+  deleteDoc,
   query,
+  where,
   orderBy,
   limit,
   startAfter,
@@ -252,6 +254,7 @@ export async function addPaymentAccount(
 ): Promise<string> {
   const ref = doc(collection(db, 'users', uid, 'paymentAccounts'))
   await setDoc(ref, { ...data, id: ref.id, createdAt: serverTimestamp() })
+  notifyFinancialChange('account_changed', uid, ref.id)
   return ref.id
 }
 
@@ -261,6 +264,66 @@ export async function updatePaymentAccount(
   data: Partial<PaymentAccount>
 ): Promise<void> {
   await setDoc(doc(db, 'users', uid, 'paymentAccounts', id), data, { merge: true })
+  notifyFinancialChange('account_changed', uid, id)
+}
+
+export async function archivePaymentAccount(
+  uid: string,
+  id: string,
+  isArchived = true
+): Promise<void> {
+  const cleanUid = uid.trim()
+  const cleanId = id.trim()
+  const patch: Partial<PaymentAccount> = { isArchived }
+  if (isArchived) {
+    patch.isDefault = false
+  }
+  await updatePaymentAccount(cleanUid, cleanId, patch)
+}
+
+/**
+ * Delete a payment account if no transactions or recurring items reference it.
+ * If references exist, safely archive the account instead to protect financial integrity.
+ */
+export async function deletePaymentAccount(
+  uid: string,
+  id: string
+): Promise<{ deleted: boolean; archived: boolean }> {
+  const cleanUid = uid.trim()
+  const cleanId = id.trim()
+
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    throw new Error('Cannot delete payment account while offline')
+  }
+
+  // Check transactions referencing this payment account
+  const txSnap = await getDocs(
+    query(
+      collection(db, 'users', cleanUid, 'transactions'),
+      where('paymentAccountId', '==', cleanId)
+    )
+  )
+
+  let isReferenced = !txSnap.empty
+  if (!isReferenced) {
+    // Check recurring items referencing this payment account
+    const recSnap = await getDocs(
+      query(
+        collection(db, 'users', cleanUid, 'recurring'),
+        where('paymentAccountId', '==', cleanId)
+      )
+    )
+    isReferenced = !recSnap.empty
+  }
+
+  if (isReferenced) {
+    await archivePaymentAccount(cleanUid, cleanId, true)
+    return { deleted: false, archived: true }
+  }
+
+  await deleteDoc(doc(db, 'users', cleanUid, 'paymentAccounts', cleanId))
+  notifyFinancialChange('account_changed', cleanUid, cleanId)
+  return { deleted: true, archived: false }
 }
 
 // ─── Categories ───────────────────────────────────────────────────────────────
@@ -276,6 +339,7 @@ export async function addCategory(
 ): Promise<string> {
   const ref = doc(collection(db, 'users', uid, 'categories'))
   await setDoc(ref, { ...data, id: ref.id })
+  notifyFinancialChange('category_changed', uid, ref.id)
   return ref.id
 }
 
@@ -285,4 +349,72 @@ export async function updateCategory(
   data: Partial<Category>
 ): Promise<void> {
   await setDoc(doc(db, 'users', uid, 'categories', id), data, { merge: true })
+  notifyFinancialChange('category_changed', uid, id)
+}
+
+export async function archiveCategory(
+  uid: string,
+  id: string,
+  isArchived = true
+): Promise<void> {
+  const cleanUid = uid.trim()
+  const cleanId = id.trim()
+  await updateCategory(cleanUid, cleanId, { isArchived })
+}
+
+/**
+ * Delete a category if no transactions, recurring items, or budgets reference it.
+ * If references exist, safely archive the category instead to protect financial integrity.
+ */
+export async function deleteCategory(
+  uid: string,
+  id: string
+): Promise<{ deleted: boolean; archived: boolean }> {
+  const cleanUid = uid.trim()
+  const cleanId = id.trim()
+
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    throw new Error('Cannot delete category while offline')
+  }
+
+  // Check transactions referencing this category
+  const txSnap = await getDocs(
+    query(
+      collection(db, 'users', cleanUid, 'transactions'),
+      where('categoryId', '==', cleanId)
+    )
+  )
+
+  let isReferenced = !txSnap.empty
+  if (!isReferenced) {
+    // Check recurring items referencing this category
+    const recSnap = await getDocs(
+      query(
+        collection(db, 'users', cleanUid, 'recurring'),
+        where('categoryId', '==', cleanId)
+      )
+    )
+    isReferenced = !recSnap.empty
+  }
+
+  if (!isReferenced) {
+    // Check monthly budgets referencing this category
+    const budgetSnap = await getDocs(collection(db, 'users', cleanUid, 'budgets'))
+    for (const bDoc of budgetSnap.docs) {
+      const bData = bDoc.data()
+      if (bData?.categoryBudgets && Object.prototype.hasOwnProperty.call(bData.categoryBudgets, cleanId)) {
+        isReferenced = true
+        break
+      }
+    }
+  }
+
+  if (isReferenced) {
+    await archiveCategory(cleanUid, cleanId, true)
+    return { deleted: false, archived: true }
+  }
+
+  await deleteDoc(doc(db, 'users', cleanUid, 'categories', cleanId))
+  notifyFinancialChange('category_changed', cleanUid, cleanId)
+  return { deleted: true, archived: false }
 }

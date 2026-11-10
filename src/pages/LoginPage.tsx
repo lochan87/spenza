@@ -1,5 +1,5 @@
-import { signInWithGoogle, signInAsTestUser } from '@/firebase/auth'
-import { useState } from 'react'
+import { signInWithGoogle, signInAsTestUser, handleRedirectResult } from '@/firebase/auth'
+import { useState, useEffect } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { useTheme } from '@/hooks/useTheme'
 import { Sun, Moon } from 'lucide-react'
@@ -24,12 +24,27 @@ export function LoginPage() {
   const logoFull = isDark ? logoFullDark : logoFullLight
   const splashImage = isDark ? SyncDark : SyncLight
 
+  useEffect(() => {
+    handleRedirectResult()
+      .then(user => {
+        if (user) {
+          navigate(from, { replace: true })
+        }
+      })
+      .catch(err => {
+        console.error('[Spenza] Redirect sign-in error:', err)
+        setError('Sign in redirect failed. Please try again.')
+      })
+  }, [navigate, from])
+
   async function handleGoogleSignIn() {
     setError(null)
     setLoading(true)
     try {
-      await signInWithGoogle()
-      navigate(from, { replace: true })
+      const user = await signInWithGoogle()
+      if (user) {
+        navigate(from, { replace: true })
+      }
     } catch (err) {
       console.error('[Spenza] Sign-in error:', err)
       setError('Sign in failed. Check popup blockers and try again.')

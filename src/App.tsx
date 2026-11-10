@@ -37,9 +37,10 @@ function AppRoutes() {
         .then(async () => {
           getCategories(user.uid).then(setCategories).catch(console.error)
           try {
+            const isEmulator = import.meta.env.VITE_USE_FIREBASE_EMULATOR === 'true'
             const dismissedLocally =
               localStorage.getItem(`spenza_people_onboarding_${user.uid}`) === 'true' ||
-              localStorage.getItem('spenza_people_onboarding_test') === 'true'
+              (isEmulator && localStorage.getItem('spenza_people_onboarding_test') === 'true')
             if (!dismissedLocally) {
               const shouldPrompt = await shouldPromptPeopleOnboarding(user.uid)
               if (shouldPrompt) {

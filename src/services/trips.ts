@@ -1,5 +1,5 @@
 import {
-  collection, doc, setDoc, getDoc, getDocs, getDocsFromServer, deleteDoc,
+  collection, doc, setDoc, getDoc, getDocs,
   query, orderBy, where, serverTimestamp,
 } from 'firebase/firestore'
 import { db } from '@/firebase/config'
@@ -67,14 +67,9 @@ export async function archiveTrip(
 }
 
 /**
- * Delete a trip if no transactions reference it.
- * Reference check uses authoritative server data to prevent deleting trips with un-synced transactions.
- * If transactions exist, safely archive the trip instead to preserve financial history.
- *
- * Concurrency note:
- * Client-side reference checks are not atomic with deleteDoc; a concurrent transaction creation
- * after getDocsFromServer could produce a dangling reference. Where absolute safety against races
- * is required, records are preserved via archiveTrip rather than hard deletion.
+ * Remove a trip by archiving it.
+ * Document ID, metadata and historical transaction references are permanently preserved.
+ * Client hard deletion is denied by security rules to eliminate relational races.
  */
 export async function deleteTrip(
   uid: string,
@@ -84,24 +79,11 @@ export async function deleteTrip(
   const cleanId = id.trim()
 
   if (typeof navigator !== 'undefined' && !navigator.onLine) {
-    throw new Error('Cannot delete trip while offline')
+    throw new Error('Cannot archive trip while offline')
   }
 
-  // Use authoritative server data to verify references
-  const snap = await getDocsFromServer(
-    query(
-      collection(db, 'users', cleanUid, 'transactions'),
-      where('tripId', '==', cleanId)
-    )
-  )
-  if (!snap.empty) {
-    await archiveTrip(cleanUid, cleanId, true)
-    return { deleted: false, archived: true }
-  }
-
-  await deleteDoc(tripRef(cleanUid, cleanId))
-  notifyFinancialChange('trip_changed', cleanUid, cleanId)
-  return { deleted: true, archived: false }
+  await archiveTrip(cleanUid, cleanId, true)
+  return { deleted: false, archived: true }
 }
 
 /** Get all transactions that belong to this trip */

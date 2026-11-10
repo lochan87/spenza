@@ -4,11 +4,7 @@ import {
   setDoc,
   getDoc,
   getDocs,
-  getDocsFromServer,
-  getDocFromServer,
-  deleteDoc,
   query,
-  where,
   orderBy,
   serverTimestamp,
   Timestamp,
@@ -16,7 +12,7 @@ import {
 import { getFunctions, httpsCallable } from 'firebase/functions'
 import { app, db } from '@/firebase/config'
 import { PersonSchema } from '@/utils/schemas'
-import { toNonNegativeIntPaise, UNASSIGNED_PERSON_ID } from '@/utils/splitMath'
+import { toNonNegativeIntPaise } from '@/utils/splitMath'
 import type { Person, Transaction } from '@/types'
 
 function notifyFinancialChange(type: string, uid: string, entityId?: string) {
@@ -234,13 +230,9 @@ export async function archivePerson(
 }
 
 /**
- * Delete a person if they have no historical transactions; archive them instead if referenced.
- * Reference check queries authoritative server data to prevent deleting people with un-synced transactions.
- *
- * Concurrency note:
- * Client-side reference checks are not atomic with deleteDoc; a concurrent split or transaction creation
- * after getDocsFromServer could produce a dangling reference. Where absolute safety against races
- * is required, records are preserved via archivePerson rather than hard deletion.
+ * Remove a person by archiving them.
+ * Document ID, contact details and historical split relationships are permanently preserved.
+ * Client hard deletion is denied by security rules to eliminate relational races.
  */
 export async function deletePerson(
   uid: string,
@@ -250,75 +242,16 @@ export async function deletePerson(
   const cleanPersonId = validatePersonId(personId)
 
   if (typeof navigator !== 'undefined' && !navigator.onLine) {
-    throw new Error('Cannot delete person while offline')
+    throw new Error('Cannot archive person while offline')
   }
 
-  // Verify person exists on server authoritatively
-  let existing = await getPerson(cleanUid, cleanPersonId)
-  try {
-    const serverSnap = await getDocFromServer(personRef(cleanUid, cleanPersonId))
-    if (serverSnap.exists()) {
-      existing = { id: serverSnap.id, ...serverSnap.data() } as Person
-    }
-  } catch {
-    // If server doc cannot be fetched, fail closed via subsequent getDocsFromServer
-  }
+  const existing = await getPerson(cleanUid, cleanPersonId)
   if (!existing) {
     throw new Error(`Person "${cleanPersonId}" not found`)
   }
 
-  // Check if referenced in transactions using authoritative server data
-  const txQuery = query(
-    collection(db, 'users', cleanUid, 'transactions'),
-    where('personId', '==', cleanPersonId)
-  )
-  const snap = await getDocsFromServer(txQuery)
-
-  let isReferenced = !snap.empty
-  if (!isReferenced) {
-    // Also check transactions where splits or legacy names reference this person on server
-    const allTxSnap = await getDocsFromServer(collection(db, 'users', cleanUid, 'transactions'))
-    const cleanName = existing.name.trim().toLowerCase()
-    for (const d of allTxSnap.docs) {
-      const data = d.data() as Transaction
-      // Direct split match by personId
-      if (data.splits?.some(s => s.personId === cleanPersonId)) {
-        isReferenced = true
-        break
-      }
-      // Legacy split match: unassigned or missing personId with matching name
-      if (
-        data.splits?.some(
-          s =>
-            (!s.personId || s.personId === UNASSIGNED_PERSON_ID) &&
-            s.personName &&
-            s.personName.trim().toLowerCase() === cleanName
-        )
-      ) {
-        isReferenced = true
-        break
-      }
-      // Legacy top-level personName match
-      const legacyPersonName = (data as any).personName
-      if (
-        (!data.personId || data.personId === UNASSIGNED_PERSON_ID) &&
-        typeof legacyPersonName === 'string' &&
-        legacyPersonName.trim().toLowerCase() === cleanName
-      ) {
-        isReferenced = true
-        break
-      }
-    }
-  }
-
-  if (isReferenced) {
-    await archivePerson(cleanUid, cleanPersonId, true)
-    return { deleted: false, archived: true }
-  }
-
-  await deleteDoc(personRef(cleanUid, cleanPersonId))
-  notifyFinancialChange('person_changed', cleanUid, cleanPersonId)
-  return { deleted: true, archived: false }
+  await archivePerson(cleanUid, cleanPersonId, true)
+  return { deleted: false, archived: true }
 }
 
 // ─── Repayment Operations ─────────────────────────────────────────────────────

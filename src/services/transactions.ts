@@ -4,10 +4,7 @@ import {
   setDoc,
   getDoc,
   getDocs,
-  getDocsFromServer,
-  deleteDoc,
   query,
-  where,
   orderBy,
   limit,
   startAfter,
@@ -283,14 +280,9 @@ export async function archivePaymentAccount(
 }
 
 /**
- * Delete a payment account if no transactions or recurring items reference it.
- * Reference check queries authoritative server data to prevent deleting accounts with un-synced transactions.
- * If references exist, safely archive the account instead to protect financial integrity.
- *
- * Concurrency note:
- * Client-side reference checks are not atomic with deleteDoc; a concurrent transaction creation
- * after getDocsFromServer could produce a dangling reference. Where absolute safety against races
- * is required, records are preserved via archivePaymentAccount rather than hard deletion.
+ * Remove a payment account by archiving it.
+ * Clears isDefault if set. Document ID, metadata and payment links are permanently preserved.
+ * Client hard deletion is denied by security rules to eliminate relational races.
  */
 export async function deletePaymentAccount(
   uid: string,
@@ -300,37 +292,11 @@ export async function deletePaymentAccount(
   const cleanId = id.trim()
 
   if (typeof navigator !== 'undefined' && !navigator.onLine) {
-    throw new Error('Cannot delete payment account while offline')
+    throw new Error('Cannot archive payment account while offline')
   }
 
-  // Check transactions referencing this payment account using authoritative server data
-  const txSnap = await getDocsFromServer(
-    query(
-      collection(db, 'users', cleanUid, 'transactions'),
-      where('paymentAccountId', '==', cleanId)
-    )
-  )
-
-  let isReferenced = !txSnap.empty
-  if (!isReferenced) {
-    // Check recurring items referencing this payment account on server
-    const recSnap = await getDocsFromServer(
-      query(
-        collection(db, 'users', cleanUid, 'recurring'),
-        where('paymentAccountId', '==', cleanId)
-      )
-    )
-    isReferenced = !recSnap.empty
-  }
-
-  if (isReferenced) {
-    await archivePaymentAccount(cleanUid, cleanId, true)
-    return { deleted: false, archived: true }
-  }
-
-  await deleteDoc(doc(db, 'users', cleanUid, 'paymentAccounts', cleanId))
-  notifyFinancialChange('account_changed', cleanUid, cleanId)
-  return { deleted: true, archived: false }
+  await archivePaymentAccount(cleanUid, cleanId, true)
+  return { deleted: false, archived: true }
 }
 
 // ─── Categories ───────────────────────────────────────────────────────────────
@@ -370,14 +336,9 @@ export async function archiveCategory(
 }
 
 /**
- * Delete a category if no transactions, recurring items, or budgets reference it.
- * Reference check queries authoritative server data to prevent deleting categories with un-synced transactions.
- * If references exist, safely archive the category instead to protect financial integrity.
- *
- * Concurrency note:
- * Client-side reference checks are not atomic with deleteDoc; a concurrent transaction creation
- * after getDocsFromServer could produce a dangling reference. Where absolute safety against races
- * is required, records are preserved via archiveCategory rather than hard deletion.
+ * Remove a category by archiving it.
+ * Document ID, category metadata and spend categorizations are permanently preserved.
+ * Client hard deletion is denied by security rules to eliminate relational races.
  */
 export async function deleteCategory(
   uid: string,
@@ -387,47 +348,9 @@ export async function deleteCategory(
   const cleanId = id.trim()
 
   if (typeof navigator !== 'undefined' && !navigator.onLine) {
-    throw new Error('Cannot delete category while offline')
+    throw new Error('Cannot archive category while offline')
   }
 
-  // Check transactions referencing this category using authoritative server data
-  const txSnap = await getDocsFromServer(
-    query(
-      collection(db, 'users', cleanUid, 'transactions'),
-      where('categoryId', '==', cleanId)
-    )
-  )
-
-  let isReferenced = !txSnap.empty
-  if (!isReferenced) {
-    // Check recurring items referencing this category on server
-    const recSnap = await getDocsFromServer(
-      query(
-        collection(db, 'users', cleanUid, 'recurring'),
-        where('categoryId', '==', cleanId)
-      )
-    )
-    isReferenced = !recSnap.empty
-  }
-
-  if (!isReferenced) {
-    // Check monthly budgets referencing this category on server
-    const budgetSnap = await getDocsFromServer(collection(db, 'users', cleanUid, 'budgets'))
-    for (const bDoc of budgetSnap.docs) {
-      const bData = bDoc.data()
-      if (bData?.categoryBudgets && Object.prototype.hasOwnProperty.call(bData.categoryBudgets, cleanId)) {
-        isReferenced = true
-        break
-      }
-    }
-  }
-
-  if (isReferenced) {
-    await archiveCategory(cleanUid, cleanId, true)
-    return { deleted: false, archived: true }
-  }
-
-  await deleteDoc(doc(db, 'users', cleanUid, 'categories', cleanId))
-  notifyFinancialChange('category_changed', cleanUid, cleanId)
-  return { deleted: true, archived: false }
+  await archiveCategory(cleanUid, cleanId, true)
+  return { deleted: false, archived: true }
 }

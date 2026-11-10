@@ -79,6 +79,9 @@ function createFirestoreMock(store: MemoryStore, options: { failServer?: boolean
       return { type: 'doc', collName, id: docId }
     },
     getDoc: async (ref: any) => {
+      if (options.failServer) {
+        throw new Error('Firestore server unreachable')
+      }
       const map = getCollMap(ref.collName)
       const data = map.get(ref.id)
       return {
@@ -152,10 +155,13 @@ function createFirestoreMock(store: MemoryStore, options: { failServer?: boolean
         data: () => (data ? structuredClone(data) : undefined),
       }
     },
-    setDoc: async (ref: any, data: any, options?: { merge?: boolean }) => {
+    setDoc: async (ref: any, data: any, optionsParam?: { merge?: boolean }) => {
+      if (options.failServer) {
+        throw new Error('Firestore server unreachable')
+      }
       const map = getCollMap(ref.collName)
       const existing = map.get(ref.id) || {}
-      if (options?.merge) {
+      if (optionsParam?.merge) {
         map.set(ref.id, { ...existing, ...data })
       } else {
         map.set(ref.id, { ...data, id: ref.id })
@@ -216,12 +222,12 @@ describe('Financial Relationship Integrity & Safe Archival', () => {
 
       await assert.rejects(
         service.deleteTrip('user-1', 'trip-1'),
-        /Cannot delete trip while offline/
+        /Cannot archive trip while offline/
       )
       assert.equal(store.trips.has('trip-1'), true)
     })
 
-    it('fails closed when authoritative server check fails (network error)', async () => {
+    it('fails closed when server write fails (network error)', async () => {
       const store = createMemoryStore()
       store.trips.set('trip-1', { id: 'trip-1', name: 'Goa', isArchived: false })
       const { service } = loadTripsService(store, { failServer: true })
@@ -232,9 +238,10 @@ describe('Financial Relationship Integrity & Safe Archival', () => {
       )
       // Trip is untouched and NOT deleted
       assert.equal(store.trips.has('trip-1'), true)
+      assert.equal(store.trips.get('trip-1').isArchived, false)
     })
 
-    it('safely archives trip instead of deleting when transactions reference it (authoritative server check)', async () => {
+    it('safely archives trip instead of deleting when transactions reference it', async () => {
       const store = createMemoryStore()
       store.trips.set('trip-1', { id: 'trip-1', name: 'Goa', isArchived: false })
       store.transactions.set('tx-1', {
@@ -243,31 +250,32 @@ describe('Financial Relationship Integrity & Safe Archival', () => {
         amountPaise: 50000,
         description: 'Flight',
       })
-      const { service, sdk } = loadTripsService(store)
+      const { service } = loadTripsService(store)
 
       const result = await service.deleteTrip('user-1', 'trip-1')
       assert.equal(result.deleted, false)
       assert.equal(result.archived, true)
-      assert.ok(sdk.getServerQueriesCount() > 0, 'Must query authoritative server data')
 
       // Trip doc is preserved in Firestore with isArchived: true
       const trip = store.trips.get('trip-1')
       assert.ok(trip)
       assert.equal(trip.isArchived, true)
-      // Transaction still references the trip
+      // Transaction still references the trip and trip is resolvable
       assert.equal(store.transactions.get('tx-1').tripId, 'trip-1')
+      const resolvedTrip = await service.getTrip('user-1', 'trip-1')
+      assert.equal(resolvedTrip?.name, 'Goa')
     })
 
-    it('hard-deletes trip doc when no transactions reference it on server', async () => {
+    it('safely archives trip doc when no transactions reference it (never hard-deleted)', async () => {
       const store = createMemoryStore()
       store.trips.set('trip-empty', { id: 'trip-empty', name: 'Empty Trip', isArchived: false })
-      const { service, sdk } = loadTripsService(store)
+      const { service } = loadTripsService(store)
 
       const result = await service.deleteTrip('user-1', 'trip-empty')
-      assert.equal(result.deleted, true)
-      assert.equal(result.archived, false)
-      assert.ok(sdk.getServerQueriesCount() > 0, 'Must query authoritative server data')
-      assert.equal(store.trips.has('trip-empty'), false)
+      assert.equal(result.deleted, false)
+      assert.equal(result.archived, true)
+      assert.equal(store.trips.has('trip-empty'), true)
+      assert.equal(store.trips.get('trip-empty').isArchived, true)
     })
   })
 
@@ -301,12 +309,12 @@ describe('Financial Relationship Integrity & Safe Archival', () => {
 
       await assert.rejects(
         service.deletePerson('user-1', 'alice'),
-        /Cannot delete person while offline/
+        /Cannot archive person while offline/
       )
       assert.equal(store.people.has('alice'), true)
     })
 
-    it('fails closed when authoritative server check throws', async () => {
+    it('fails closed when server write throws', async () => {
       const store = createMemoryStore()
       store.people.set('alice', { id: 'alice', name: 'Alice', isArchived: false })
       const { service } = loadPeopleService(store, { failServer: true })
@@ -316,6 +324,17 @@ describe('Financial Relationship Integrity & Safe Archival', () => {
         /Firestore server unreachable/
       )
       assert.equal(store.people.has('alice'), true)
+      assert.equal(store.people.get('alice').isArchived, false)
+    })
+
+    it('fails closed when person does not exist', async () => {
+      const store = createMemoryStore()
+      const { service } = loadPeopleService(store)
+
+      await assert.rejects(
+        service.deletePerson('user-1', 'nonexistent'),
+        /Person "nonexistent" not found/
+      )
     })
 
     it('safely archives person when referenced by transaction personId', async () => {
@@ -326,13 +345,18 @@ describe('Financial Relationship Integrity & Safe Archival', () => {
         personId: 'alice',
         amountPaise: 2000,
       })
-      const { service, sdk } = loadPeopleService(store)
+      const { service } = loadPeopleService(store)
 
       const res = await service.deletePerson('user-1', 'alice')
       assert.equal(res.deleted, false)
       assert.equal(res.archived, true)
-      assert.ok(sdk.getServerQueriesCount() > 0, 'Must query authoritative server data')
       assert.equal(store.people.get('alice').isArchived, true)
+
+      // Reference remains resolvable through getPerson and getPeople(..., true)
+      const resolved = await service.getPerson('user-1', 'alice')
+      assert.equal(resolved?.name, 'Alice')
+      const allIncludingArchived = await service.getPeople('user-1', true)
+      assert.ok(allIncludingArchived.some((p: any) => p.id === 'alice'))
     })
 
     it('safely archives person when referenced in split participant list', async () => {
@@ -343,12 +367,11 @@ describe('Financial Relationship Integrity & Safe Archival', () => {
         amountPaise: 10000,
         splits: [{ personId: 'bob', personName: 'Bob', amountPaise: 5000, repaidPaise: 0 }],
       })
-      const { service, sdk } = loadPeopleService(store)
+      const { service } = loadPeopleService(store)
 
       const res = await service.deletePerson('user-1', 'bob')
       assert.equal(res.deleted, false)
       assert.equal(res.archived, true)
-      assert.ok(sdk.getServerQueriesCount() > 0, 'Must query authoritative server data')
       assert.equal(store.people.get('bob').isArchived, true)
     })
 
@@ -386,16 +409,16 @@ describe('Financial Relationship Integrity & Safe Archival', () => {
       assert.equal(store.people.get('dave-id').isArchived, true)
     })
 
-    it('hard-deletes person when no references exist', async () => {
+    it('safely archives person even when no references exist (never hard-deleted)', async () => {
       const store = createMemoryStore()
       store.people.set('stranger', { id: 'stranger', name: 'Stranger', isArchived: false })
-      const { service, sdk } = loadPeopleService(store)
+      const { service } = loadPeopleService(store)
 
       const res = await service.deletePerson('user-1', 'stranger')
-      assert.equal(res.deleted, true)
-      assert.equal(res.archived, false)
-      assert.ok(sdk.getServerQueriesCount() > 0, 'Must query authoritative server data')
-      assert.equal(store.people.has('stranger'), false)
+      assert.equal(res.deleted, false)
+      assert.equal(res.archived, true)
+      assert.equal(store.people.has('stranger'), true)
+      assert.equal(store.people.get('stranger').isArchived, true)
     })
   })
 
@@ -429,12 +452,12 @@ describe('Financial Relationship Integrity & Safe Archival', () => {
 
       await assert.rejects(
         service.deletePaymentAccount('user-1', 'acc-1'),
-        /Cannot delete payment account while offline/
+        /Cannot archive payment account while offline/
       )
       assert.equal(store.paymentAccounts.has('acc-1'), true)
     })
 
-    it('fails closed when authoritative server check throws for payment account', async () => {
+    it('fails closed when server write throws for payment account', async () => {
       const store = createMemoryStore()
       store.paymentAccounts.set('acc-1', { id: 'acc-1', name: 'HDFC', isArchived: false })
       const { service } = loadTxService(store, { failServer: true })
@@ -444,6 +467,7 @@ describe('Financial Relationship Integrity & Safe Archival', () => {
         /Firestore server unreachable/
       )
       assert.equal(store.paymentAccounts.has('acc-1'), true)
+      assert.equal(store.paymentAccounts.get('acc-1').isArchived, false)
     })
 
     it('safely archives payment account and clears isDefault when referenced by transactions', async () => {
@@ -455,16 +479,19 @@ describe('Financial Relationship Integrity & Safe Archival', () => {
         paymentMode: 'Bank Transfer',
         amountPaise: 15000,
       })
-      const { service, sdk } = loadTxService(store)
+      const { service } = loadTxService(store)
 
       const res = await service.deletePaymentAccount('user-1', 'acc-1')
       assert.equal(res.deleted, false)
       assert.equal(res.archived, true)
-      assert.ok(sdk.getServerQueriesCount() > 0, 'Must query authoritative server data')
 
       const acc = store.paymentAccounts.get('acc-1')
       assert.equal(acc.isArchived, true)
       assert.equal(acc.isDefault, false)
+
+      // Account remains resolvable in getPaymentAccounts
+      const accounts = await service.getPaymentAccounts('user-1')
+      assert.ok(accounts.some((a: any) => a.id === 'acc-1'))
     })
 
     it('safely archives payment account when referenced by recurring items', async () => {
@@ -475,25 +502,24 @@ describe('Financial Relationship Integrity & Safe Archival', () => {
         paymentAccountId: 'acc-2',
         amountPaise: 100000,
       })
-      const { service, sdk } = loadTxService(store)
+      const { service } = loadTxService(store)
 
       const res = await service.deletePaymentAccount('user-1', 'acc-2')
       assert.equal(res.deleted, false)
       assert.equal(res.archived, true)
-      assert.ok(sdk.getServerQueriesCount() > 0, 'Must query authoritative server data')
       assert.equal(store.paymentAccounts.get('acc-2').isArchived, true)
     })
 
-    it('hard-deletes unreferenced payment account', async () => {
+    it('safely archives unreferenced payment account (never hard-deleted)', async () => {
       const store = createMemoryStore()
       store.paymentAccounts.set('acc-unused', { id: 'acc-unused', name: 'Old Bank', isArchived: false })
-      const { service, sdk } = loadTxService(store)
+      const { service } = loadTxService(store)
 
       const res = await service.deletePaymentAccount('user-1', 'acc-unused')
-      assert.equal(res.deleted, true)
-      assert.equal(res.archived, false)
-      assert.ok(sdk.getServerQueriesCount() > 0, 'Must query authoritative server data')
-      assert.equal(store.paymentAccounts.has('acc-unused'), false)
+      assert.equal(res.deleted, false)
+      assert.equal(res.archived, true)
+      assert.equal(store.paymentAccounts.has('acc-unused'), true)
+      assert.equal(store.paymentAccounts.get('acc-unused').isArchived, true)
     })
 
     it('archivePaymentAccount clears isDefault when archiving', async () => {
@@ -507,7 +533,7 @@ describe('Financial Relationship Integrity & Safe Archival', () => {
       assert.equal(acc.isDefault, false)
     })
 
-    it('fails closed when authoritative server check throws for category', async () => {
+    it('fails closed when server write throws for category', async () => {
       const store = createMemoryStore()
       store.categories.set('cat-food', { id: 'cat-food', name: 'Food', isArchived: false })
       const { service } = loadTxService(store, { failServer: true })
@@ -517,31 +543,34 @@ describe('Financial Relationship Integrity & Safe Archival', () => {
         /Firestore server unreachable/
       )
       assert.equal(store.categories.has('cat-food'), true)
+      assert.equal(store.categories.get('cat-food').isArchived, false)
     })
 
     it('safely archives category when referenced by transactions', async () => {
       const store = createMemoryStore()
       store.categories.set('cat-food', { id: 'cat-food', name: 'Food', isArchived: false })
       store.transactions.set('tx-1', { id: 'tx-1', categoryId: 'cat-food', amountPaise: 500 })
-      const { service, sdk } = loadTxService(store)
+      const { service } = loadTxService(store)
 
       const res = await service.deleteCategory('user-1', 'cat-food')
       assert.equal(res.deleted, false)
       assert.equal(res.archived, true)
-      assert.ok(sdk.getServerQueriesCount() > 0, 'Must query authoritative server data')
       assert.equal(store.categories.get('cat-food').isArchived, true)
+
+      // Category remains resolvable in getCategories
+      const categories = await service.getCategories('user-1')
+      assert.ok(categories.some((c: any) => c.id === 'cat-food'))
     })
 
     it('safely archives category when referenced by recurring items', async () => {
       const store = createMemoryStore()
       store.categories.set('cat-sub', { id: 'cat-sub', name: 'Subscriptions', isArchived: false })
       store.recurring.set('rec-1', { id: 'rec-1', categoryId: 'cat-sub', amountPaise: 49900 })
-      const { service, sdk } = loadTxService(store)
+      const { service } = loadTxService(store)
 
       const res = await service.deleteCategory('user-1', 'cat-sub')
       assert.equal(res.deleted, false)
       assert.equal(res.archived, true)
-      assert.ok(sdk.getServerQueriesCount() > 0, 'Must query authoritative server data')
       assert.equal(store.categories.get('cat-sub').isArchived, true)
     })
 
@@ -553,25 +582,24 @@ describe('Financial Relationship Integrity & Safe Archival', () => {
         totalBudgetPaise: 1000000,
         categoryBudgets: { 'cat-rent': 500000 },
       })
-      const { service, sdk } = loadTxService(store)
+      const { service } = loadTxService(store)
 
       const res = await service.deleteCategory('user-1', 'cat-rent')
       assert.equal(res.deleted, false)
       assert.equal(res.archived, true)
-      assert.ok(sdk.getServerQueriesCount() > 0, 'Must query authoritative server data')
       assert.equal(store.categories.get('cat-rent').isArchived, true)
     })
 
-    it('hard-deletes unreferenced category', async () => {
+    it('safely archives unreferenced category (never hard-deleted)', async () => {
       const store = createMemoryStore()
       store.categories.set('cat-temp', { id: 'cat-temp', name: 'Temp', isArchived: false })
-      const { service, sdk } = loadTxService(store)
+      const { service } = loadTxService(store)
 
       const res = await service.deleteCategory('user-1', 'cat-temp')
-      assert.equal(res.deleted, true)
-      assert.equal(res.archived, false)
-      assert.ok(sdk.getServerQueriesCount() > 0, 'Must query authoritative server data')
-      assert.equal(store.categories.has('cat-temp'), false)
+      assert.equal(res.deleted, false)
+      assert.equal(res.archived, true)
+      assert.equal(store.categories.has('cat-temp'), true)
+      assert.equal(store.categories.get('cat-temp').isArchived, true)
     })
   })
 })

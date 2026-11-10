@@ -170,12 +170,14 @@ service cloud.firestore {
 
       // ── categories subcollection ──────────────────────────────────────────
       match /categories/{categoryId} {
-        allow read, write: if isOwner(uid);
+        allow read, create, update: if isOwner(uid);
+        allow delete: if false;
       }
 
       // ── paymentAccounts subcollection ─────────────────────────────────────
       match /paymentAccounts/{accountId} {
-        allow read, write: if isOwner(uid);
+        allow read, create, update: if isOwner(uid);
+        allow delete: if false;
       }
 
       // ── budgets subcollection ─────────────────────────────────────────────
@@ -185,7 +187,8 @@ service cloud.firestore {
 
       // ── trips subcollection ───────────────────────────────────────────────
       match /trips/{tripId} {
-        allow read, write: if isOwner(uid);
+        allow read, create, update: if isOwner(uid);
+        allow delete: if false;
       }
 
       // ── recurring subcollection ───────────────────────────────────────────
@@ -195,7 +198,8 @@ service cloud.firestore {
 
       // ── people subcollection ──────────────────────────────────────────────
       match /people/{personId} {
-        allow read, write: if isOwner(uid);
+        allow read, create, update: if isOwner(uid);
+        allow delete: if false;
       }
 
       // ── repaymentReceipts subcollection ──────────────────────────────────

@@ -916,6 +916,44 @@ it('Firestore emulator: transaction write security rules hardening', { skip: !ho
       assert.equal(splitSnap.data()?.recoverablePaise, 6000)
       assert.equal(splitSnap.data()?.splits.length, 2)
     })
+
+    // 30. Relationship entities (trips, people, paymentAccounts, categories) deny client deletion while permitting create, read, and update
+    await t.test('30. Relationship entities deny client deletion while permitting create, read, and update', async () => {
+      const collections = ['trips', 'people', 'paymentAccounts', 'categories'] as const
+
+      for (const coll of collections) {
+        const id = `${coll}-test-${Date.now()}`
+        const ownerDocRef = sdk.doc(ownerDb, 'users', 'owner-uid', coll, id)
+        const otherDocRef = sdk.doc(otherDb, 'users', 'owner-uid', coll, id)
+
+        // 1. Owner can create
+        const initialData = { id, name: `Test ${coll}`, isArchived: false }
+        await sdk.setDoc(ownerDocRef, initialData)
+        const createdSnap = await sdk.getDoc(ownerDocRef)
+        assert.equal(createdSnap.exists(), true)
+        assert.equal(createdSnap.data()?.name, `Test ${coll}`)
+        assert.equal(createdSnap.data()?.isArchived, false)
+
+        // 2. Owner can read and update (e.g. archive or edit name)
+        await sdk.setDoc(ownerDocRef, { isArchived: true, name: `Updated ${coll}` }, { merge: true })
+        const updatedSnap = await sdk.getDoc(ownerDocRef)
+        assert.equal(updatedSnap.data()?.isArchived, true)
+        assert.equal(updatedSnap.data()?.name, `Updated ${coll}`)
+
+        // 3. Other user is denied read and write
+        await assert.rejects(sdk.getDoc(otherDocRef), /permission-denied/)
+        await assert.rejects(sdk.setDoc(otherDocRef, { name: 'Hacked' }, { merge: true }), /permission-denied/)
+        await assert.rejects(sdk.deleteDoc(otherDocRef), /permission-denied/)
+
+        // 4. Owner is denied hard deletion (must use archival only)
+        await assert.rejects(sdk.deleteDoc(ownerDocRef), /permission-denied/)
+
+        // Document still exists on server with isArchived: true
+        const survivingSnap = await sdk.getDoc(ownerDocRef)
+        assert.equal(survivingSnap.exists(), true)
+        assert.equal(survivingSnap.data()?.isArchived, true)
+      }
+    })
   } finally {
     await adminApp.delete()
     await sdk.terminate(ownerDb)

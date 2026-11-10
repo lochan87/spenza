@@ -1,4 +1,4 @@
-import { signInWithGoogle } from '@/firebase/auth'
+import { signInWithGoogle, signInAsTestUser } from '@/firebase/auth'
 import { useState } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { useTheme } from '@/hooks/useTheme'
@@ -33,6 +33,20 @@ export function LoginPage() {
     } catch (err) {
       console.error('[Spenza] Sign-in error:', err)
       setError('Sign in failed. Check popup blockers and try again.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function handleEmulatorSignIn() {
+    setError(null)
+    setLoading(true)
+    try {
+      await signInAsTestUser()
+      navigate(from, { replace: true })
+    } catch (err) {
+      console.error('[Spenza] Emulator sign-in error:', err)
+      setError('Emulator sign in failed.')
     } finally {
       setLoading(false)
     }
@@ -104,6 +118,18 @@ export function LoginPage() {
             )}
             <span>{loading ? 'Signing in…' : 'Continue with Google'}</span>
           </button>
+
+          {import.meta.env.VITE_USE_FIREBASE_EMULATOR === 'true' && (
+            <button
+              id="emulator-test-sign-in-btn"
+              type="button"
+              onClick={handleEmulatorSignIn}
+              disabled={loading}
+              className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-[var(--primary)] bg-[var(--primary-muted)] px-5 py-2.5 text-xs font-semibold text-[var(--primary)] shadow-[var(--shadow-sm)] transition-all hover:opacity-90 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <span>Sign in with Emulator Test User</span>
+            </button>
+          )}
 
           {error && (
             <p className="mt-3 text-center text-xs text-[var(--danger)]">{error}</p>

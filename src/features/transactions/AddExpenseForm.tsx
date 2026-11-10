@@ -522,7 +522,9 @@ export function AddExpenseForm({
           {isEditing ? 'Edit Expense' : 'Add Expense'}
         </h2>
         <button
+          type="button"
           onClick={onClose}
+          aria-label="Close expense form"
           className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--text-muted)] hover:bg-[var(--surface-2)] hover:text-[var(--text-primary)] transition-colors"
         >
           <X className="h-4 w-4" />

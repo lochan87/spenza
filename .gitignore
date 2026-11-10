@@ -31,3 +31,9 @@ dist-ssr
 *.sln
 *.sw?
 
+# Testing & local tooling
+.config/
+test-results/
+playwright-report/
+
+

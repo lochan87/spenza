@@ -484,6 +484,9 @@ export async function settlePersonAllDues(
 
     if (data.error && data.failedTransactionId) {
       clearPendingKey('settlePerson', opKey)
+      if (data.settledCount > 0) {
+        notifyFinancialChange('settlement_completed', cleanUid, cleanPersonId)
+      }
       throw new MultiSettlementPartialError(data.error, {
         settledCount: data.settledCount,
         totalSettledPaise: data.totalSettledPaise,
@@ -506,6 +509,9 @@ export async function settlePersonAllDues(
   } catch (err: any) {
     if (err?.details && typeof err.details.settledCount === 'number') {
       clearPendingKey('settlePerson', opKey)
+      if (err.details.settledCount > 0) {
+        notifyFinancialChange('settlement_completed', cleanUid, cleanPersonId)
+      }
       throw new MultiSettlementPartialError(err.message || 'Settlement partially failed', err.details)
     }
     throw err

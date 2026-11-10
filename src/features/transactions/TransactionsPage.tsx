@@ -20,7 +20,7 @@ import {
 import { getTrips } from '@/services/trips'
 import { getCategoryMeta } from '@/utils/categoryColors'
 import { getPaymentMeta, getAccountTypeMeta } from '@/utils/paymentColors'
-import { formatINR, formatTxAmount } from '@/utils/format'
+import { formatINR, formatTxAmount, parseTransactionDate } from '@/utils/format'
 import {
   getRecoverablePaise,
   getNetSpendPaise,
@@ -104,8 +104,9 @@ function ReimbursementBadge({ status }: { status: ReimbursementStatus }) {
 
 // ─── Date group helpers ───────────────────────────────────────────────────────
 
-function dateLabel(ts: Timestamp): string {
-  const d = ts?.toDate?.() ?? new Date()
+function dateLabel(ts: unknown): string {
+  const d = parseTransactionDate(ts)
+  if (!d) return 'Undated'
   if (isToday(d)) return 'Today'
   if (isYesterday(d)) return 'Yesterday'
   return format(d, 'dd MMM yyyy, EEEE')
@@ -119,7 +120,7 @@ type FeedEntry =
       trip: Trip | undefined
       items: Transaction[]
       totalPaise: number
-      latestDate: Timestamp
+      latestDate: unknown
     }
 
 interface DateGroup {
@@ -275,11 +276,14 @@ function TransactionRow({
           </div>
 
           <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
-            {showDateBadge && tx.date && (
-              <span className="text-[10px] font-medium text-[var(--text-muted)]">
-                {format((tx.date as Timestamp).toDate(), 'd MMM')} ·
-              </span>
-            )}
+            {showDateBadge && tx.date && (() => {
+              const d = parseTransactionDate(tx.date)
+              return d ? (
+                <span className="text-[10px] font-medium text-[var(--text-muted)]">
+                  {format(d, 'd MMM')} ·
+                </span>
+              ) : null
+            })()}
             {/* Payment mode badge */}
             <span
               className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold"
@@ -544,9 +548,11 @@ function TripBundleRow({
 
   const dateRangeLabel = useMemo(() => {
     if (trip?.startDate) {
-      const s = (trip.startDate as Timestamp).toDate()
-      const e = trip.endDate ? (trip.endDate as Timestamp).toDate() : null
-      return e ? `${format(s, 'd MMM')} – ${format(e, 'd MMM yyyy')}` : format(s, 'd MMM yyyy')
+      const s = parseTransactionDate(trip.startDate)
+      const e = trip.endDate ? parseTransactionDate(trip.endDate) : null
+      if (s) {
+        return e ? `${format(s, 'd MMM')} – ${format(e, 'd MMM yyyy')}` : format(s, 'd MMM yyyy')
+      }
     }
     return `${items.length} expenses`
   }, [trip, items.length])
@@ -1255,7 +1261,7 @@ export function TransactionsPage() {
   const availableMonths = useMemo(() => {
     const counts = new Map<string, { label: string; count: number }>()
     for (const tx of transactions) {
-      const d = (tx.date as Timestamp)?.toDate?.()
+      const d = parseTransactionDate(tx.date)
       if (!d) continue
       const key = format(d, 'yyyy-MM')
       const existing = counts.get(key)
@@ -1275,7 +1281,7 @@ export function TransactionsPage() {
     const q = searchQuery.trim().toLowerCase()
     return transactions.filter(tx => {
       if (selectedMonth !== 'all') {
-        const d = (tx.date as Timestamp)?.toDate?.()
+        const d = parseTransactionDate(tx.date)
         if (!d || format(d, 'yyyy-MM') !== selectedMonth) return false
       }
       if (selectedCategoryId !== 'all' && tx.categoryId !== selectedCategoryId) {

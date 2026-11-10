@@ -253,9 +253,10 @@ function RecurringForm({
   const freq = watch('frequency')
   const payMode = watch('paymentMode') as PaymentMode
   const filteredAccounts = accounts.filter(a =>
-    (payMode === 'UPI' && a.type === 'UPI') ||
-    (payMode === 'Bank Transfer' && a.type === 'Bank') ||
-    (payMode === 'Card' && a.type === 'Card')
+    (!a.isArchived || a.id === editItem?.paymentAccountId) &&
+    ((payMode === 'UPI' && a.type === 'UPI') ||
+     (payMode === 'Bank Transfer' && a.type === 'Bank') ||
+     (payMode === 'Card' && a.type === 'Card'))
   )
 
   const onSubmit = async (data: RecurringForm) => {
@@ -332,7 +333,7 @@ function RecurringForm({
             onChange={val => setValue('categoryId', val, { shouldValidate: true })}
             options={[
               { value: '', label: 'Select category' },
-              ...categories.filter(c => !c.isArchived).map(c => ({
+              ...categories.filter(c => !c.isArchived || c.id === editItem?.categoryId).map(c => ({
                 value: c.id,
                 label: `${getCategoryMeta(c.name).emoji} ${c.name}`,
               })),

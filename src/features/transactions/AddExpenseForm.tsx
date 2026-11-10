@@ -241,8 +241,8 @@ export function AddExpenseForm({
   useEffect(() => {
     if (!user) return
     getPaymentAccounts(user.uid).then(setPaymentAccounts)
-    getTrips(user.uid).then(t => setTrips(t.filter(trip => !trip.isArchived)))
-  }, [user])
+    getTrips(user.uid).then(t => setTrips(t.filter(trip => !trip.isArchived || trip.id === editTransaction?.tripId)))
+  }, [user, editTransaction?.tripId])
 
   // Load past descriptions
   useEffect(() => {
@@ -789,7 +789,7 @@ export function AddExpenseForm({
             </label>
             <div className="flex flex-wrap gap-2">
               {paymentAccounts
-                .filter(acc => !acc.isArchived)
+                .filter(acc => !acc.isArchived || acc.id === editTransaction?.paymentAccountId)
                 .filter(acc => {
                   if (watchedPaymentMode === 'UPI') return acc.type === 'UPI'
                   if (watchedPaymentMode === 'Card') return acc.type === 'Card'

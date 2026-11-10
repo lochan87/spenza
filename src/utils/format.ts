@@ -64,3 +64,36 @@ export function getGreeting(): string {
   if (h < 21) return 'Good evening'
   return 'Good night'
 }
+
+/**
+ * Safely parse any date representation into a valid Date object.
+ * Handles:
+ * - Firestore Timestamp instances ({ toDate: () => Date })
+ * - Firestore timestamp POJOs ({ seconds: number, nanoseconds?: number })
+ * - JavaScript Date instances
+ * - ISO date strings, date-only strings, and millisecond timestamp numbers
+ * Returns null if the value is missing, null, undefined, or unparseable.
+ */
+export function parseTransactionDate(value: unknown): Date | null {
+  if (value == null) return null
+  try {
+    if (typeof value === 'object' && 'toDate' in value && typeof (value as any).toDate === 'function') {
+      const d = (value as any).toDate()
+      return d instanceof Date && Number.isFinite(d.getTime()) ? d : null
+    }
+    if (typeof value === 'object' && 'seconds' in value && typeof (value as any).seconds === 'number') {
+      const d = new Date((value as any).seconds * 1000)
+      return d instanceof Date && Number.isFinite(d.getTime()) ? d : null
+    }
+    if (value instanceof Date) {
+      return Number.isFinite(value.getTime()) ? value : null
+    }
+    if (typeof value === 'string' || typeof value === 'number') {
+      const d = new Date(value)
+      return d instanceof Date && Number.isFinite(d.getTime()) ? d : null
+    }
+    return null
+  } catch {
+    return null
+  }
+}

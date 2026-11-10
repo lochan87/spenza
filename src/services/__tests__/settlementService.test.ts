@@ -45,6 +45,7 @@ function loadPeopleService(options: {
   }).outputText
 
   const capturedCalls: any[] = []
+  const capturedEvents: any[] = []
 
   runInNewContext(compiled, {
     exports,
@@ -53,7 +54,18 @@ function loadPeopleService(options: {
     console,
     Date,
     Error,
-    window: { sessionStorage: null },
+    window: {
+      sessionStorage: null,
+      dispatchEvent: (e: any) => capturedEvents.push(e),
+    },
+    CustomEvent: class CustomEvent {
+      type: string
+      detail: any
+      constructor(type: string, init?: any) {
+        this.type = type
+        this.detail = init?.detail
+      }
+    },
     require: (name: string) => {
       if (name === 'firebase/firestore') {
         return {
@@ -133,6 +145,7 @@ function loadPeopleService(options: {
   return {
     service: exports,
     getCapturedCalls: () => capturedCalls,
+    getCapturedEvents: () => capturedEvents,
   }
 }
 
@@ -259,7 +272,7 @@ describe('Client settlement service & retry safety (Phase 7.2B)', () => {
   })
 
   it('multi-transaction failure and partial-progress reporting', async () => {
-    const { service } = loadPeopleService({
+    const { service, getCapturedEvents } = loadPeopleService({
       callableImpl: async () => ({
         settledCount: 1,
         totalSettledPaise: 3000,
@@ -284,6 +297,13 @@ describe('Client settlement service & retry safety (Phase 7.2B)', () => {
         return true
       }
     )
+
+    // Confirms partial mutation dispatched mutation event so UI refreshes outstanding balances
+    const events = getCapturedEvents()
+    assert.equal(events.length, 1)
+    assert.equal(events[0].type, 'spenza_financial_mutation')
+    assert.equal(events[0].detail.type, 'settlement_completed')
+    assert.equal(events[0].detail.entityId, 'person-bob')
   })
 
   it('partial failure clears pending key so immediate retry generates a fresh key', async () => {

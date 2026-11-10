@@ -1,5 +1,6 @@
 import { differenceInDays, eachDayOfInterval, format } from 'date-fns'
 import type { Category, Transaction, Trip } from '../types/index.ts'
+import { parseTransactionDate } from './format.ts'
 import {
   getNetSpendPaise,
   getRecoverablePaise,
@@ -135,13 +136,15 @@ export function calculateTripDayTotals(
   startDate: Date,
   endDate: Date
 ): TripDayTotal[] {
-  const toDate = (ts: any): Date => (ts?.toDate ? ts.toDate() : new Date(ts))
   const interval = eachDayOfInterval({ start: startDate, end: endDate })
 
   return interval.map((d, i) => {
     const dStr = format(d, 'yyyy-MM-dd')
     const dayTotal = transactions
-      .filter(tx => format(toDate(tx.date), 'yyyy-MM-dd') === dStr)
+      .filter(tx => {
+        const txDate = parseTransactionDate(tx.date)
+        return txDate ? format(txDate, 'yyyy-MM-dd') === dStr : false
+      })
       .reduce((s, t) => s + getNetSpendPaise(t), 0)
     return { label: `D${i + 1}`, dateStr: dStr, totalPaise: dayTotal }
   })
@@ -155,9 +158,8 @@ export function calculateTripAccountingSummary(
   transactions: Transaction[],
   categories: Category[]
 ): TripAccountingSummary {
-  const toDate = (ts: any): Date => (ts?.toDate ? ts.toDate() : new Date(ts))
-  const start = toDate(trip.startDate)
-  const end = trip.endDate ? toDate(trip.endDate) : new Date()
+  const start = parseTransactionDate(trip.startDate) ?? new Date()
+  const end = (trip.endDate ? parseTransactionDate(trip.endDate) : null) ?? new Date()
   const days = Math.max(1, differenceInDays(end, start) + 1)
 
   const totalNetSpendPaise = calculateTripNetSpend(transactions)

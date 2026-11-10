@@ -1,9 +1,8 @@
 import { Pencil } from 'lucide-react'
 import { format } from 'date-fns'
-import type { Timestamp } from 'firebase/firestore'
 import { getCategoryMeta } from '@/utils/categoryColors'
 import { getPaymentMeta } from '@/utils/paymentColors'
-import { formatINR } from '@/utils/format'
+import { formatINR, parseTransactionDate } from '@/utils/format'
 import { getNetSpendPaise, getRecoverablePaise } from '@/utils/splitMath'
 import type { Transaction, Category } from '@/types'
 
@@ -33,9 +32,8 @@ export function BiggestExpenses({ transactions, categories, onEdit }: BiggestExp
           const cat = categories.find(c => c.id === tx.categoryId)
           const catMeta = getCategoryMeta(cat?.name ?? 'Other')
           const payMeta = getPaymentMeta(tx.paymentMode)
-          const dateStr = (tx.date as Timestamp)?.toDate
-            ? format((tx.date as Timestamp).toDate(), 'd MMM')
-            : ''
+          const txDate = parseTransactionDate(tx.date)
+          const dateStr = txDate ? format(txDate, 'd MMM') : ''
           const netPaise = getNetSpendPaise(tx)
           const recPaise = getRecoverablePaise(tx)
 

@@ -9,7 +9,7 @@ import { ArrowLeft, Pencil, Calendar, Users, CheckCircle2, Archive, ArchiveResto
 import { useAuth } from '@/hooks/useAuth'
 import { getTrip, getTripTransactions, archiveTrip } from '@/services/trips'
 import { getCategories, getPaymentAccounts } from '@/services/transactions'
-import { formatINR, formatINRCompact } from '@/utils/format'
+import { formatINR, formatINRCompact, parseTransactionDate } from '@/utils/format'
 import { getCategoryMeta } from '@/utils/categoryColors'
 import { getPaymentMeta, getAccountTypeMeta } from '@/utils/paymentColors'
 import {
@@ -74,8 +74,8 @@ export function TripDetailPage() {
     )
   }
 
-  const startDate = (trip.startDate as Timestamp).toDate()
-  const endDate = trip.endDate ? (trip.endDate as Timestamp).toDate() : new Date()
+  const startDate = parseTransactionDate(trip.startDate) ?? new Date()
+  const endDate = (trip.endDate ? parseTransactionDate(trip.endDate) : null) ?? new Date()
 
   // ── Trip Accounting Summary ─────────────────────────────────────────────────
   const summary = calculateTripAccountingSummary(trip, txns, categories)
@@ -100,7 +100,10 @@ export function TripDetailPage() {
 
   // ── Per-day totals ────────────────────────────────────────────────────────────
   const uniqueTxnDays = new Set(
-    txns.map(tx => format((tx.date as Timestamp).toDate(), 'yyyy-MM-dd'))
+    txns.map(tx => {
+      const d = parseTransactionDate(tx.date)
+      return d ? format(d, 'yyyy-MM-dd') : null
+    }).filter((d): d is string => d !== null)
   ).size
   const dayTotals = calculateTripDayTotals(txns, startDate, endDate)
 
@@ -445,7 +448,10 @@ export function TripDetailPage() {
                     </p>
                     <div className="flex items-center gap-1.5">
                       <span className="text-[10px] text-[var(--text-subtle)]">
-                        {format((tx.date as Timestamp).toDate(), 'd MMM')}
+                        {(() => {
+                          const d = parseTransactionDate(tx.date)
+                          return d ? format(d, 'd MMM') : 'Undated'
+                        })()}
                       </span>
                       <span className="rounded-full px-1.5 py-0.5 text-[9px] font-semibold"
                         style={{ backgroundColor: payMeta.bgColor, color: payMeta.color }}>

@@ -1,5 +1,6 @@
 import { format } from 'date-fns'
 import type { Category, PaymentAccount, Transaction } from '../types/index.ts'
+import { parseTransactionDate } from './format.ts'
 import {
   getNetSpendPaise,
   getRecoverablePaise,
@@ -58,8 +59,7 @@ export function generateTransactionsCSV(
   ])
 
   const rows = txns.map(tx => {
-    const toDate = (ts: any): Date => (ts?.toDate ? ts.toDate() : new Date(ts))
-    const date = toDate(tx.date)
+    const date = parseTransactionDate(tx.date)
     const grossPaise = toNonNegativeIntPaise(tx.amountPaise)
     const netPaise = getNetSpendPaise(tx)
     const recoverablePaise = getRecoverablePaise(tx)
@@ -79,7 +79,7 @@ export function generateTransactionsCSV(
     }
 
     return csvRow([
-      format(date, 'yyyy-MM-dd'),
+      date ? format(date, 'yyyy-MM-dd') : '',
       tx.description,
       (grossPaise / 100).toFixed(2),
       (netPaise / 100).toFixed(2),

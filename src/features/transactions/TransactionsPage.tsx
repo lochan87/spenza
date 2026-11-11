@@ -1,3 +1,5 @@
+import { Notification } from '@/components/ui/Notification'
+import { useNotice } from '@/hooks/useNotice'
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { format, isToday, isYesterday } from 'date-fns'
@@ -1133,13 +1135,8 @@ export function TransactionsPage() {
   const [repaymentTarget, setRepaymentTarget] = useState<{ tx: Transaction; share: SplitShare } | null>(null)
   const [settleAllTarget, setSettleAllTarget] = useState<Transaction | null>(null)
   const [settlePersonTarget, setSettlePersonTarget] = useState<PersonDuesSummary | null>(null)
-  const [toast, setToast] = useState<string | null>(null)
+  const { notice, showNotice: showToast, dismiss } = useNotice()
   const [isFromCache, setIsFromCache] = useState(false)
-
-  const showToast = useCallback((msg: string) => {
-    setToast(msg)
-    setTimeout(() => setToast(null), 3500)
-  }, [])
 
   useEffect(() => {
     const filterParam = searchParams.get('filter') || searchParams.get('type')
@@ -1413,6 +1410,7 @@ export function TransactionsPage() {
 
   return (
     <div className="pb-20 md:pb-6">
+      <Notification notice={notice} onDismiss={dismiss} />
       {/* Header row */}
       <div className="mb-4 flex items-center justify-between gap-3">
         <div>
@@ -1839,13 +1837,6 @@ export function TransactionsPage() {
         />
       )}
 
-      {/* Toast Notification */}
-      {toast && (
-        <div className="fixed top-5 left-1/2 z-50 -translate-x-1/2 flex items-center gap-2 rounded-xl border border-[var(--success)] bg-[var(--success-muted)] px-4 py-2.5 text-sm font-medium text-[var(--success)] shadow-[var(--shadow-lg)]">
-          <Check className="h-4 w-4 shrink-0" />
-          <span>{toast}</span>
-        </div>
-      )}
     </div>
   )
 }

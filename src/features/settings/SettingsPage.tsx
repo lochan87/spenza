@@ -187,7 +187,7 @@ function InlineEditField({
 
 export function SettingsPage() {
   const { user } = useAuth()
-  const { isDark, setTheme } = useTheme()
+  const { theme, isDark, setTheme } = useTheme()
   const { hasPendingWrites, isOnline } = usePendingWrites(user?.uid)
   const [showSignOutWarning, setShowSignOutWarning] = useState(false)
 
@@ -1197,31 +1197,15 @@ export function SettingsPage() {
               Appearance
             </h2>
           </div>
-          <div className="grid grid-cols-2 gap-2">
-            <button
-              type="button"
-              onClick={() => setTheme('light')}
-              className={`flex items-center justify-center gap-2 rounded-xl border py-2.5 text-xs font-semibold transition-all ${
-                !isDark
+          <div className="grid grid-cols-3 gap-2">
+            {(['light', 'dark', 'system'] as const).map(value => (
+              <button key={value} type="button" onClick={() => setTheme(value)} aria-pressed={theme === value}
+                className={`rounded-xl border py-2.5 text-xs font-semibold capitalize transition-colors ${theme === value
                   ? 'border-[var(--primary)] bg-[var(--primary-muted)] text-[var(--primary)]'
-                  : 'border-[var(--border)] bg-[var(--surface-2)] text-[var(--text-muted)] hover:text-[var(--text-primary)]'
-              }`}
-            >
-              <Sun className="h-3.5 w-3.5" />
-              Sync Light
-            </button>
-            <button
-              type="button"
-              onClick={() => setTheme('dark')}
-              className={`flex items-center justify-center gap-2 rounded-xl border py-2.5 text-xs font-semibold transition-all ${
-                isDark
-                  ? 'border-[var(--primary)] bg-[var(--primary-muted)] text-[var(--primary)]'
-                  : 'border-[var(--border)] bg-[var(--surface-2)] text-[var(--text-muted)] hover:text-[var(--text-primary)]'
-              }`}
-            >
-              <Moon className="h-3.5 w-3.5" />
-              Sync Dark
-            </button>
+                  : 'border-[var(--border)] bg-[var(--surface-2)] text-[var(--text-muted)]'}`}>
+                {value}
+              </button>
+            ))}
           </div>
         </div>
 

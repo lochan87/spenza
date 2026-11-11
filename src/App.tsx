@@ -17,7 +17,6 @@ import { PeopleOnboardingModal } from '@/features/people/components/PeopleOnboar
 import { SettingsPage } from '@/features/settings/SettingsPage'
 import { RecurringDuePrompt } from '@/features/recurring/RecurringDuePrompt'
 import { useRecurringCheck } from '@/features/recurring/useRecurringCheck'
-import { OfflineBanner } from '@/components/layout/OfflineBanner'
 import { useEffect, useState } from 'react'
 import { runOnboardingSeeds, shouldPromptPeopleOnboarding } from '@/services/seed'
 import { getCategories } from '@/services/transactions'
@@ -108,8 +107,7 @@ function AppRoutes() {
         />
       )}
 
-      {/* Offline connectivity banner */}
-      <OfflineBanner />
+
     </>
   )
 }

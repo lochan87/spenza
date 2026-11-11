@@ -1,3 +1,5 @@
+import { Notification } from '@/components/ui/Notification'
+import { useNotice } from '@/hooks/useNotice'
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
@@ -276,12 +278,7 @@ export function PeoplePage() {
   const [editingPerson, setEditingPerson] = useState<Person | null>(null)
   const [settleTarget, setSettleTarget] = useState<PersonDuesSummary | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<MergedPersonItem | null>(null)
-  const [toast, setToast] = useState<string | null>(null)
-
-  const showToast = useCallback((msg: string) => {
-    setToast(msg)
-    setTimeout(() => setToast(null), 3500)
-  }, [])
+  const { notice, showNotice: showToast, dismiss } = useNotice()
 
   const loadAll = useCallback(async () => {
     if (!user) return
@@ -435,7 +432,7 @@ export function PeoplePage() {
   async function handleToggleArchive(p: MergedPersonItem) {
     if (!user) return
     if (p.isSynthetic) {
-      showToast(`Cannot archive unlinked participant`)
+      showToast(`Cannot archive unlinked participant`, 'error')
       return
     }
     const newArchived = !p.isArchived
@@ -446,7 +443,7 @@ export function PeoplePage() {
 
   function handleDeletePerson(p: MergedPersonItem) {
     if (p.isSynthetic) {
-      showToast('Cannot delete unlinked participant')
+      showToast('Cannot delete unlinked participant', 'error')
       return
     }
     setDeleteTarget(p)
@@ -483,6 +480,7 @@ export function PeoplePage() {
 
   return (
     <div className="mx-auto max-w-4xl space-y-6 pb-24 md:pb-12">
+      <Notification notice={notice} onDismiss={dismiss} />
       {/* Page Header */}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
@@ -908,13 +906,6 @@ export function PeoplePage() {
         />
       )}
 
-      {/* Toast */}
-      {toast && (
-        <div className="fixed top-5 left-1/2 z-50 -translate-x-1/2 flex items-center gap-2 rounded-xl border border-[var(--success)] bg-[var(--success-muted)] px-4 py-2.5 text-sm font-medium text-[var(--success)] shadow-[var(--shadow-lg)]">
-          <Check className="h-4 w-4 shrink-0" />
-          <span>{toast}</span>
-        </div>
-      )}
     </div>
   )
 }

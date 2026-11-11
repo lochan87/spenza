@@ -29,6 +29,7 @@ import type {
 
 export * from '@/utils/insightsMath'
 
+const dirtyCaches = new Set<string>()
 const summaryRef = (uid: string) => doc(db, 'users', uid, 'insights', 'summary')
 
 /**
@@ -44,6 +45,7 @@ const summaryRef = (uid: string) => doc(db, 'users', uid, 'insights', 'summary')
  */
 
 export async function getCachedInsights(uid: string): Promise<InsightsSummary | null> {
+  if (dirtyCaches.has(uid)) return null
   const snap = await getDoc(summaryRef(uid))
   if (!snap.exists()) return null
   return snap.data() as InsightsSummary
@@ -51,18 +53,25 @@ export async function getCachedInsights(uid: string): Promise<InsightsSummary | 
 
 /** Delete the cached insights summary document (called on edits/bulk clear/import). Returns true on success. */
 export async function invalidateInsightsCache(uid: string): Promise<boolean> {
+  dirtyCaches.add(uid)
+  let timer: ReturnType<typeof setTimeout> | undefined
   try {
-    const p = deleteDoc(summaryRef(uid))
-    if (typeof navigator !== 'undefined' && !navigator.onLine) {
-      p.catch(() => {})
+    const acknowledgment = deleteDoc(summaryRef(uid)).then(() => {
+      dirtyCaches.delete(uid)
       return true
-    }
-    await Promise.race([p, new Promise(resolve => setTimeout(resolve, 300))])
-    return true
+    }, err => {
+      console.error('[Spenza Insights] Failed to invalidate insights cache:', err)
+      return false
+    })
+    // Cache maintenance must not block a confirmed financial write indefinitely.
+    // Pending/failed invalidation is never reported as successful.
+    return await Promise.race([acknowledgment, new Promise<false>(resolve => {
+      timer = setTimeout(() => resolve(false), 300)
+    })])
   } catch (err) {
     console.error('[Spenza Insights] Failed to invalidate insights cache:', err)
     return false
-  }
+  } finally { clearTimeout(timer) }
 }
 
 /** Get the current number of transactions in Firestore (fast count aggregation with offline fallback) */
@@ -99,7 +108,11 @@ export async function getCurrentMonthSpendTotal(uid: string, now: Date = new Dat
 
 /** True if the cached summary is fresh (computed within last 7 days and in the same calendar month) */
 export function isCacheFresh(summary: InsightsSummary, now: Date = new Date()): boolean {
-  const computed = summary.computedAt.toDate()
+  // Older summaries persisted a plain seconds/nanoseconds map, not a Timestamp.
+  const value = summary.computedAt
+  const computed = getInsightsDate(value) ?? (value && Number.isFinite(value.seconds)
+    ? new Date(value.seconds * 1000) : null)
+  if (!computed || !Number.isFinite(computed.getTime())) return false
   const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
   const currentMonthKey = format(now, 'yyyy-MM')
   if (summary.computedMonthKey && summary.computedMonthKey !== currentMonthKey) {
@@ -135,6 +148,9 @@ export async function computeAndCacheInsights(
   // No orderBy: Firestore excludes documents missing the ordered field. Keep
   // those records for count validation and date-independent all-time metrics.
   const snap = await getDocs(collection(db, 'users', uid, 'transactions'))
+  if (snap.metadata?.fromCache || snap.metadata?.hasPendingWrites) {
+    throw new Error('Insights require synchronized server data. Reconnect and wait for pending changes to sync, then retry.')
+  }
   const allTxns = snap.docs.map(d => ({ id: d.id, ...d.data() }) as Transaction)
   // Preserve chronological tie-breaking from the former ordered query, with
   // undated records last rather than omitted.
@@ -156,6 +172,14 @@ export async function computeAndCacheInsights(
     return null
   }
 
-  await setDoc(summaryRef(uid), summary)
+  summary.computedAt = Timestamp.fromDate(now)
+  // The summary is derived data: a slow cache write must not hide valid analytics.
+  // Do not enqueue a cache write while known offline.
+  if (typeof navigator === 'undefined' || navigator.onLine) {
+    void setDoc(summaryRef(uid), summary).catch(err => {
+      console.warn('[Spenza Insights] Summary displayed but cache persistence failed:', err)
+      dirtyCaches.add(uid)
+    })
+  }
   return summary
 }

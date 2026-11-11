@@ -1,71 +1,45 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useSyncExternalStore } from 'react'
 
-type Theme = 'light' | 'dark'
-
+type Theme = 'light' | 'dark' | 'system'
 const STORAGE_KEY = 'spenza-theme'
-
-function getSystemTheme(): Theme {
-  if (typeof window === 'undefined') return 'light'
-  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+const listeners = new Set<() => void>()
+const media = typeof window === 'undefined' ? null : window.matchMedia('(prefers-color-scheme: dark)')
+function readPreference(): Theme {
+  try {
+    const value = localStorage.getItem(STORAGE_KEY)
+    return value === 'light' || value === 'dark' ? value : 'system'
+  } catch { return 'system' }
 }
-
-function applyTheme(theme: Theme) {
-  const root = document.documentElement
-  if (theme === 'dark') {
-    root.classList.add('dark')
-  } else {
-    root.classList.remove('dark')
+let theme = readPreference()
+let resolved = theme === 'system' ? (media?.matches ? 'dark' : 'light') : theme
+function publish() {
+  resolved = theme === 'system' ? (media?.matches ? 'dark' : 'light') : theme
+  if (typeof document !== 'undefined') {
+    document.documentElement.classList.toggle('dark', resolved === 'dark')
+    document.documentElement.setAttribute('data-theme', resolved)
   }
-  root.setAttribute('data-theme', theme)
+  listeners.forEach(listener => listener())
 }
-
-/**
- * useTheme — Spenza theme hook
- *
- * - Defaults to system preference on first load
- * - Persists choice in localStorage under 'spenza-theme'
- * - Applies .dark class to <html> element
- *
- * @example
- * const { theme, isDark, toggleTheme } = useTheme()
- */
-export function useTheme() {
-  const [theme, setTheme] = useState<Theme>(() => {
-    if (typeof window === 'undefined') return 'light'
-    const stored = localStorage.getItem(STORAGE_KEY) as Theme | null
-    return stored ?? getSystemTheme()
+function setTheme(value: Theme) {
+  theme = value
+  try { localStorage.setItem(STORAGE_KEY, value) } catch { /* Keep the current session usable. */ }
+  publish()
+}
+const subscribe = (listener: () => void) => {
+  listeners.add(listener)
+  return () => { listeners.delete(listener) }
+}
+if (typeof window !== 'undefined') {
+  media?.addEventListener('change', publish)
+  window.addEventListener('storage', event => {
+    if (event.key === STORAGE_KEY || event.key === null) { theme = readPreference(); publish() }
   })
+  publish()
+}
 
-  useEffect(() => {
-    applyTheme(theme)
-    localStorage.setItem(STORAGE_KEY, theme)
-  }, [theme])
-
-  // Listen for system preference changes (only if user hasn't set a preference)
-  useEffect(() => {
-    const mq = window.matchMedia('(prefers-color-scheme: dark)')
-    const handler = (e: MediaQueryListEvent) => {
-      if (!localStorage.getItem(STORAGE_KEY)) {
-        setTheme(e.matches ? 'dark' : 'light')
-      }
-    }
-    mq.addEventListener('change', handler)
-    return () => mq.removeEventListener('change', handler)
-  }, [])
-
-  const toggleTheme = useCallback(() => {
-    setTheme(prev => (prev === 'dark' ? 'light' : 'dark'))
-  }, [])
-
-  const setThemeExplicit = useCallback((t: Theme) => {
-    setTheme(t)
-  }, [])
-
-  return {
-    theme,
-    isDark: theme === 'dark',
-    isLight: theme === 'light',
-    toggleTheme,
-    setTheme: setThemeExplicit,
-  }
+/** One shared preference and resolved appearance for every theme control. */
+export function useTheme() {
+  useSyncExternalStore(subscribe, () => `${theme}:${resolved}`, () => 'system:light')
+  return { theme, isDark: resolved === 'dark', isLight: resolved === 'light', setTheme,
+    toggleTheme: () => setTheme(resolved === 'dark' ? 'light' : 'dark') }
 }

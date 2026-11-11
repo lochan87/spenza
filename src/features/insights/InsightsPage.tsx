@@ -321,7 +321,7 @@ export function InsightsPage() {
     setLoading(true)
     try {
       const budgetPromise = getCurrentBudget(user.uid).catch(() => null)
-      const currentMonthSpendPromise = getCurrentMonthSpendTotal(user.uid, now).catch(() => 0)
+      const currentMonthSpendPromise = getCurrentMonthSpendTotal(user.uid, now)
 
       if (!forceRefresh) {
         const [cached, liveCount, budgetDoc, monthSpendPaise] = await Promise.all([
@@ -379,6 +379,8 @@ export function InsightsPage() {
       console.error('[Spenza] Insights error:', err)
       if (err?.code === 'permission-denied') {
         setError('Permission denied — check Firestore rules for the insights collection.')
+      } else if (!navigator.onLine || err?.code === 'unavailable' || err?.message?.includes('synchronized server data')) {
+        setError('Insights are unavailable offline or while changes are syncing. Reconnect, wait for sync, then retry.')
       } else {
         setError('Failed to load insights. Please try again.')
       }

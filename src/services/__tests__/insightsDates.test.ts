@@ -17,7 +17,7 @@ const records = [
   { amountPaise: 30001 },
 ].map((row, i) => ({ id: String(i), type: 'trip', categoryId: 'food', description: 'Meal', paymentMode: 'Cash', ...row }))
 
-function harness(ignoreQuery = false) {
+function harness(ignoreQuery = false, cacheWrite: () => Promise<void> = async () => {}, metadata = { fromCache: false, hasPendingWrites: false }) {
   type Constraint = { field: string; op: string; value: Date }
   type Ref = { path: string[]; constraints: Constraint[] }
   let reads = 0
@@ -42,11 +42,13 @@ function harness(ignoreQuery = false) {
       }
       const selected = ignoreQuery ? records : records.filter(row => ref.constraints.every(c =>
         row.date && (c.op === '>=' ? row.date >= c.value : row.date <= c.value)))
-      return { docs: selected.map(({ id, ...data }) => ({ id, data: () => data })) }
+      return { metadata, docs: selected.map(({ id, ...data }) => ({ id, data: () => data })) }
     },
-    setDoc: async (_ref: unknown, summary: InsightsSummary) => { saved = summary },
+    setDoc: async (_ref: unknown, summary: InsightsSummary) => { await cacheWrite(); saved = summary },
+    deleteDoc: cacheWrite,
   }
   const exports = {} as {
+    invalidateInsightsCache: (uid: string) => Promise<boolean>
     getCurrentMonthSpendTotal: (uid: string, now: Date) => Promise<number>
     computeAndCacheInsights: (uid: string, now: Date) => Promise<InsightsSummary>
     isCacheStaleAgainstCount: (summary: InsightsSummary, count: number) => boolean
@@ -56,7 +58,7 @@ function harness(ignoreQuery = false) {
   const compiled = ts.transpileModule(source, {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2023 },
   }).outputText
-  runInNewContext(compiled, { exports, Date, console, require: (name: string) => {
+  runInNewContext(compiled, { exports, Date, console, setTimeout, clearTimeout, require: (name: string) => {
     if (name === 'firebase/firestore') return firestore
     if (name === 'date-fns') return dateFns
     if (name === '@/firebase/config') return { db: {} }
@@ -95,4 +97,28 @@ it('replaces old future-inclusive caches, preserves count/TTL/month checks and c
   assert.equal(h.service.isCacheFresh(cached, now), true)
   assert.equal(h.service.isCacheFresh(cached, new Date(2026, 10, 23, 12)), false)
   assert.equal(h.service.isCacheFresh(cached, new Date(2026, 11, 1)), false)
+})
+
+it('accepts legacy cache timestamp maps and treats malformed timestamps as stale', () => {
+  const h = harness()
+  const summary = { computedAt: { seconds: now.getTime() / 1000, nanoseconds: 0 } } as InsightsSummary
+  assert.equal(h.service.isCacheFresh(summary, now), true)
+  assert.equal(h.service.isCacheFresh({ ...summary, computedAt: null } as unknown as InsightsSummary, now), false)
+})
+it('does not block first computation on a stalled cache write or disguise invalidation as acknowledged', async () => {
+  const h = harness(false, () => new Promise(() => {}))
+  assert.ok(await h.service.computeAndCacheInsights('owner', now))
+  assert.equal(await h.service.invalidateInsightsCache('owner'), false)
+})
+it('returns derived analytics when optional cache persistence is denied, but reports failed invalidation', async () => {
+  const h = harness(false, async () => { throw new Error('permission-denied') })
+  assert.ok(await h.service.computeAndCacheInsights('owner', now))
+  assert.equal(await h.service.invalidateInsightsCache('owner'), false)
+})
+it('never persists a summary computed from cached or pending transaction snapshots', async () => {
+  for (const metadata of [{ fromCache: true, hasPendingWrites: false }, { fromCache: false, hasPendingWrites: true }]) {
+    const h = harness(false, async () => {}, metadata)
+    await assert.rejects(h.service.computeAndCacheInsights('owner', now), /synchronized server data/)
+    assert.equal(h.saved(), undefined)
+  }
 })

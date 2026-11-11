@@ -1,5 +1,7 @@
+import { Notification } from '@/components/ui/Notification'
+import { useNotice } from '@/hooks/useNotice'
 import { useState, useCallback } from 'react'
-import { AlertCircle, RefreshCw, Receipt } from 'lucide-react'
+import { AlertCircle, RefreshCw, Receipt, Plus } from 'lucide-react'
 import { useDashboardData } from './useDashboardData'
 import { DashboardSkeleton } from './components/SkeletonCard'
 import { SummaryHeader } from './components/SummaryHeader'
@@ -21,11 +23,12 @@ import type { Transaction } from '@/types'
  * Dashboard — the first screen users see.
  * Answers "where is my money actually going?" at a glance.
  *
- * Data: single Firestore query covering 6 months, all 8 sections derived client-side.
+ * Data: single Firestore query covering full owner history, all 8 sections derived client-side.
  * Loading: per-section skeletons (not one full-page spinner).
  */
 export function DashboardPage() {
   const { data, categories, loading, error, refetch, isStale, isFromCache, isOnline } = useDashboardData()
+  const { notice, showNotice, dismiss } = useNotice()
   const [editTx, setEditTx] = useState<Transaction | null>(null)
   const [formOpen, setFormOpen] = useState(false)
 
@@ -39,11 +42,12 @@ export function DashboardPage() {
     setEditTx(null)
   }, [])
 
-  const handleFormSuccess = useCallback(() => {
+  const handleFormSuccess = useCallback((status?: 'confirmed' | 'pending') => {
+    showNotice(status === 'pending' ? 'Expense pending sync — not yet confirmed saved. Do not enter it again.' : 'Expense saved ✓', status === 'pending' ? 'warning' : 'success')
     setFormOpen(false)
     setEditTx(null)
     refetch()
-  }, [refetch])
+  }, [refetch, showNotice])
 
   if (loading) return <DashboardSkeleton />
 
@@ -70,6 +74,11 @@ export function DashboardPage() {
 
   return (
     <div className="flex flex-col gap-5">
+      <Notification notice={notice} onDismiss={dismiss} />
+      <button id="overview-add-btn" type="button" onClick={() => { setEditTx(null); setFormOpen(true) }}
+        className="flex items-center justify-center gap-2 self-start rounded-xl bg-[var(--primary)] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[var(--primary-hover)]">
+        <Plus className="h-4 w-4" /> Add Transaction
+      </button>
       {/* Section 1 — Summary Header */}
       <SummaryHeader
         data={data}
@@ -85,7 +94,7 @@ export function DashboardPage() {
           <div>
             <p className="font-semibold text-[var(--text-primary)]">No expenses yet this month</p>
             <p className="mt-1 text-sm text-[var(--text-muted)]">
-              Head to Transactions → Add Expense to log your first one, or use Import to bring in historical data.
+              Use Add Transaction above to log an expense, or Import to bring in historical data.
             </p>
           </div>
         </div>

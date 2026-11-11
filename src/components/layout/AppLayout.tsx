@@ -1,6 +1,9 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
+import { OfflineBanner } from './OfflineBanner'
+import { Notification } from '@/components/ui/Notification'
+import { useNotice } from '@/hooks/useNotice'
 import { useTheme } from '@/hooks/useTheme'
 import { usePendingWrites } from '@/hooks/usePendingWrites'
 import { signOut } from '@/firebase/auth'
@@ -77,6 +80,15 @@ export function AppLayout({ children }: AppLayoutProps) {
   const { hasPendingWrites, isOnline } = usePendingWrites(user?.uid)
   const [showSignOutWarning, setShowSignOutWarning] = useState(false)
   const location = useLocation()
+  const { notice, showNotice, dismiss } = useNotice()
+  useEffect(() => {
+    const rejected = (event: Event) => {
+      const detail = (event as CustomEvent).detail
+      if (detail?.uid === user?.uid) showNotice(detail.message, 'error')
+    }
+    window.addEventListener('spenza_write_rejected', rejected)
+    return () => window.removeEventListener('spenza_write_rejected', rejected)
+  }, [user?.uid, showNotice])
 
   const handleSignOutClick = () => {
     if (!isOnline || hasPendingWrites) {
@@ -233,7 +245,7 @@ export function AppLayout({ children }: AppLayoutProps) {
               aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
               className="flex h-7 w-7 items-center justify-center rounded-full text-[var(--text-muted)] transition-all hover:bg-[var(--surface)] hover:text-[var(--text-primary)] cursor-pointer"
             >
-              {isDark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+              {isDark ? <Moon aria-hidden="true" className="h-4 w-4" /> : <Sun aria-hidden="true" className="h-4 w-4" />}
             </button>
 
             {/* User Avatar — Google photo with no-referrer + graceful initials fallback */}
@@ -272,6 +284,11 @@ export function AppLayout({ children }: AppLayoutProps) {
           </div>
         </div>
       </header>
+
+      <div className="mx-auto flex w-full max-w-5xl flex-col gap-2 px-4 empty:hidden sm:px-6">
+        <OfflineBanner />
+        <Notification notice={notice} onDismiss={dismiss} />
+      </div>
 
       {/* Main content — pb-24 clears the fixed mobile bottom nav on small screens */}
       <main className="mx-auto w-full max-w-5xl flex-1 px-4 py-6 pb-24 sm:px-6 md:pb-8">

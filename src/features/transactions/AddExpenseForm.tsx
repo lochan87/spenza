@@ -1,3 +1,5 @@
+import { Notification } from '@/components/ui/Notification'
+import { useNotice } from '@/hooks/useNotice'
 import { Fragment, useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import { useForm, Controller } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
@@ -36,7 +38,7 @@ type FormSchema = z.infer<typeof TransactionSchema>
 
 interface AddExpenseFormProps {
   categories: Category[]
-  onSuccess: () => void
+  onSuccess: (status?: 'confirmed' | 'pending') => void
   onClose: () => void
   editTransaction?: Transaction | null
 }
@@ -83,7 +85,16 @@ export function AddExpenseForm({
   const [addingAccount, setAddingAccount] = useState(false)
   const [newAccountName, setNewAccountName] = useState('')
   const [newAccountType, setNewAccountType] = useState<'Bank' | 'UPI' | 'Card' | 'Wallet'>('Bank')
-  const [toast, setToast] = useState<string | null>(null)
+  const { notice, showNotice: showSuccessToast, dismiss } = useNotice()
+  useEffect(() => {
+    const rejected = (event: Event) => {
+      const detail = (event as CustomEvent).detail
+      if (detail?.uid === user?.uid) showSuccessToast(detail.message, 'error')
+    }
+    window.addEventListener('spenza_write_rejected', rejected)
+    return () => window.removeEventListener('spenza_write_rejected', rejected)
+  }, [user?.uid, showSuccessToast])
+  const submissionInFlight = useRef(false)
   const [trips, setTrips] = useState<Trip[]>([])
 
   // ─── People & Split States ──────────────────────────────────────────────────
@@ -418,14 +429,9 @@ export function AddExpenseForm({
     return availablePeople.filter(p => p.name.toLowerCase().includes(q))
   }, [availablePeople, personSearch])
 
-  const showSuccessToast = useCallback((msg: string) => {
-    setToast(msg)
-    setTimeout(() => setToast(null), 3000)
-  }, [])
-
   // ─── Submission ─────────────────────────────────────────────────────────────
   const onSubmit = async (data: Record<string, any>) => {
-    if (!user) return
+    if (!user || submissionInFlight.current) return
 
     if (!repaymentSafety.canSave) {
       return
@@ -435,6 +441,7 @@ export function AddExpenseForm({
       return
     }
 
+    submissionInFlight.current = true
     setSubmitting(true)
     setSubmitError(null)
     try {
@@ -467,14 +474,16 @@ export function AddExpenseForm({
           formSplitResult.splits.length === 1 ? formSplitResult.splits[0].personId : null
       }
 
+      let status: 'confirmed' | 'pending' = 'confirmed'
       if (isEditing && editTransaction) {
         await updateTransaction(user.uid, editTransaction.id, payload, editTransaction)
         showSuccessToast('Expense updated ✓')
       } else {
-        await addTransaction(user.uid, payload as any)
-        showSuccessToast('Expense added ✓')
+        const result = await addTransaction(user.uid, payload as any)
+        status = result.status
+        showSuccessToast(result.status === 'confirmed' ? 'Expense added ✓' : 'Expense pending sync — not yet confirmed saved. Do not enter it again.', result.status === 'confirmed' ? 'success' : 'warning')
       }
-      onSuccess()
+      onSuccess(status)
       if (!isEditing) {
         reset({
           amountPaise: 0,
@@ -503,19 +512,14 @@ export function AddExpenseForm({
       console.error('[Spenza] Submit error:', err)
       setSubmitError(isEditing ? expenseEditErrorMessage(err) : 'Could not save this expense. Please try again.')
     } finally {
+      submissionInFlight.current = false
       setSubmitting(false)
     }
   }
 
   return (
     <div className="flex h-full flex-col">
-      {/* Toast */}
-      {toast && (
-        <div className="absolute top-4 left-1/2 z-50 -translate-x-1/2 flex items-center gap-2 rounded-xl border border-[var(--success)] bg-[var(--success-muted)] px-4 py-2 text-sm font-medium text-[var(--success)] shadow-[var(--shadow-md)]">
-          <Check className="h-4 w-4" /> {toast}
-        </div>
-      )}
-
+      <Notification notice={notice} onDismiss={dismiss} />
       {/* Header */}
       <div className="flex items-center justify-between border-b border-[var(--border)] px-5 py-4">
         <h2 className="text-base font-semibold text-[var(--text-primary)]">

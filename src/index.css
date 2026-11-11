@@ -272,3 +272,8 @@
     color: #FCD34D;
   }
 }
+
+@keyframes notice-enter {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}

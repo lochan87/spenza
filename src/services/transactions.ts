@@ -40,7 +40,7 @@ const PAGE_SIZE = 30
 export async function addTransaction(
   uid: string,
   data: Omit<Transaction, 'id' | 'createdAt' | 'updatedAt'>
-): Promise<string> {
+): Promise<{ id: string; status: 'confirmed' | 'pending' }> {
   const ref = doc(collection(db, 'users', uid, 'transactions'))
   const writePromise = setDoc(ref, {
     ...data,
@@ -49,26 +49,33 @@ export async function addTransaction(
     updatedAt: serverTimestamp(),
   })
 
-  // In Firestore persistentLocalCache, setDoc queues locally in IndexedDB immediately,
-  // but its promise resolves only once the server acknowledges the write.
-  // When offline, we do not block local UI completion while awaiting reconnection.
-  if (typeof navigator !== 'undefined' && !navigator.onLine) {
-    writePromise.catch(err => {
-      console.warn('[Spenza Transactions] Offline write queued in cache:', err)
-    })
-  } else {
-    await Promise.race([
-      writePromise,
-      new Promise(resolve => setTimeout(resolve, 500)),
+  // A UI deadline is not server acknowledgment. Retain the write promise so
+  // late permission failures are surfaced even after the form has closed.
+  let returnedPending = false
+  const acknowledgment = writePromise.then(async () => {
+    await invalidateInsightsCache(uid)
+    if (returnedPending) notifyFinancialChange('transaction_updated', uid, ref.id)
+    return 'confirmed' as const
+  }, error => {
+    if (returnedPending && typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('spenza_write_rejected', { detail: {
+        uid, message: `The expense “${data.description}” was rejected by the server and was not saved. Review your transactions before entering it again.`,
+      } }))
+      notifyFinancialChange('transaction_updated', uid, ref.id)
+    }
+    throw error
+  })
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    const status = await Promise.race([
+      acknowledgment,
+      new Promise<'pending'>(resolve => { timer = setTimeout(() => resolve('pending'), 500) }),
     ])
-  }
-
-  const cacheOk = await invalidateInsightsCache(uid)
-  if (!cacheOk) {
-    console.warn('[Spenza Transactions] Added transaction, but failed to invalidate insights cache.')
-  }
-  notifyFinancialChange('transaction_created', uid, ref.id)
-  return ref.id
+    returnedPending = status === 'pending'
+    // Promise.race keeps a rejection handler attached to the ongoing write.
+    notifyFinancialChange('transaction_created', uid, ref.id)
+    return { id: ref.id, status }
+  } finally { clearTimeout(timer) }
 }
 
 export async function updateTransaction(

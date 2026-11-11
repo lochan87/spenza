@@ -45,7 +45,7 @@ test.describe('Offline Data Safety & Recovery (Phase 10.1)', () => {
     await page.locator('button[title="Health & Medical"]').first().click()
     await page.locator('#submit-expense-btn').click()
 
-    await expect(page.locator('text=Expense added ✓')).toBeVisible()
+    await expect(page.locator('text=Expense pending sync — not yet confirmed saved. Do not enter it again.')).toBeVisible()
     await page.locator('button[aria-label="Close expense form"]').click()
 
     // 6. Verify expense appears locally in the list immediately with offline indicator

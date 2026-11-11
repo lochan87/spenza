@@ -3,6 +3,7 @@ import { getAuth, connectAuthEmulator } from 'firebase/auth'
 import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, connectFirestoreEmulator } from 'firebase/firestore'
 import { getStorage, connectStorageEmulator } from 'firebase/storage'
 import { getFunctions, connectFunctionsEmulator } from 'firebase/functions'
+import { assertBuildEnv } from '@/utils/envValidation'
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -13,24 +14,11 @@ const firebaseConfig = {
   appId: import.meta.env.VITE_FIREBASE_APP_ID,
 }
 
-// Validate that all required env vars are set
-const requiredVars = [
-  'VITE_FIREBASE_API_KEY',
-  'VITE_FIREBASE_AUTH_DOMAIN',
-  'VITE_FIREBASE_PROJECT_ID',
-  'VITE_FIREBASE_STORAGE_BUCKET',
-  'VITE_FIREBASE_MESSAGING_SENDER_ID',
-  'VITE_FIREBASE_APP_ID',
-] as const
-
-for (const varName of requiredVars) {
-  if (!import.meta.env[varName]) {
-    throw new Error(
-      `Missing required environment variable: ${varName}\n` +
-      `Copy .env.example to .env.local and fill in your Firebase project credentials.`
-    )
-  }
-}
+// Validate environment configuration for current mode (fail-closed)
+assertBuildEnv(
+  import.meta.env.MODE || 'production',
+  import.meta.env as unknown as Record<string, string | undefined>
+)
 
 export const app = initializeApp(firebaseConfig)
 export const auth = getAuth(app)

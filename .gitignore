@@ -1,6 +1,15 @@
-# Firebase secrets — never commit
+# Firebase secrets & environment files — never commit
 .env.local
 .env.*.local
+.env.staging
+.env.staging.local
+.env.production
+.env.production.local
+
+# Explicitly track template and test environment configs
+!.env.example
+!.env.staging.example
+!.env.test
 
 # Spurious @ dir created by shadcn CLI (use src/components/ui instead)
 /@/

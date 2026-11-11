@@ -2,7 +2,9 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 import { useTheme } from '@/hooks/useTheme'
+import { usePendingWrites } from '@/hooks/usePendingWrites'
 import { signOut } from '@/firebase/auth'
+import { SignOutWarningModal } from './SignOutWarningModal'
 import {
   Sun,
   Moon,
@@ -72,7 +74,17 @@ function isRouteActive(pathname: string, item: NavItem): boolean {
 export function AppLayout({ children }: AppLayoutProps) {
   const { user } = useAuth()
   const { isDark, toggleTheme } = useTheme()
+  const { hasPendingWrites, isOnline } = usePendingWrites(user?.uid)
+  const [showSignOutWarning, setShowSignOutWarning] = useState(false)
   const location = useLocation()
+
+  const handleSignOutClick = () => {
+    if (!isOnline || hasPendingWrites) {
+      setShowSignOutWarning(true)
+    } else {
+      signOut()
+    }
+  }
 
   // Track profile photo load failure so we gracefully fall back to initials
   const [imgError, setImgError] = useState(false)
@@ -250,7 +262,7 @@ export function AppLayout({ children }: AppLayoutProps) {
             <button
               id="sign-out-btn"
               type="button"
-              onClick={signOut}
+              onClick={handleSignOutClick}
               title="Sign out"
               aria-label="Sign out"
               className="flex h-7 w-7 items-center justify-center rounded-full text-[var(--text-muted)] transition-all hover:bg-[var(--danger-muted)] hover:text-[var(--danger)] cursor-pointer"
@@ -374,6 +386,18 @@ export function AppLayout({ children }: AppLayoutProps) {
           </DropdownMenuContent>
         </DropdownMenu>
       </nav>
+
+      {/* Warning modal when signing out offline or with pending writes */}
+      <SignOutWarningModal
+        isOpen={showSignOutWarning}
+        hasPendingWrites={hasPendingWrites}
+        isOnline={isOnline}
+        onClose={() => setShowSignOutWarning(false)}
+        onConfirmSignOut={() => {
+          setShowSignOutWarning(false)
+          signOut()
+        }}
+      />
     </div>
   )
 }

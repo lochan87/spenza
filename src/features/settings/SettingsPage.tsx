@@ -27,7 +27,9 @@ import {
 import { useAuth } from '@/hooks/useAuth'
 import { ExpenseDeletionError } from '@/utils/expenseDeletion'
 import { useTheme } from '@/hooks/useTheme'
+import { usePendingWrites } from '@/hooks/usePendingWrites'
 import { signOut } from '@/firebase/auth'
+import { SignOutWarningModal } from '@/components/layout/SignOutWarningModal'
 import {
   getCategories,
   getPaymentAccounts,
@@ -186,6 +188,16 @@ function InlineEditField({
 export function SettingsPage() {
   const { user } = useAuth()
   const { isDark, setTheme } = useTheme()
+  const { hasPendingWrites, isOnline } = usePendingWrites(user?.uid)
+  const [showSignOutWarning, setShowSignOutWarning] = useState(false)
+
+  const handleSignOutClick = () => {
+    if (!isOnline || hasPendingWrites) {
+      setShowSignOutWarning(true)
+    } else {
+      signOut()
+    }
+  }
 
   // Profile avatar fallback
   const [imgError, setImgError] = useState(false)
@@ -328,6 +340,13 @@ export function SettingsPage() {
 
   const handleResetInsightsCache = async () => {
     if (!user || maintenanceInFlight.current) return
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      setStatusBanner({
+        type: 'error',
+        message: 'You are offline. Resetting the Insights cache requires an internet connection.',
+      })
+      return
+    }
     maintenanceInFlight.current = true
     setResettingCache(true)
     setStatusBanner(null)
@@ -358,6 +377,13 @@ export function SettingsPage() {
 
   const handleClearImported = async () => {
     if (!user || !ackClearImports || maintenanceInFlight.current) return
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      setStatusBanner({
+        type: 'error',
+        message: 'You are offline. Clearing transactions requires an active connection to verify records and invalidate the cache safely.',
+      })
+      return
+    }
     maintenanceInFlight.current = true
     setClearingImports(true)
     setStatusBanner(null)
@@ -395,6 +421,13 @@ export function SettingsPage() {
 
   const handleClearAll = async () => {
     if (!user || !ackClearAll || maintenanceInFlight.current) return
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      setStatusBanner({
+        type: 'error',
+        message: 'You are offline. Clearing transactions requires an active connection to verify records and invalidate the cache safely.',
+      })
+      return
+    }
     maintenanceInFlight.current = true
     setClearingAll(true)
     setStatusBanner(null)
@@ -1225,7 +1258,8 @@ export function SettingsPage() {
             </div>
             <button
               type="button"
-              onClick={signOut}
+              id="settings-sign-out-btn"
+              onClick={handleSignOutClick}
               className="flex shrink-0 items-center gap-1.5 rounded-xl border border-[var(--border)] px-3 py-2 text-xs font-medium text-[var(--text-muted)] transition-colors hover:border-[var(--danger)] hover:bg-[var(--danger-muted)] hover:text-[var(--danger)]"
             >
               <LogOut className="h-3.5 w-3.5" />
@@ -1250,6 +1284,17 @@ export function SettingsPage() {
           }}
         />
       )}
+      {/* Warning modal when signing out offline or with pending writes */}
+      <SignOutWarningModal
+        isOpen={showSignOutWarning}
+        hasPendingWrites={hasPendingWrites}
+        isOnline={isOnline}
+        onClose={() => setShowSignOutWarning(false)}
+        onConfirmSignOut={() => {
+          setShowSignOutWarning(false)
+          signOut()
+        }}
+      />
       </fieldset>
     </div>
   )

@@ -13,7 +13,7 @@
       "**/node_modules/**"
     ],
     "predeploy": [
-      "npm run build"
+      "node scripts/guardDeploy.mjs hosting"
     ],
     "rewrites": [
       {

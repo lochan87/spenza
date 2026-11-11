@@ -8,6 +8,11 @@
     "build": "tsc -b && vite build",
     "build:staging": "tsc -b && vite build --mode staging",
     "build:prod": "tsc -b && vite build --mode production",
+    "check:release": "node scripts/releaseCheck.mjs prod",
+    "check:release:prod": "node scripts/releaseCheck.mjs prod",
+    "check:release:staging": "node scripts/releaseCheck.mjs staging",
+    "deploy:prep:prod": "node scripts/deployPrep.mjs prod",
+    "deploy:prep:staging": "node scripts/deployPrep.mjs staging",
     "lint": "oxlint",
     "preview": "vite preview",
     "test:e2e": "playwright test"

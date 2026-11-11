@@ -1,9 +1,21 @@
 {
   "emulators": { "auth": { "port": 9099 }, "firestore": { "port": 8080 }, "functions": { "port": 5001 }, "singleProjectMode": true },
-  "functions": [{ "source": "functions", "codebase": "imports", "runtime": "nodejs22", "predeploy": ["npm --prefix functions run build"] }],
+  "functions": [
+    {
+      "source": "functions",
+      "codebase": "imports",
+      "runtime": "nodejs22",
+      "predeploy": [
+        "node scripts/guardDeploy.mjs functions"
+      ]
+    }
+  ],
   "firestore": {
     "rules": "firestore.rules",
-    "indexes": "firestore.indexes.json"
+    "indexes": "firestore.indexes.json",
+    "predeploy": [
+      "node scripts/guardDeploy.mjs firestore"
+    ]
   },
   "hosting": {
     "public": "dist",
@@ -23,6 +35,9 @@
     ]
   },
   "storage": {
-    "rules": "storage.rules"
+    "rules": "storage.rules",
+    "predeploy": [
+      "node scripts/guardDeploy.mjs storage"
+    ]
   }
 }

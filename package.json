@@ -13,6 +13,8 @@
     "check:release:staging": "node scripts/releaseCheck.mjs staging",
     "deploy:prep:prod": "node scripts/deployPrep.mjs prod",
     "deploy:prep:staging": "node scripts/deployPrep.mjs staging",
+    "deploy:safe:prod": "node scripts/deploySafe.mjs prod",
+    "deploy:safe:staging": "node scripts/deploySafe.mjs staging",
     "lint": "oxlint",
     "preview": "vite preview",
     "test:e2e": "playwright test"

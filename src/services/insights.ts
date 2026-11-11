@@ -52,7 +52,12 @@ export async function getCachedInsights(uid: string): Promise<InsightsSummary | 
 /** Delete the cached insights summary document (called on edits/bulk clear/import). Returns true on success. */
 export async function invalidateInsightsCache(uid: string): Promise<boolean> {
   try {
-    await deleteDoc(summaryRef(uid))
+    const p = deleteDoc(summaryRef(uid))
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      p.catch(() => {})
+      return true
+    }
+    await Promise.race([p, new Promise(resolve => setTimeout(resolve, 300))])
     return true
   } catch (err) {
     console.error('[Spenza Insights] Failed to invalidate insights cache:', err)

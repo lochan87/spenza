@@ -954,6 +954,7 @@ export function SettingsPage() {
           </div>
           <button
             type="button"
+            id="reset-cache-btn"
             onClick={handleResetInsightsCache}
             disabled={resettingCache}
             className="flex shrink-0 items-center justify-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface-2)] px-3.5 py-2 text-xs font-semibold text-[var(--text-primary)] transition-colors hover:border-[var(--border-strong)] disabled:opacity-50"

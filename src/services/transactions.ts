@@ -42,12 +42,27 @@ export async function addTransaction(
   data: Omit<Transaction, 'id' | 'createdAt' | 'updatedAt'>
 ): Promise<string> {
   const ref = doc(collection(db, 'users', uid, 'transactions'))
-  await setDoc(ref, {
+  const writePromise = setDoc(ref, {
     ...data,
     id: ref.id,
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   })
+
+  // In Firestore persistentLocalCache, setDoc queues locally in IndexedDB immediately,
+  // but its promise resolves only once the server acknowledges the write.
+  // When offline, we do not block local UI completion while awaiting reconnection.
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    writePromise.catch(err => {
+      console.warn('[Spenza Transactions] Offline write queued in cache:', err)
+    })
+  } else {
+    await Promise.race([
+      writePromise,
+      new Promise(resolve => setTimeout(resolve, 500)),
+    ])
+  }
+
   const cacheOk = await invalidateInsightsCache(uid)
   if (!cacheOk) {
     console.warn('[Spenza Transactions] Added transaction, but failed to invalidate insights cache.')

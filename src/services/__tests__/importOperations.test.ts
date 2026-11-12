@@ -151,6 +151,14 @@ function createHarness(options: { failOnPath?: string; loseResponseOn?: string; 
       } }
       if (name === 'firebase/firestore') return sdk
       if (name === '@/firebase/config') return { db: {} }
+      if (name === '@/services/backendApi') {
+        return {
+          callBackend: async (opts: any) => {
+            if (options.callableError) throw Object.assign(new Error('Callable failed'), { code: options.callableError, details: options.callableDetails })
+            return { data: await invoke('test-user', opts.payload) }
+          },
+        }
+      }
       if (name === '@/utils/importPlan') return importPlan
       if (name === '@/utils/tripBuckets') return { TRIP_ACCENT_COLOR: '#123456' }
       throw new Error(`Unexpected import: ${name}`)

@@ -293,6 +293,7 @@ describe('Financial Relationship Integrity & Safe Archival', () => {
         require: (name: string) => {
           if (name === 'firebase/firestore') return sdk
           if (name === '@/firebase/config') return { db: {} }
+          if (name === '@/services/backendApi') return { callBackend: async () => ({ data: {} }) }
           if (name === '@/utils/schemas') return schemas
           if (name === '@/utils/splitMath') return splitMath
           if (name === 'firebase/functions') return { getFunctions: () => ({}), httpsCallable: () => () => ({}) }

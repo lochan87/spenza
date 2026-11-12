@@ -136,6 +136,67 @@ function loadPeopleService(options: {
         }
       }
       if (name === '@/firebase/config') return { app: {}, db: {} }
+      if (name === '@/services/backendApi') {
+        return {
+          callBackend: async (opts: any) => {
+            const endpoint = opts.callableName
+            const data = opts.payload
+            capturedCalls.push({ endpoint, data })
+            if (options.callableImpl) {
+              const res = await options.callableImpl(data)
+              return { data: res }
+            }
+            if (endpoint === 'executeRepaymentV1') {
+              return {
+                data: {
+                  tx: {
+                    id: (data as any).transactionId,
+                    amountPaise: 5000,
+                    recoverablePaise: 5000,
+                    reimbursementStatus: 'partial',
+                    date: { _seconds: 1700000000, _nanoseconds: 0 },
+                    splits: [{ personId: (data as any).personId, personName: 'Alice', amountPaise: 5000, repaidPaise: (data as any).repaymentPaise, settledAt: null }],
+                  },
+                  appliedPaise: (data as any).repaymentPaise,
+                  replayed: false,
+                },
+              }
+            }
+            const mode = (data as any).mode
+            if (mode === 'splitShare' || mode === 'transactionSplits') {
+              return {
+                data: {
+                  tx: {
+                    id: (data as any).transactionId,
+                    amountPaise: 5000,
+                    recoverablePaise: 5000,
+                    reimbursementStatus: 'settled',
+                    date: { _seconds: 1700000000, _nanoseconds: 0 },
+                    splits: [{ personId: (data as any).personId || 'alice', personName: 'Alice', amountPaise: 5000, repaidPaise: 5000, settledAt: { _seconds: 1700000000, _nanoseconds: 0 } }],
+                  },
+                  settledPaise: 5000,
+                  replayed: false,
+                },
+              }
+            }
+            if (mode === 'personAllDues') {
+              return {
+                data: {
+                  settledCount: 2,
+                  totalSettledPaise: 8000,
+                  updatedTxns: [
+                    { id: 'tx-1', amountPaise: 5000, recoverablePaise: 5000, reimbursementStatus: 'settled', date: { _seconds: 1700000000, _nanoseconds: 0 }, splits: [] },
+                    { id: 'tx-2', amountPaise: 3000, recoverablePaise: 3000, reimbursementStatus: 'settled', date: { _seconds: 1700000000, _nanoseconds: 0 }, splits: [] },
+                  ],
+                  complete: true,
+                  replayed: false,
+                },
+              }
+            }
+            return { data: {} }
+          },
+        }
+      }
       if (name === '@/utils/schemas') return schemas
       if (name === '@/utils/splitMath') return splitMath
       throw new Error(`Unexpected import: ${name}`)

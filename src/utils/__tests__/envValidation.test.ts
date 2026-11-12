@@ -262,6 +262,37 @@ describe('Multi-Environment Configuration Validation (Phase 9.2.1 & 9.2.2)', () 
         assert.match(result.error, /cannot target local loopback/)
       }
     })
+
+    it('validates VITE_BACKEND_API_URL when provided in production build', () => {
+      // Valid HTTPS URL
+      const validEnv = { ...createValidProdEnv(), VITE_BACKEND_API_URL: 'https://spenza-backend.vercel.app' }
+      const validResult = validateBuildEnv('production', validEnv)
+      assert.equal(validResult.valid, true)
+
+      // Loopback rejected
+      const loopbackEnv = { ...createValidProdEnv(), VITE_BACKEND_API_URL: 'http://localhost:3000' }
+      const loopbackResult = validateBuildEnv('production', loopbackEnv)
+      assert.equal(loopbackResult.valid, false)
+      if (!loopbackResult.valid) {
+        assert.match(loopbackResult.error, /cannot target local loopback/)
+      }
+
+      // Non-HTTPS rejected
+      const httpEnv = { ...createValidProdEnv(), VITE_BACKEND_API_URL: 'http://api.spenza.com' }
+      const httpResult = validateBuildEnv('production', httpEnv)
+      assert.equal(httpResult.valid, false)
+      if (!httpResult.valid) {
+        assert.match(httpResult.error, /must use HTTPS/)
+      }
+
+      // Placeholder rejected
+      const placeholderEnv = { ...createValidProdEnv(), VITE_BACKEND_API_URL: 'https://your_vercel_backend_here.vercel.app' }
+      const placeholderResult = validateBuildEnv('production', placeholderEnv)
+      assert.equal(placeholderResult.valid, false)
+      if (!placeholderResult.valid) {
+        assert.match(placeholderResult.error, /Unconfigured placeholder value in VITE_BACKEND_API_URL/)
+      }
+    })
   })
 
   describe('Staging Build Validation', () => {

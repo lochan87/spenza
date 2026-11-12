@@ -80,6 +80,41 @@ function loadPeopleService(options: {
         }
       }
       if (name === '@/firebase/config') return { app: {}, db: {} }
+      if (name === '@/services/backendApi') {
+        return {
+          callBackend: async (opts: any) => {
+            capturedCallablePayload = opts.payload
+            if (options.callableImpl) {
+              const res = await options.callableImpl(opts.payload)
+              return { data: res }
+            }
+            return {
+              data: {
+                tx: {
+                  id: (opts.payload as any).transactionId,
+                  amountPaise: 5000,
+                  recoverablePaise: 2500,
+                  reimbursementStatus: 'partial',
+                  date: { _seconds: 1700000000, _nanoseconds: 0 },
+                  createdAt: { _seconds: 1700000000, _nanoseconds: 0 },
+                  updatedAt: { _seconds: 1700000000, _nanoseconds: 0 },
+                  splits: [
+                    {
+                      personId: (opts.payload as any).personId,
+                      personName: 'Alice',
+                      amountPaise: 5000,
+                      repaidPaise: (opts.payload as any).repaymentPaise,
+                      settledAt: null,
+                    },
+                  ],
+                },
+                appliedPaise: (opts.payload as any).repaymentPaise,
+                replayed: false,
+              },
+            }
+          },
+        }
+      }
       if (name === '@/utils/schemas') return schemas
       if (name === '@/utils/splitMath') return splitMath
       if (name === '@/services/insights') return { invalidateInsightsCache: async () => true }

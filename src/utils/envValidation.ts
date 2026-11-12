@@ -48,10 +48,13 @@ export function isPlaceholderValue(value: string | undefined): boolean {
   const trimmed = value.trim().toLowerCase()
   return (
     trimmed.startsWith('your_') ||
+    trimmed.startsWith('your-') ||
     trimmed.endsWith('_here') ||
     trimmed.includes('your_project_id') ||
     trimmed.includes('your_staging_') ||
     trimmed.includes('your_api_key') ||
+    trimmed.includes('your-vercel') ||
+    trimmed.includes('your_vercel') ||
     trimmed.includes('example.com')
   )
 }
@@ -321,6 +324,32 @@ export function validateBuildEnv(
         valid: false,
         mode: normalizedMode,
         error: `Build validation failed: ${normalizedMode === 'production' ? 'Production' : 'Staging'} build authDomain or storageBucket cannot target local loopback.`,
+      }
+    }
+
+    // Rule J: Backend API URL validation if configured
+    const backendApiUrl = env.VITE_BACKEND_API_URL
+    if (backendApiUrl && backendApiUrl.trim().length > 0) {
+      if (isPlaceholderValue(backendApiUrl)) {
+        return {
+          valid: false,
+          mode: normalizedMode,
+          error: `Build validation failed for mode '${normalizedMode}': Unconfigured placeholder value in VITE_BACKEND_API_URL.`,
+        }
+      }
+      if (backendApiUrl.includes('127.0.0.1') || backendApiUrl.includes('localhost')) {
+        return {
+          valid: false,
+          mode: normalizedMode,
+          error: `Build validation failed: ${normalizedMode === 'production' ? 'Production' : 'Staging'} build VITE_BACKEND_API_URL cannot target local loopback.`,
+        }
+      }
+      if (!backendApiUrl.trim().toLowerCase().startsWith('https://')) {
+        return {
+          valid: false,
+          mode: normalizedMode,
+          error: `Build validation failed: ${normalizedMode === 'production' ? 'Production' : 'Staging'} build VITE_BACKEND_API_URL must use HTTPS.`,
+        }
       }
     }
 

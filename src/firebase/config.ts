@@ -3,7 +3,7 @@ import { getAuth, connectAuthEmulator } from 'firebase/auth'
 import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, connectFirestoreEmulator } from 'firebase/firestore'
 import { getStorage, connectStorageEmulator } from 'firebase/storage'
 import { getFunctions, connectFunctionsEmulator } from 'firebase/functions'
-import { assertBuildEnv } from '@/utils/envValidation'
+import { assertBuildEnv } from '../utils/envValidation.ts'
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,

@@ -1,6 +1,6 @@
 import { collection, doc, getDocFromServer, getDocsFromServer, query, where, runTransaction } from 'firebase/firestore'
-import { getFunctions, httpsCallable } from 'firebase/functions'
-import { app, db } from '@/firebase/config'
+import { db } from '@/firebase/config'
+import { callBackend } from '@/services/backendApi'
 import { headerSchema, chunkSchema, ImportSizeError, addImportPayloadBytes, operationIdSchema, IMPORT_CHUNK_ROWS, IMPORT_MAX_CHUNKS, sha256, importRecordId, validatePlan, type ImportPlan, type ImportHeader, type ImportChunk, type ImportTripDraft } from '@/utils/importPlan'
 import type { ParsedRow, ImportProgress } from './importExcel'
 
@@ -112,13 +112,17 @@ export async function saveImportPlan(uid: string, input: ImportPlan): Promise<Im
 export async function executeImport(uid: string, id: string, fingerprint: string, onProgress: (p: ImportProgress) => void = () => {}): Promise<ImportResult> {
   const plan = await loadImportPlan(uid, id, fingerprint)
   const result: ImportResult = { imported: 0, alreadyCommitted: 0, skipped: plan.header.skipped, unresolved: plan.header.total, complete: false, tripsCreated: 0 }
-  const execute = httpsCallable<{ operationId: string }, ImportResult & { total: number }>(getFunctions(app, 'us-central1'), 'executeImportV2', { timeout: 150000 })
   try {
     // A lost response is unknown, not failure proof. Resume asks the server to
     // reconcile durable receipts; there is no client financial-write fallback.
     for (let call = 0; call <= plan.chunks.length; call++) {
       online()
-      const { data } = await execute({ operationId: id })
+      const { data } = await callBackend<{ operationId: string }, ImportResult & { total: number }>({
+        endpoint: '/api/import',
+        callableName: 'executeImportV2',
+        payload: { operationId: id },
+        timeoutMs: 150000,
+      })
       const counts = [data.imported, data.alreadyCommitted, data.unresolved, data.skipped, data.tripsCreated]
       if (counts.some(n => !Number.isSafeInteger(n) || n < 0) || data.total !== plan.header.total ||
           data.skipped !== plan.header.skipped || data.imported + data.alreadyCommitted + data.unresolved !== data.total ||

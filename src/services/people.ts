@@ -9,8 +9,8 @@ import {
   serverTimestamp,
   Timestamp,
 } from 'firebase/firestore'
-import { getFunctions, httpsCallable } from 'firebase/functions'
-import { app, db } from '@/firebase/config'
+import { db } from '@/firebase/config'
+import { callBackend } from '@/services/backendApi'
 import { PersonSchema } from '@/utils/schemas'
 import { toNonNegativeIntPaise } from '@/utils/splitMath'
 import type { Person, Transaction } from '@/types'
@@ -291,29 +291,26 @@ export async function recordSplitRepayment(
   const idempotencyKey =
     customIdempotencyKey || getOrCreatePendingKey('repay', opKey, String(paise))
 
-  const functions = getFunctions(app, 'us-central1')
-  const executeRepayment = httpsCallable<
+  const res = await callBackend<
     { transactionId: string; personId: string; repaymentPaise: number; idempotencyKey: string },
     { tx: any; appliedPaise: number; replayed?: boolean }
-  >(functions, 'executeRepaymentV1')
-
-  try {
-    const res = await executeRepayment({
+  >({
+    endpoint: '/api/repayment',
+    callableName: 'executeRepaymentV1',
+    payload: {
       transactionId: cleanTxId,
       personId: cleanPersonId,
       repaymentPaise: paise,
       idempotencyKey,
-    })
+    },
+  })
 
-    clearPendingKey('repay', opKey, String(paise))
-    notifyFinancialChange('repayment_recorded', cleanUid, cleanTxId)
+  clearPendingKey('repay', opKey, String(paise))
+  notifyFinancialChange('repayment_recorded', cleanUid, cleanTxId)
 
-    return {
-      tx: hydrateTransaction(res.data.tx),
-      appliedPaise: res.data.appliedPaise,
-    }
-  } catch (err) {
-    throw err
+  return {
+    tx: hydrateTransaction(res.data.tx),
+    appliedPaise: res.data.appliedPaise,
   }
 }
 
@@ -340,29 +337,26 @@ export async function settleSplitShare(
   const idempotencyKey =
     customIdempotencyKey || getOrCreatePendingKey('settleSplit', opKey)
 
-  const functions = getFunctions(app, 'us-central1')
-  const executeSettlement = httpsCallable<
+  const res = await callBackend<
     { mode: 'splitShare'; transactionId: string; personId: string; idempotencyKey: string },
     { tx: any; settledPaise: number; replayed?: boolean }
-  >(functions, 'executeSettlementV1')
-
-  try {
-    const res = await executeSettlement({
+  >({
+    endpoint: '/api/settlement',
+    callableName: 'executeSettlementV1',
+    payload: {
       mode: 'splitShare',
       transactionId: cleanTxId,
       personId: cleanPersonId,
       idempotencyKey,
-    })
+    },
+  })
 
-    clearPendingKey('settleSplit', opKey)
-    notifyFinancialChange('settlement_completed', cleanUid, cleanTxId)
+  clearPendingKey('settleSplit', opKey)
+  notifyFinancialChange('settlement_completed', cleanUid, cleanTxId)
 
-    return {
-      tx: hydrateTransaction(res.data.tx),
-      settledPaise: res.data.settledPaise,
-    }
-  } catch (err) {
-    throw err
+  return {
+    tx: hydrateTransaction(res.data.tx),
+    settledPaise: res.data.settledPaise,
   }
 }
 
@@ -387,28 +381,25 @@ export async function settleAllTransactionSplits(
   const idempotencyKey =
     customIdempotencyKey || getOrCreatePendingKey('settleTx', opKey)
 
-  const functions = getFunctions(app, 'us-central1')
-  const executeSettlement = httpsCallable<
+  const res = await callBackend<
     { mode: 'transactionSplits'; transactionId: string; idempotencyKey: string },
     { tx: any; settledPaise: number; replayed?: boolean }
-  >(functions, 'executeSettlementV1')
-
-  try {
-    const res = await executeSettlement({
+  >({
+    endpoint: '/api/settlement',
+    callableName: 'executeSettlementV1',
+    payload: {
       mode: 'transactionSplits',
       transactionId: cleanTxId,
       idempotencyKey,
-    })
+    },
+  })
 
-    clearPendingKey('settleTx', opKey)
-    notifyFinancialChange('settlement_completed', cleanUid, cleanTxId)
+  clearPendingKey('settleTx', opKey)
+  notifyFinancialChange('settlement_completed', cleanUid, cleanTxId)
 
-    return {
-      tx: hydrateTransaction(res.data.tx),
-      settledPaise: res.data.settledPaise,
-    }
-  } catch (err) {
-    throw err
+  return {
+    tx: hydrateTransaction(res.data.tx),
+    settledPaise: res.data.settledPaise,
   }
 }
 
@@ -458,25 +449,26 @@ export async function settlePersonAllDues(
   const idempotencyKey =
     customIdempotencyKey || getOrCreatePendingKey('settlePerson', opKey)
 
-  const functions = getFunctions(app, 'us-central1')
-  const executeSettlement = httpsCallable<
-    { mode: 'personAllDues'; personId: string; idempotencyKey: string; maxTransactions?: number },
-    {
-      settledCount: number
-      totalSettledPaise: number
-      updatedTxns: any[]
-      complete: boolean
-      replayed?: boolean
-      failedTransactionId?: string | null
-      error?: string | null
-    }
-  >(functions, 'executeSettlementV1')
-
   try {
-    const res = await executeSettlement({
-      mode: 'personAllDues',
-      personId: cleanPersonId,
-      idempotencyKey,
+    const res = await callBackend<
+      { mode: 'personAllDues'; personId: string; idempotencyKey: string; maxTransactions?: number },
+      {
+        settledCount: number
+        totalSettledPaise: number
+        updatedTxns: any[]
+        complete: boolean
+        replayed?: boolean
+        failedTransactionId?: string | null
+        error?: string | null
+      }
+    >({
+      endpoint: '/api/settlement',
+      callableName: 'executeSettlementV1',
+      payload: {
+        mode: 'personAllDues',
+        personId: cleanPersonId,
+        idempotencyKey,
+      },
     })
 
     const data = res.data

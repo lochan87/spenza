@@ -10,6 +10,7 @@ import {
   limit,
 } from 'firebase/firestore'
 import { db } from '@/firebase/config'
+import { clearCategoryCache, clearAccountCache } from '@/services/transactions'
 import type { Category, PaymentAccount, UserProfile } from '@/types'
 
 // ─── Default Categories ───────────────────────────────────────────────────────
@@ -85,6 +86,7 @@ export async function seedCategories(uid: string): Promise<string[]> {
     ids.push(newRef.id)
   }
   await batch.commit()
+  clearCategoryCache(uid)
 
   console.log('[Spenza Seed] ✅ Seeded', ids.length, 'categories')
   return ids
@@ -116,6 +118,7 @@ export async function seedPaymentAccounts(uid: string): Promise<string[]> {
     ids.push(newRef.id)
   }
   await batch.commit()
+  clearAccountCache(uid)
 
   console.log('[Spenza Seed] ✅ Seeded', ids.length, 'payment accounts')
   return ids

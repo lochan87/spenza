@@ -51,7 +51,8 @@ export async function addTransaction(
 
   // A UI deadline is not server acknowledgment. Retain the write promise so
   // late permission failures are surfaced even after the form has closed.
-  let returnedPending = false
+  const isOffline = typeof navigator !== 'undefined' && !navigator.onLine
+  let returnedPending = isOffline
   const acknowledgment = writePromise.then(async () => {
     await invalidateInsightsCache(uid)
     if (returnedPending) notifyFinancialChange('transaction_updated', uid, ref.id)
@@ -67,11 +68,16 @@ export async function addTransaction(
   })
   let timer: ReturnType<typeof setTimeout> | undefined
   try {
-    const status = await Promise.race([
-      acknowledgment,
-      new Promise<'pending'>(resolve => { timer = setTimeout(() => resolve('pending'), 2000) }),
-    ])
-    returnedPending = status === 'pending'
+    let status: 'confirmed' | 'pending'
+    if (isOffline) {
+      status = 'pending'
+    } else {
+      status = await Promise.race([
+        acknowledgment,
+        new Promise<'pending'>(resolve => { timer = setTimeout(() => resolve('pending'), 4000) }),
+      ])
+      returnedPending = status === 'pending'
+    }
     clearPastDescriptionsCache(uid)
     // Promise.race keeps a rejection handler attached to the ongoing write.
     notifyFinancialChange('transaction_created', uid, ref.id)
@@ -234,6 +240,8 @@ export async function getAllTransactions(uid: string): Promise<Transaction[]> {
 
 // ─── Metadata & Autocomplete In-Memory Cache (Free-Tier Optimization) ──────────
 
+export const METADATA_CACHE_TTL_MS = 5 * 60 * 1000 // 5-minute TTL to prevent indefinite staleness across devices
+
 interface CacheEntry<T> {
   data: T
   timestamp: number
@@ -287,23 +295,27 @@ export function clearMetadataCache(uid?: string): void {
   clearPastDescriptionsCache(uid)
 }
 
+function handleFinancialMutationEvent(detail: { type?: string; uid?: string } | undefined) {
+  if (!detail?.uid) return
+  const type = detail.type
+  if (type === 'category_changed') {
+    clearCategoryCache(detail.uid)
+  } else if (type === 'account_changed') {
+    clearAccountCache(detail.uid)
+  } else if (
+    type === 'transaction_created' ||
+    type === 'transaction_updated' ||
+    type === 'transaction_deleted' ||
+    type === 'bulk_cleared' ||
+    type === 'import_completed'
+  ) {
+    clearPastDescriptionsCache(detail.uid)
+  }
+}
+
 if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
   window.addEventListener('spenza_financial_mutation', ((e: CustomEvent) => {
-    const detail = e.detail
-    if (!detail?.uid) return
-    if (detail.type === 'category_changed') {
-      clearCategoryCache(detail.uid)
-    } else if (detail.type === 'account_changed') {
-      clearAccountCache(detail.uid)
-    } else if (
-      detail.type === 'transaction_created' ||
-      detail.type === 'transaction_updated' ||
-      detail.type === 'transaction_deleted' ||
-      detail.type === 'bulk_cleared' ||
-      detail.type === 'import_completed'
-    ) {
-      clearPastDescriptionsCache(detail.uid)
-    }
+    handleFinancialMutationEvent(e.detail)
   }) as EventListener)
 }
 
@@ -311,7 +323,11 @@ if (typeof window !== 'undefined' && typeof window.addEventListener === 'functio
 export async function getPastDescriptions(uid: string, forceRefresh = false): Promise<string[]> {
   const cleanUid = uid.trim()
   if (!forceRefresh && pastDescriptionsCache.has(cleanUid)) {
-    return pastDescriptionsCache.get(cleanUid)!.data
+    const entry = pastDescriptionsCache.get(cleanUid)!
+    if (Date.now() - entry.timestamp <= METADATA_CACHE_TTL_MS) {
+      return entry.data
+    }
+    pastDescriptionsCache.delete(cleanUid)
   }
   if (!forceRefresh && pastDescriptionsInFlight.has(cleanUid)) {
     return pastDescriptionsInFlight.get(cleanUid)!
@@ -362,7 +378,11 @@ export async function getFrequentTransactions(uid: string): Promise<Transaction[
 export async function getPaymentAccounts(uid: string, forceRefresh = false): Promise<PaymentAccount[]> {
   const cleanUid = uid.trim()
   if (!forceRefresh && accountCache.has(cleanUid)) {
-    return accountCache.get(cleanUid)!.data
+    const entry = accountCache.get(cleanUid)!
+    if (Date.now() - entry.timestamp <= METADATA_CACHE_TTL_MS) {
+      return entry.data
+    }
+    accountCache.delete(cleanUid)
   }
   if (!forceRefresh && accountInFlight.has(cleanUid)) {
     return accountInFlight.get(cleanUid)!
@@ -447,7 +467,11 @@ export async function deletePaymentAccount(
 export async function getCategories(uid: string, forceRefresh = false): Promise<Category[]> {
   const cleanUid = uid.trim()
   if (!forceRefresh && categoryCache.has(cleanUid)) {
-    return categoryCache.get(cleanUid)!.data
+    const entry = categoryCache.get(cleanUid)!
+    if (Date.now() - entry.timestamp <= METADATA_CACHE_TTL_MS) {
+      return entry.data
+    }
+    categoryCache.delete(cleanUid)
   }
   if (!forceRefresh && categoryInFlight.has(cleanUid)) {
     return categoryInFlight.get(cleanUid)!

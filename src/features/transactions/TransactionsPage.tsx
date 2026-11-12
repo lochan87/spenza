@@ -1162,11 +1162,11 @@ export function TransactionsPage() {
       ])
       if (cats.length === 0) {
         await seedCategories(user.uid)
-        cats = await getCategories(user.uid)
+        cats = await getCategories(user.uid, true)
       }
       if (accs.length === 0) {
         await seedPaymentAccounts(user.uid)
-        accs = await getPaymentAccounts(user.uid)
+        accs = await getPaymentAccounts(user.uid, true)
       }
       setTransactions(txs)
       if (typeof setIsFromCache === 'function') {

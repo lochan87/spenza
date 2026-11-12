@@ -6,13 +6,17 @@ import ts from 'typescript'
 import * as edit from '../../utils/expenseEdit.ts'
 import * as deletion from '../../utils/expenseDeletion.ts'
 
-function createCacheHarness() {
+function createCacheHarness(options?: {
+  onLine?: boolean
+  failWrites?: boolean
+  getNow?: () => number
+}) {
   let categoryGetDocsCount = 0
   let accountGetDocsCount = 0
   let pastDescGetDocsCount = 0
-  let categorySetDocCount = 0
-  let accountSetDocCount = 0
-  let transactionSetDocCount = 0
+  let _categorySetDocCount = 0
+  let _accountSetDocCount = 0
+  let _transactionSetDocCount = 0
 
   const mockCategories = [
     { id: 'cat-1', name: 'Food & Dining', color: '#10b981', isArchived: false },
@@ -30,6 +34,7 @@ function createCacheHarness() {
 
   const eventListeners: Record<string, ((e: any) => void)[]> = {}
   const dispatchedEvents: any[] = []
+  const syncSubscribers: ((e: any) => void)[] = []
 
   const mockWindow = {
     addEventListener: (type: string, cb: any) => {
@@ -64,6 +69,13 @@ function createCacheHarness() {
     clearAccountCache: (uid?: string) => void
     clearPastDescriptionsCache: (uid?: string) => void
     clearMetadataCache: (uid?: string) => void
+    METADATA_CACHE_TTL_MS: number
+  }
+
+  const customDate = class extends Date {
+    static override now() {
+      return options?.getNow ? options.getNow() : Date.now()
+    }
   }
 
   runInNewContext(
@@ -75,8 +87,9 @@ function createCacheHarness() {
       setTimeout,
       clearTimeout,
       console,
+      Date: customDate,
       window: mockWindow,
-      navigator: { onLine: true },
+      navigator: { onLine: options?.onLine ?? true },
       CustomEvent: class {
         type: string
         detail: any
@@ -115,16 +128,22 @@ function createCacheHarness() {
               return { docs: [] }
             },
             setDoc: async (ref: any, _data: any) => {
+              if (options?.failWrites) {
+                throw new Error('Firestore permission-denied')
+              }
               if (ref?.path?.includes?.('categories') || ref?.id?.startsWith('cat')) {
-                categorySetDocCount++
+                _categorySetDocCount++
               } else if (ref?.path?.includes?.('paymentAccounts') || ref?.id?.startsWith('acc')) {
-                accountSetDocCount++
+                _accountSetDocCount++
               } else {
-                transactionSetDocCount++
+                _transactionSetDocCount++
               }
               return Promise.resolve()
             },
             runTransaction: async (_db: any, updateFn: any) => {
+              if (options?.failWrites) {
+                throw new Error('Firestore write-failed')
+              }
               return updateFn({
                 get: async () => ({
                   exists: () => true,
@@ -149,6 +168,7 @@ function createCacheHarness() {
   return {
     service: exports,
     mockWindow,
+    syncSubscribers,
     counts: {
       get categoryReads() { return categoryGetDocsCount },
       get accountReads() { return accountGetDocsCount },
@@ -285,5 +305,156 @@ describe('Metadata & Description In-Memory Cache (Free-Tier Optimization)', () =
     assert.equal(counts.categoryReads, 2, 'Category cache should have been invalidated by event')
     assert.equal(counts.accountReads, 1, 'Account cache should remain cached')
     assert.equal(counts.pastDescReads, 1, 'Past descriptions cache should remain cached')
+  })
+
+  it('6. Cache is strictly isolated by authenticated UID', async () => {
+    const { service, counts } = createCacheHarness()
+
+    // Read for user-A
+    await service.getCategories('user-A')
+    await service.getPaymentAccounts('user-A')
+    await service.getPastDescriptions('user-A')
+
+    assert.equal(counts.categoryReads, 1)
+    assert.equal(counts.accountReads, 1)
+    assert.equal(counts.pastDescReads, 1)
+
+    // User-B queries must NOT hit User-A's cache
+    await service.getCategories('user-B')
+    await service.getPaymentAccounts('user-B')
+    await service.getPastDescriptions('user-B')
+
+    assert.equal(counts.categoryReads, 2, 'User-B must trigger its own category query')
+    assert.equal(counts.accountReads, 2, 'User-B must trigger its own account query')
+    assert.equal(counts.pastDescReads, 2, 'User-B must trigger its own past descriptions query')
+
+    // Invalidating User-A must not clear User-B's cache
+    service.clearCategoryCache('user-A')
+    await service.getCategories('user-B')
+    assert.equal(counts.categoryReads, 2, 'User-B category cache must survive User-A clearing')
+
+    await service.getCategories('user-A')
+    assert.equal(counts.categoryReads, 3, 'User-A must re-query after being cleared')
+  })
+
+  it('7. In-memory cache entries expire after METADATA_CACHE_TTL_MS to prevent multi-device staleness', async () => {
+    let virtualTime = 1_000_000
+    const { service, counts } = createCacheHarness({ getNow: () => virtualTime })
+
+    await service.getCategories('user-1')
+    await service.getPaymentAccounts('user-1')
+    await service.getPastDescriptions('user-1')
+    assert.equal(counts.categoryReads, 1)
+    assert.equal(counts.accountReads, 1)
+    assert.equal(counts.pastDescReads, 1)
+
+    // Within TTL (e.g. +2 minutes)
+    virtualTime += 2 * 60 * 1000
+    await service.getCategories('user-1')
+    await service.getPaymentAccounts('user-1')
+    await service.getPastDescriptions('user-1')
+    assert.equal(counts.categoryReads, 1, 'Within TTL must hit cache')
+    assert.equal(counts.accountReads, 1, 'Within TTL must hit cache')
+    assert.equal(counts.pastDescReads, 1, 'Within TTL must hit cache')
+
+    // Advance beyond 5-minute TTL (e.g. +4 minutes more, total +6 minutes)
+    virtualTime += 4 * 60 * 1000
+    await service.getCategories('user-1')
+    await service.getPaymentAccounts('user-1')
+    await service.getPastDescriptions('user-1')
+    assert.equal(counts.categoryReads, 2, 'Expired category cache must query fresh')
+    assert.equal(counts.accountReads, 2, 'Expired account cache must query fresh')
+    assert.equal(counts.pastDescReads, 2, 'Expired description cache must query fresh')
+  })
+
+  it('8. Sign-out / clearMetadataCache purges all cached metadata across all UIDs', async () => {
+    const { service, counts } = createCacheHarness()
+
+    await service.getCategories('user-1')
+    await service.getCategories('user-2')
+    await service.getPaymentAccounts('user-1')
+    await service.getPastDescriptions('user-1')
+    assert.equal(counts.categoryReads, 2)
+    assert.equal(counts.accountReads, 1)
+    assert.equal(counts.pastDescReads, 1)
+
+    // Calling clearMetadataCache() without args (sign-out behavior)
+    service.clearMetadataCache()
+
+    // All caches should be empty
+    await service.getCategories('user-1')
+    await service.getCategories('user-2')
+    await service.getPaymentAccounts('user-1')
+    await service.getPastDescriptions('user-1')
+    assert.equal(counts.categoryReads, 4, 'All categories must re-query after global clear')
+    assert.equal(counts.accountReads, 2, 'All accounts must re-query after global clear')
+    assert.equal(counts.pastDescReads, 2, 'All past descriptions must re-query after global clear')
+  })
+
+  it('9. Failed Firestore writes do not mutate or populate in-memory metadata cache', async () => {
+    const { service, counts } = createCacheHarness({ failWrites: true })
+
+    // Populate initial cache
+    await service.getCategories('user-1')
+    assert.equal(counts.categoryReads, 1)
+
+    // Attempting a failing category write must reject
+    await assert.rejects(
+      () => service.addCategory('user-1', { name: 'Invalid Cat', color: '#000000' }),
+      /Firestore permission-denied/
+    )
+
+    // Cache must remain untouched and not wiped or corrupted with phantom entity
+    const cats = await service.getCategories('user-1')
+    assert.equal(counts.categoryReads, 1, 'Failed write should not clear valid cache')
+    assert.equal(cats.some((c: any) => c.name === 'Invalid Cat'), false)
+  })
+
+  it('10. Offline expense creation returns pending status immediately without artificial 2s delay', async () => {
+    const { service } = createCacheHarness({ onLine: false })
+
+    const startTime = Date.now()
+    const result = await service.addTransaction('user-1', {
+      amountPaise: 2500,
+      description: 'Quick Offline Chai',
+      categoryId: 'cat-1',
+      date: new Date(),
+      paymentMode: 'Cash',
+      type: 'everyday',
+    })
+    const elapsed = Date.now() - startTime
+
+    assert.equal(result.status, 'pending')
+    assert.ok(elapsed < 1000, `Offline transaction returned in ${elapsed}ms, expected < 1000ms`)
+  })
+
+  it('11. Cross-tab BroadcastChannel remote events purge cache in receiving tabs', async () => {
+    const { service, counts, mockWindow } = createCacheHarness()
+
+    await service.getCategories('user-1')
+    await service.getPaymentAccounts('user-1')
+    await service.getPastDescriptions('user-1')
+    assert.equal(counts.categoryReads, 1)
+    assert.equal(counts.accountReads, 1)
+    assert.equal(counts.pastDescReads, 1)
+
+    // Deliver broadcast from another tab via remote window event
+    mockWindow.dispatchEvent(new (class {
+      type = 'spenza_financial_mutation'
+      detail = { type: 'account_changed', uid: 'user-1', _remote: true }
+    })())
+    mockWindow.dispatchEvent(new (class {
+      type = 'spenza_financial_mutation'
+      detail = { type: 'transaction_created', uid: 'user-1', _remote: true }
+    })())
+
+    // Accounts and past descriptions must now re-query, categories stay cached
+    await service.getCategories('user-1')
+    await service.getPaymentAccounts('user-1')
+    await service.getPastDescriptions('user-1')
+
+    assert.equal(counts.categoryReads, 1, 'Category cache stayed valid')
+    assert.equal(counts.accountReads, 2, 'Account cache invalidated by BroadcastChannel event')
+    assert.equal(counts.pastDescReads, 2, 'Past descriptions invalidated by BroadcastChannel event')
   })
 })

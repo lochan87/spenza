@@ -12,6 +12,8 @@ export type FinancialMutationType =
   | 'repayment_recorded'
   | 'settlement_completed'
   | 'person_changed'
+  | 'category_changed'
+  | 'account_changed'
   | 'bulk_cleared'
   | 'import_completed'
 
@@ -49,6 +51,17 @@ function getBroadcastChannel(): BroadcastChannel | null {
             listener(data)
           } catch (err) {
             console.error('[Spenza Financial Sync] Listener error:', err)
+          }
+        }
+        if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+          try {
+            window.dispatchEvent(
+              new CustomEvent('spenza_financial_mutation', {
+                detail: { ...data, _remote: true },
+              })
+            )
+          } catch {
+            // ignore
           }
         }
       }
@@ -95,9 +108,9 @@ export function notifyFinancialMutation(payload: {
 
 // Global DOM bridge: forward financial mutations dispatched via CustomEvent to BroadcastChannel and listeners
 if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
-  window.addEventListener('spenza_financial_mutation', ((e: CustomEvent<FinancialSyncEvent>) => {
+  window.addEventListener('spenza_financial_mutation', ((e: CustomEvent<FinancialSyncEvent & { _remote?: boolean }>) => {
     const detail = e.detail
-    if (!detail || !detail.type || !detail.uid) return
+    if (!detail || !detail.type || !detail.uid || detail._remote) return
     // Forward to BroadcastChannel and inProcessListeners
     const ch = getBroadcastChannel()
     const syncEvent: FinancialSyncEvent = {

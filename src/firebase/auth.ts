@@ -8,6 +8,7 @@ import {
   type User,
 } from 'firebase/auth'
 import { auth } from './config'
+import { clearMetadataCache } from '@/services/transactions'
 
 const googleProvider = new GoogleAuthProvider()
 googleProvider.setCustomParameters({ prompt: 'select_account' })
@@ -71,6 +72,7 @@ export async function signInAsTestUser(
  */
 export async function signOut(): Promise<void> {
   await firebaseSignOut(auth)
+  clearMetadataCache()
 }
 
 export { auth }

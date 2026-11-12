@@ -7,6 +7,7 @@ import {
 } from 'react'
 import { onAuthStateChanged, type User } from 'firebase/auth'
 import { auth } from '@/firebase/config'
+import { clearMetadataCache } from '@/services/transactions'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -37,6 +38,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         console.log('[Spenza Auth] Signed in as:', firebaseUser.displayName, '| uid:', firebaseUser.uid)
       } else {
         console.log('[Spenza Auth] No user signed in.')
+        clearMetadataCache()
       }
     })
 

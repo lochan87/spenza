@@ -42,7 +42,7 @@ While the code is thoroughly verified locally, **Spenza is not yet deployed to p
 
 1. **Deploy Vercel Backend**:
    - Connect the repository to Vercel.
-   - Configure server-side environment variables: `FIREBASE_ADMIN_CREDENTIALS` (or individual service account variables) and `ALLOWED_ORIGIN`.
+   - Configure server-side environment variables: `FIREBASE_SERVICE_ACCOUNT_KEY` (and optionally `ALLOWED_ORIGINS`).
    - Verify deployment of the three endpoints (`/api/repayment`, `/api/settlement`, `/api/import`).
 2. **Deploy Firestore Rules & Indexes**:
    - Run `npx firebase deploy --project spenza-90037 --only firestore,storage`.

@@ -190,11 +190,11 @@ Spenza is designed to be hosted for free using a split deployment:
 
 1. **Vercel Hobby**:
    - Hosts the three API routes under `api/`.
-   - Requires server-side environment variables: `FIREBASE_ADMIN_CREDENTIALS` (or individual service account fields) and `ALLOWED_ORIGIN`.
+   - Requires server-side environment variables: `FIREBASE_SERVICE_ACCOUNT_KEY` (full JSON string of the Firebase service account credentials) and optionally `ALLOWED_ORIGINS` (comma-separated list of permitted web origins).
 2. **Firebase Hosting (Spark Plan)**:
    - Hosts the compiled client PWA bundle (`dist/`).
    - Requires building with `VITE_BACKEND_API_URL` pointing to the deployed Vercel HTTPS domain.
-   - **Important**: Deploy with `npx firebase deploy --project <project-id> --only hosting,firestore,storage` to avoid billing errors associated with Cloud Functions on the Spark tier.
+   - **Important**: Deploy with `npx firebase deploy --project <project-id> --only hosting,firestore,storage` (or `node scripts/deploySafe.mjs prod --only hosting,firestore,storage --confirm-deploy`). Never run deployment without `--only` on the Spark plan, as attempting to deploy Cloud Functions will immediately fail with a billing error.
 
 *Deployment guide: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)*
 

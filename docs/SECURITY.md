@@ -53,7 +53,7 @@ Sensitive multi-document financial workflows are executed server-side via Node.j
          ▼
 [ vercelCommon.ts ]
    ├── 1. Enforces HTTP Method (POST only, OPTIONS handled for CORS)
-   ├── 2. Enforces CORS Origin (ALLOWED_ORIGIN)
+   ├── 2. Enforces CORS Origins (ALLOWED_ORIGINS)
    ├── 3. Enforces Payload Size Limit (Max 64 KB)
    ├── 4. Extracts Authorization: Bearer <ID_TOKEN>
    └── 5. Verifies ID Token via Firebase Admin SDK
@@ -68,10 +68,10 @@ Sensitive multi-document financial workflows are executed server-side via Node.j
 ```
 
 ### Key Server Security Guarantees:
-1. **Server-Side Credentials**: The Firebase Admin SDK is initialized exclusively in the Vercel Node.js runtime using server-side environment variables (`FIREBASE_ADMIN_CREDENTIALS` or `FIREBASE_PRIVATE_KEY`). Private keys are **never** bundled into the client build.
+1. **Server-Side Credentials**: The Firebase Admin SDK is initialized exclusively in the Vercel Node.js runtime using the server-side environment variable `FIREBASE_SERVICE_ACCOUNT_KEY` (containing the parsed service account JSON). Private keys are **never** bundled into the client build.
 2. **Authoritative UID Extraction**: The executor ignores any user ID supplied in the request JSON payload. The authenticated user's UID is extracted authoritatively from the cryptographically verified JWT token.
 3. **Payload Cap**: Requests larger than 64 KB are rejected immediately with HTTP 413 (`Payload Too Large`), protecting the serverless runtime against payload exhaustion attacks.
-4. **CORS Hardening**: Cross-Origin Resource Sharing is locked to `ALLOWED_ORIGIN` (configured to the production Firebase Hosting domain).
+4. **CORS Hardening**: Cross-Origin Resource Sharing is locked to `ALLOWED_ORIGINS` (configured with authorized production domains).
 
 ---
 
@@ -103,7 +103,7 @@ To ensure financial correctness during network retries or concurrent tab executi
   - Contains only public `VITE_FIREBASE_*` configuration (API Key, Project ID, App ID).
   - Firebase Web API keys are identifiers, not secrets; security is enforced by Firestore security rules, not by keeping the client API key hidden.
 - **Server Environment (Vercel)**:
-  - Private service account keys (`FIREBASE_ADMIN_CREDENTIALS`) are stored exclusively in Vercel's encrypted environment variables dashboard.
+  - Private service account keys (`FIREBASE_SERVICE_ACCOUNT_KEY`) are stored exclusively in Vercel's encrypted environment variables dashboard.
   - Never committed to Git. `.gitignore` strictly excludes `.env.local`, `.env.*.local`, `.env.staging`, and `.env.production`.
 
 ---

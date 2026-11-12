@@ -56,11 +56,9 @@ flowchart LR
 
    | Variable | Value / Format | Description |
    | :--- | :--- | :--- |
-   | `FIREBASE_ADMIN_CREDENTIALS` | `{"type":"service_account",...}` | Full JSON string of the downloaded service account key |
-   | *OR* `FIREBASE_PROJECT_ID` | `spenza-90037` | Alternative individual service account field |
-   | *OR* `FIREBASE_CLIENT_EMAIL` | `firebase-adminsdk-...@...iam.gserviceaccount.com` | Alternative individual service account field |
-   | *OR* `FIREBASE_PRIVATE_KEY` | `"-----BEGIN PRIVATE KEY-----\n..."` | Alternative individual private key |
-   | `ALLOWED_ORIGIN` | `https://spenza-90037.web.app` | Production Firebase Hosting domain (for CORS) |
+   | `FIREBASE_SERVICE_ACCOUNT_KEY` | `{"type":"service_account",...}` | **Required**: Full raw JSON string of the downloaded Firebase service account key |
+   | `ALLOWED_ORIGINS` | `https://spenza-90037.web.app,https://spenza-90037.firebaseapp.com` | **Optional**: Comma-separated list of allowed CORS origins (defaults to localhost and `spenza-90037` domains if omitted) |
+   | `FIREBASE_PROJECT_ID` | `spenza-90037` | **Optional**: Fallback project ID if not parsed from the service account JSON |
 
 3. **Deploy & Record Backend URL**:
    - Click **Deploy**.
@@ -92,7 +90,12 @@ npx firebase deploy --project spenza-90037 --only firestore,storage
 
 > ⚠️ **CRITICAL FIREBASE SPARK WARNING**:  
 > **NEVER run `firebase deploy` without `--only`.**  
-> Running `firebase deploy` without resource filters attempts to deploy Cloud Functions from `functions/`, which will immediately abort with a billing error on the Spark tier. Always specify `--only hosting`.
+> Running `firebase deploy` without resource filters attempts to deploy Cloud Functions from `functions/`, which will immediately abort with a billing error on the Spark tier. Always specify `--only hosting` (or `--only hosting,firestore,storage`).
+>
+> **Caution with `scripts/deploySafe.mjs`**: The `deploySafe.mjs` script defaults to `all` resources if `--only` is omitted. When using this wrapper, always pass `--only hosting,firestore,storage`:
+> ```bash
+> node scripts/deploySafe.mjs prod --only hosting,firestore,storage --confirm-deploy
+> ```
 
 1. **Configure Production Environment**:
    Ensure `.env.production` (or `.env.local`) points to your live Vercel backend and production Firebase credentials:
@@ -114,7 +117,11 @@ npx firebase deploy --project spenza-90037 --only firestore,storage
    *Note: `build:prod` enforces fail-closed validation, verifying that `VITE_BACKEND_API_URL` uses HTTPS and does not target localhost.*
 3. **Deploy Static Hosting**:
    ```bash
+   # Direct Firebase CLI deployment:
    npx firebase deploy --project spenza-90037 --only hosting
+
+   # OR verified deployment wrapper:
+   node scripts/deploySafe.mjs prod --only hosting --confirm-deploy
    ```
 
 ---

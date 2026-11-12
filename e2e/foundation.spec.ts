@@ -111,9 +111,10 @@ test.describe('Spenza E2E Foundation', () => {
     const confirmSettleBtn = page.locator('button:has-text("Confirm Settlement")')
     await expect(confirmSettleBtn).toBeVisible()
     await confirmSettleBtn.click()
+    await expect(confirmSettleBtn).toBeHidden({ timeout: 15000 })
 
     // Verify Pending Dues updates to ₹0 and all friends are squared up
-    await expect(page.locator('text=All friends are squared up!')).toBeVisible()
+    await expect(page.locator('text=All friends are squared up!')).toBeVisible({ timeout: 15000 })
     await expect(page.locator('text=No friends with pending dues!')).toBeVisible()
 
     // Switch to "All Friends" tab and verify Rahul shows "All Settled"

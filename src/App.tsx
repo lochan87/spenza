@@ -2,25 +2,36 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider, useAuth } from '@/hooks/useAuth'
 import { ProtectedRoute } from '@/components/layout/ProtectedRoute'
 import { AppLayout } from '@/components/layout/AppLayout'
-import { LoginPage } from '@/pages/LoginPage'
-import { DashboardPage } from '@/features/dashboard/DashboardPage'
-import { TransactionsPage } from '@/features/transactions/TransactionsPage'
-import { CategoriesPage } from '@/features/transactions/CategoriesPage'
-import { TripsPage } from '@/features/trips/TripsPage'
-import { TripDetailPage } from '@/features/trips/TripDetailPage'
-import { RecurringPage } from '@/features/recurring/RecurringPage'
-import { BudgetPage } from '@/features/budgets/BudgetPage'
-import { InsightsPage } from '@/features/insights/InsightsPage'
-import { ImportPage } from '@/features/import/ImportPage'
-import { PeoplePage } from '@/features/people/PeoplePage'
 import { PeopleOnboardingModal } from '@/features/people/components/PeopleOnboardingModal'
-import { SettingsPage } from '@/features/settings/SettingsPage'
 import { RecurringDuePrompt } from '@/features/recurring/RecurringDuePrompt'
 import { useRecurringCheck } from '@/features/recurring/useRecurringCheck'
-import { useEffect, useState } from 'react'
+import { useEffect, useState, lazy, Suspense } from 'react'
 import { runOnboardingSeeds, shouldPromptPeopleOnboarding } from '@/services/seed'
 import { getCategories } from '@/services/transactions'
 import type { Category } from '@/types'
+
+import { LoginPage } from '@/pages/LoginPage'
+import { DashboardPage } from '@/features/dashboard/DashboardPage'
+import { TransactionsPage } from '@/features/transactions/TransactionsPage'
+import { PeoplePage } from '@/features/people/PeoplePage'
+
+// Route-level code-splitting: isolate heavy secondary features (e.g. Recharts in Insights, SheetJS in Import)
+const CategoriesPage = lazy(() => import('@/features/transactions/CategoriesPage').then(m => ({ default: m.CategoriesPage })))
+const TripsPage = lazy(() => import('@/features/trips/TripsPage').then(m => ({ default: m.TripsPage })))
+const TripDetailPage = lazy(() => import('@/features/trips/TripDetailPage').then(m => ({ default: m.TripDetailPage })))
+const RecurringPage = lazy(() => import('@/features/recurring/RecurringPage').then(m => ({ default: m.RecurringPage })))
+const BudgetPage = lazy(() => import('@/features/budgets/BudgetPage').then(m => ({ default: m.BudgetPage })))
+const InsightsPage = lazy(() => import('@/features/insights/InsightsPage').then(m => ({ default: m.InsightsPage })))
+const ImportPage = lazy(() => import('@/features/import/ImportPage').then(m => ({ default: m.ImportPage })))
+const SettingsPage = lazy(() => import('@/features/settings/SettingsPage').then(m => ({ default: m.SettingsPage })))
+
+function PageFallback() {
+  return (
+    <div className="flex h-64 items-center justify-center">
+      <div className="h-8 w-8 animate-spin rounded-full border-2 border-[var(--primary)] border-t-transparent" />
+    </div>
+  )
+}
 
 /**
  * Inner component: runs seeds on login, manages overdue recurring prompt, mounts routes.
@@ -51,8 +62,6 @@ function AppRoutes() {
           }
         })
         .catch(err => console.error('[Spenza] Seed error:', err))
-
-      getCategories(user.uid).then(setCategories).catch(console.error)
     }
   }, [user])
 
@@ -61,7 +70,9 @@ function AppRoutes() {
   const wrap = (element: React.ReactNode) => (
     <ProtectedRoute>
       <AppLayout>
-        {element}
+        <Suspense fallback={<PageFallback />}>
+          {element}
+        </Suspense>
       </AppLayout>
     </ProtectedRoute>
   )
@@ -106,8 +117,6 @@ function AppRoutes() {
           onComplete={() => setShowPeopleOnboarding(false)}
         />
       )}
-
-
     </>
   )
 }

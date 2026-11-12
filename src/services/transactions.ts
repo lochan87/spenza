@@ -69,9 +69,10 @@ export async function addTransaction(
   try {
     const status = await Promise.race([
       acknowledgment,
-      new Promise<'pending'>(resolve => { timer = setTimeout(() => resolve('pending'), 500) }),
+      new Promise<'pending'>(resolve => { timer = setTimeout(() => resolve('pending'), 2000) }),
     ])
     returnedPending = status === 'pending'
+    clearPastDescriptionsCache(uid)
     // Promise.race keeps a rejection handler attached to the ongoing write.
     notifyFinancialChange('transaction_created', uid, ref.id)
     return { id: ref.id, status }
@@ -102,6 +103,7 @@ export async function updateTransaction(
   if (!cacheOk) {
     console.warn('[Spenza Transactions] Updated transaction, but failed to invalidate insights cache.')
   }
+  clearPastDescriptionsCache(uid)
   notifyFinancialChange('transaction_updated', uid, id)
 }
 
@@ -125,6 +127,7 @@ export async function deleteTransaction(uid: string, id: string): Promise<void> 
   if (!cacheOk) {
     console.warn('[Spenza Transactions] Deleted transaction, but failed to invalidate insights cache.')
   }
+  clearPastDescriptionsCache(uid)
   notifyFinancialChange('transaction_deleted', uid, id)
 }
 
@@ -157,6 +160,7 @@ export async function deleteTransactionsSafely(
     throw new ExpenseDeletionError(`Clear stopped. Confirmed deletions: ${deleted}. ${reason} Refresh to review remaining transactions.`)
   }
   if (deleted > 0) {
+    clearPastDescriptionsCache(uid)
     notifyFinancialChange('bulk_cleared', uid)
   }
   // Cache invalidation commits with each successful chunk, including on partial completion.
@@ -228,14 +232,108 @@ export async function getAllTransactions(uid: string): Promise<Transaction[]> {
   return sorted
 }
 
-/** Get past descriptions for autocomplete (limited to recent 100) */
-export async function getPastDescriptions(uid: string): Promise<string[]> {
-  const ref = collection(db, 'users', uid, 'transactions')
-  const snap = await getDocs(query(ref, orderBy('date', 'desc'), limit(100)))
-  const seen = new Set<string>()
-  return snap.docs
-    .map(d => d.data().description as string)
-    .filter(d => d && seen.size < 50 && !seen.has(d) && (seen.add(d), true))
+// ─── Metadata & Autocomplete In-Memory Cache (Free-Tier Optimization) ──────────
+
+interface CacheEntry<T> {
+  data: T
+  timestamp: number
+}
+
+const categoryCache = new Map<string, CacheEntry<Category[]>>()
+const categoryInFlight = new Map<string, Promise<Category[]>>()
+
+const accountCache = new Map<string, CacheEntry<PaymentAccount[]>>()
+const accountInFlight = new Map<string, Promise<PaymentAccount[]>>()
+
+const pastDescriptionsCache = new Map<string, CacheEntry<string[]>>()
+const pastDescriptionsInFlight = new Map<string, Promise<string[]>>()
+
+export function clearCategoryCache(uid?: string): void {
+  if (uid) {
+    const clean = uid.trim()
+    categoryCache.delete(clean)
+    categoryInFlight.delete(clean)
+  } else {
+    categoryCache.clear()
+    categoryInFlight.clear()
+  }
+}
+
+export function clearAccountCache(uid?: string): void {
+  if (uid) {
+    const clean = uid.trim()
+    accountCache.delete(clean)
+    accountInFlight.delete(clean)
+  } else {
+    accountCache.clear()
+    accountInFlight.clear()
+  }
+}
+
+export function clearPastDescriptionsCache(uid?: string): void {
+  if (uid) {
+    const clean = uid.trim()
+    pastDescriptionsCache.delete(clean)
+    pastDescriptionsInFlight.delete(clean)
+  } else {
+    pastDescriptionsCache.clear()
+    pastDescriptionsInFlight.clear()
+  }
+}
+
+export function clearMetadataCache(uid?: string): void {
+  clearCategoryCache(uid)
+  clearAccountCache(uid)
+  clearPastDescriptionsCache(uid)
+}
+
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+  window.addEventListener('spenza_financial_mutation', ((e: CustomEvent) => {
+    const detail = e.detail
+    if (!detail?.uid) return
+    if (detail.type === 'category_changed') {
+      clearCategoryCache(detail.uid)
+    } else if (detail.type === 'account_changed') {
+      clearAccountCache(detail.uid)
+    } else if (
+      detail.type === 'transaction_created' ||
+      detail.type === 'transaction_updated' ||
+      detail.type === 'transaction_deleted' ||
+      detail.type === 'bulk_cleared' ||
+      detail.type === 'import_completed'
+    ) {
+      clearPastDescriptionsCache(detail.uid)
+    }
+  }) as EventListener)
+}
+
+/** Get past descriptions for autocomplete (cached in-memory, limited to recent 100) */
+export async function getPastDescriptions(uid: string, forceRefresh = false): Promise<string[]> {
+  const cleanUid = uid.trim()
+  if (!forceRefresh && pastDescriptionsCache.has(cleanUid)) {
+    return pastDescriptionsCache.get(cleanUid)!.data
+  }
+  if (!forceRefresh && pastDescriptionsInFlight.has(cleanUid)) {
+    return pastDescriptionsInFlight.get(cleanUid)!
+  }
+
+  const fetchPromise = (async () => {
+    try {
+      const ref = collection(db, 'users', cleanUid, 'transactions')
+      const snap = await getDocs(query(ref, orderBy('date', 'desc'), limit(100)))
+      const seen = new Set<string>()
+      const list = snap.docs
+        .map(d => d.data().description as string)
+        .filter(d => d && seen.size < 50 && !seen.has(d) && (seen.add(d), true))
+      pastDescriptionsCache.set(cleanUid, { data: list, timestamp: Date.now() })
+      return list
+    } finally {
+      pastDescriptionsInFlight.delete(cleanUid)
+    }
+  })()
+
+  pastDescriptionsInFlight.set(cleanUid, fetchPromise)
+  return fetchPromise
 }
 
 /** Get most-used transactions for Quick Add (top 4 by frequency) */
@@ -261,20 +359,41 @@ export async function getFrequentTransactions(uid: string): Promise<Transaction[
 
 // ─── Payment Accounts ─────────────────────────────────────────────────────────
 
-export async function getPaymentAccounts(uid: string): Promise<PaymentAccount[]> {
-  const snap = await getDocs(
-    query(collection(db, 'users', uid, 'paymentAccounts'), orderBy('isDefault', 'desc'))
-  )
-  return snap.docs.map(d => ({ id: d.id, ...d.data() }) as PaymentAccount)
+export async function getPaymentAccounts(uid: string, forceRefresh = false): Promise<PaymentAccount[]> {
+  const cleanUid = uid.trim()
+  if (!forceRefresh && accountCache.has(cleanUid)) {
+    return accountCache.get(cleanUid)!.data
+  }
+  if (!forceRefresh && accountInFlight.has(cleanUid)) {
+    return accountInFlight.get(cleanUid)!
+  }
+
+  const fetchPromise = (async () => {
+    try {
+      const snap = await getDocs(
+        query(collection(db, 'users', cleanUid, 'paymentAccounts'), orderBy('isDefault', 'desc'))
+      )
+      const accs = snap.docs.map(d => ({ id: d.id, ...d.data() }) as PaymentAccount)
+      accountCache.set(cleanUid, { data: accs, timestamp: Date.now() })
+      return accs
+    } finally {
+      accountInFlight.delete(cleanUid)
+    }
+  })()
+
+  accountInFlight.set(cleanUid, fetchPromise)
+  return fetchPromise
 }
 
 export async function addPaymentAccount(
   uid: string,
   data: Omit<PaymentAccount, 'id' | 'createdAt'>
 ): Promise<string> {
-  const ref = doc(collection(db, 'users', uid, 'paymentAccounts'))
+  const cleanUid = uid.trim()
+  const ref = doc(collection(db, 'users', cleanUid, 'paymentAccounts'))
   await setDoc(ref, { ...data, id: ref.id, createdAt: serverTimestamp() })
-  notifyFinancialChange('account_changed', uid, ref.id)
+  clearAccountCache(cleanUid)
+  notifyFinancialChange('account_changed', cleanUid, ref.id)
   return ref.id
 }
 
@@ -283,8 +402,10 @@ export async function updatePaymentAccount(
   id: string,
   data: Partial<PaymentAccount>
 ): Promise<void> {
-  await setDoc(doc(db, 'users', uid, 'paymentAccounts', id), data, { merge: true })
-  notifyFinancialChange('account_changed', uid, id)
+  const cleanUid = uid.trim()
+  await setDoc(doc(db, 'users', cleanUid, 'paymentAccounts', id), data, { merge: true })
+  clearAccountCache(cleanUid)
+  notifyFinancialChange('account_changed', cleanUid, id)
 }
 
 export async function archivePaymentAccount(
@@ -323,18 +444,39 @@ export async function deletePaymentAccount(
 
 // ─── Categories ───────────────────────────────────────────────────────────────
 
-export async function getCategories(uid: string): Promise<Category[]> {
-  const snap = await getDocs(collection(db, 'users', uid, 'categories'))
-  return snap.docs.map(d => ({ id: d.id, ...d.data() }) as Category)
+export async function getCategories(uid: string, forceRefresh = false): Promise<Category[]> {
+  const cleanUid = uid.trim()
+  if (!forceRefresh && categoryCache.has(cleanUid)) {
+    return categoryCache.get(cleanUid)!.data
+  }
+  if (!forceRefresh && categoryInFlight.has(cleanUid)) {
+    return categoryInFlight.get(cleanUid)!
+  }
+
+  const fetchPromise = (async () => {
+    try {
+      const snap = await getDocs(collection(db, 'users', cleanUid, 'categories'))
+      const cats = snap.docs.map(d => ({ id: d.id, ...d.data() }) as Category)
+      categoryCache.set(cleanUid, { data: cats, timestamp: Date.now() })
+      return cats
+    } finally {
+      categoryInFlight.delete(cleanUid)
+    }
+  })()
+
+  categoryInFlight.set(cleanUid, fetchPromise)
+  return fetchPromise
 }
 
 export async function addCategory(
   uid: string,
   data: Omit<Category, 'id'>
 ): Promise<string> {
-  const ref = doc(collection(db, 'users', uid, 'categories'))
+  const cleanUid = uid.trim()
+  const ref = doc(collection(db, 'users', cleanUid, 'categories'))
   await setDoc(ref, { ...data, id: ref.id })
-  notifyFinancialChange('category_changed', uid, ref.id)
+  clearCategoryCache(cleanUid)
+  notifyFinancialChange('category_changed', cleanUid, ref.id)
   return ref.id
 }
 
@@ -343,8 +485,10 @@ export async function updateCategory(
   id: string,
   data: Partial<Category>
 ): Promise<void> {
-  await setDoc(doc(db, 'users', uid, 'categories', id), data, { merge: true })
-  notifyFinancialChange('category_changed', uid, id)
+  const cleanUid = uid.trim()
+  await setDoc(doc(db, 'users', cleanUid, 'categories', id), data, { merge: true })
+  clearCategoryCache(cleanUid)
+  notifyFinancialChange('category_changed', cleanUid, id)
 }
 
 export async function archiveCategory(

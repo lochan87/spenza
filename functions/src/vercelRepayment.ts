@@ -284,7 +284,7 @@ export async function handleVercelRepayment(
       const app = getAdminApp()
       decodedToken = await getAuth(app).verifyIdToken(idToken)
     }
-  } catch (err: any) {
+  } catch {
     sendJson(res, 401, {
       ok: false,
       error: {
@@ -370,7 +370,7 @@ export async function handleVercelRepayment(
       sendJson(res, status, {
         ok: false,
         error: {
-          code: err.code.toUpperCase(),
+          code: err.code.toUpperCase().replace(/-/g, '_'),
           message: err.message,
         },
       })

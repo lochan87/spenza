@@ -287,7 +287,7 @@ describe('Vercel Repayment Adapter — HTTP, Security, and Invariants', () => {
     })
     assert.equal(res.status, 404)
     const data = await res.json()
-    assert.equal(data.error.code, 'NOT-FOUND')
+    assert.equal(data.error.code, 'NOT_FOUND')
   })
 
   it('9. Valid repayment produces exact ledger updates, atomic receipts and insights cache invalidation', async () => {
@@ -401,7 +401,7 @@ describe('Vercel Repayment Adapter — HTTP, Security, and Invariants', () => {
 
     assert.equal(res.status, 409)
     const data = await res.json()
-    assert.equal(data.error.code, 'ALREADY-EXISTS')
+    assert.equal(data.error.code, 'ALREADY_EXISTS')
   })
 
   it('12. Invalid split repayment amounts are rejected with 400 Bad Request', async () => {
